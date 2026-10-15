@@ -1,0 +1,40 @@
+[package]
+name = "klipp"
+description = "Klipp: the clip library, editor and settings. Starts the recorder if it isn't running."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Serve the built frontend from inside the exe. Build with
+# --no-default-features to load the Vite dev server instead (`tauri dev`).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12.2", features = ["protocol-asset"] }
+tauri-plugin-single-instance = "2.5.4"
+toml.workspace = true
+toml_edit = "0.25"
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]

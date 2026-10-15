@@ -1,0 +1,192 @@
+//! The video thread: capture → GPU convert → encode → replay buffer.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, anyhow, bail};
+use klipp_media::{HwDevice, HwFrame, Packet, VideoCodec, VideoEncoder, VideoEncoderConfig};
+use windows::Win32::Foundation::POINT;
+use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+use crate::capture::MonitorCapture;
+use crate::clock;
+use crate::gpu::{Converter, Gpu};
+use crate::replay::{PacketInfo, VIDEO};
+use crate::state::Shared;
+
+#[derive(Clone, Debug)]
+pub struct VideoSettings {
+    pub codec: VideoCodec,
+    pub fps: u32,
+    /// Output height; `None` keeps the monitor's resolution.
+    pub height: Option<u32>,
+    pub quality: u8,
+    pub max_mbps: u32,
+}
+
+/// After a stall longer than this (sleep, hibernate, debugger), skip ahead
+/// instead of encoding a burst of catch-up frames.
+const MAX_CATCH_UP: Duration = Duration::from_secs(1);
+
+pub struct VideoPipeline {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl VideoPipeline {
+    /// Starts capturing the primary monitor. Returns once frames are flowing
+    /// into the buffer, or with the setup error.
+    pub fn start(settings: VideoSettings, shared: Arc<Shared>) -> Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let thread = thread::Builder::new().name("video".into()).spawn({
+            let stop = stop.clone();
+            move || {
+                if let Err(e) = run(&settings, &shared, &stop, ready_tx) {
+                    crate::log::warning!("video pipeline stopped: {e:#}");
+                }
+            }
+        })?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self { stop, thread: Some(thread) }),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(anyhow!("video thread exited during setup")),
+        }
+    }
+}
+
+impl Drop for VideoPipeline {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Output size for an optional target height, keeping the aspect ratio and even dimensions.
+fn output_size(src_w: u32, src_h: u32, height: Option<u32>) -> (u32, u32) {
+    match height {
+        Some(h) if h < src_h => {
+            let w = (src_w as u64 * h as u64 / src_h as u64) as u32;
+            (w & !1, h & !1)
+        }
+        _ => (src_w & !1, src_h & !1),
+    }
+}
+
+fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<Result<()>>) -> Result<()> {
+    let _priority = crate::mmcss::CaptureThread::register();
+    let setup = || -> Result<_> {
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let gpu = Gpu::for_monitor(monitor)?;
+        let capture = MonitorCapture::start(&gpu, monitor, s.fps)?;
+        // The output size is fixed for the life of the encoder. If the display
+        // mode changes later, the converter scales the new size to fit it.
+        let (converter, (w, h), size_generation) = {
+            let latest = capture.latest.lock();
+            let out = output_size(latest.width, latest.height, s.height);
+            let converter = Converter::new(&gpu, &latest.texture, (latest.width, latest.height), out, s.fps)?;
+            (converter, out, latest.size_generation)
+        };
+        let device = HwDevice::from_d3d11(&gpu.device, &gpu.context)?;
+        let encoder = VideoEncoder::new(
+            &device,
+            &VideoEncoderConfig {
+                codec: s.codec,
+                width: w,
+                height: h,
+                fps: s.fps,
+                quality: s.quality,
+                max_bitrate: s.max_mbps * 1_000_000,
+            },
+        )?;
+        *shared.video_stream.lock().unwrap() = Some(encoder.stream_info()?);
+
+        // Windows sends a first frame right after capture starts.
+        let waited = Instant::now();
+        while capture.latest.generation() == 0 {
+            if waited.elapsed() > Duration::from_secs(3) {
+                bail!("no frame captured within 3 s");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        crate::log::info!("video: {} | encoding {}x{} {:?} @ {} fps", gpu.adapter_name, w, h, s.codec, s.fps);
+        Ok((gpu, capture, converter, size_generation, (w, h), device, encoder))
+    };
+    // `_device` must outlive the encoder.
+    let (gpu, capture, mut converter, mut converter_generation, out_size, _device, mut encoder) = match setup() {
+        Ok(parts) => {
+            let _ = ready.send(Ok(()));
+            parts
+        }
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return Ok(());
+        }
+    };
+
+    let fps = s.fps as i64;
+    let t0 = clock::now();
+    let start = Instant::now();
+    let mut sink = |p: &mut Packet| -> Result<()> {
+        let info = PacketInfo {
+            stream: VIDEO,
+            time: t0 + p.pts() * clock::SECOND / fps,
+            pts: p.pts(),
+            dts: p.dts(),
+            duration: 1,
+            key: p.is_key(),
+        };
+        shared.buffer.lock().unwrap().push(info, p.data());
+        Ok(())
+    };
+    let tick = |i: i64| start + Duration::from_nanos((i as u128 * 1_000_000_000 / fps as u128) as u64);
+
+    // Constant frame rate: every tick encodes the newest capture, or repeats
+    // the previous frame if the screen didn't change.
+    let mut current: Option<HwFrame> = None;
+    let mut last_generation = 0;
+    let mut i: i64 = 0;
+    while !stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+        let deadline = tick(i);
+        if deadline > now {
+            thread::sleep(deadline - now);
+        } else if now - deadline > MAX_CATCH_UP {
+            let behind = ((now - start).as_nanos() * fps as u128 / 1_000_000_000) as i64 - i;
+            shared.skipped_ticks.fetch_add(behind as u64, Ordering::Relaxed);
+            i += behind;
+        } else if now - deadline > Duration::from_nanos(1_000_000_000 / fps as u64) {
+            shared.late_frames.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let generation = capture.latest.generation();
+        if current.is_none() || generation != last_generation {
+            let latest = capture.latest.lock();
+            if latest.size_generation != converter_generation {
+                crate::log::info!("video: capture size changed to {}x{}; scaling to {}x{}", latest.width, latest.height, out_size.0, out_size.1);
+                converter = Converter::new(&gpu, &latest.texture, (latest.width, latest.height), out_size, s.fps)?;
+                converter_generation = latest.size_generation;
+            }
+            let frame = encoder.alloc_frame()?;
+            let (texture, slice) = frame.texture();
+            converter.convert(texture, slice)?;
+            drop(latest);
+            current = Some(frame);
+            last_generation = generation;
+            shared.new_frames.fetch_add(1, Ordering::Relaxed);
+        }
+        encoder.encode(current.as_mut().context("no frame")?, i, &mut sink)?;
+        shared.frames.fetch_add(1, Ordering::Relaxed);
+        shared.capture_resizes.store(capture.latest.resizes(), Ordering::Relaxed);
+        i += 1;
+    }
+    drop(current);
+    encoder.finish(&mut sink)
+}

@@ -1,0 +1,11 @@
+[package]
+name = "klipp-media"
+description = "Safe wrappers over the FFmpeg C API. All unsafe FFmpeg code lives here."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ffmpeg-sys-next.workspace = true
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D11"] }

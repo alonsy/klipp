@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" role="img" aria-label="Klipp app icon">
+  <rect width="300" height="300" rx="64" fill="#1A1C22"/>
+  <g transform="translate(58 58) scale(1.84)">
+    <path d="M80.9 41.7 A32 32 0 1 1 58.3 19.1" fill="none" stroke="#F4F2EC" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="79.7" cy="20.3" r="9" fill="#FF5A2E"/>
+  </g>
+</svg>

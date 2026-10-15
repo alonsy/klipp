@@ -1,0 +1,15 @@
+# Rust
+/target/
+
+# Third-party binaries (downloaded by setup, not committed)
+/vendor/
+
+# Studio frontend and Tauri's generated schemas
+node_modules/
+dist/
+/studio/src-tauri/gen/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.vs/

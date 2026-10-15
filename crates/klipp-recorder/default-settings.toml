@@ -1,0 +1,74 @@
+# Klipp settings.
+# Saved changes apply right away. Video and audio changes restart recording
+# (about 1 second, and the replay buffer starts over).
+
+[replay]
+# How many seconds the save hotkey keeps (10-300). Applies instantly.
+length_secs = 60
+# Modifiers (Ctrl, Alt, Shift, Win) plus a key, e.g. "Alt+F10", "Ctrl+Shift+S".
+hotkey = "Alt+F10"
+
+[video]
+codec = "av1"            # "av1" (smaller files) or "h264" (plays everywhere)
+resolution = "native"    # "native", "1080p" or "720p"
+fps = 60                 # 30, 60 or 120
+quality = 30             # 1-51, lower is better quality and bigger files
+max_bitrate_mbps = 40    # ceiling that keeps the buffer's RAM predictable
+
+[audio]
+# One track per source, plus a "Mix" track of all of them that players use by default.
+# device: part of the device name (see `klipp-recorder --list-audio`), or "" for
+# the Windows default. kind: "loopback" records what a playback device plays;
+# "capture" records a microphone. With an app that splits audio into devices
+# (like SteelSeries Sonar), add Game, Chat and Mic as separate tracks.
+sources = [
+  { name = "PC audio", device = "", kind = "loopback" },
+]
+
+[storage]
+# Where clips are saved. Empty means your Videos folder (Videos\Klipp).
+clips_dir = ''
+
+[cue]
+# Sound played when a clip is saved. Plays on a device that isn't recorded,
+# so it doesn't end up in your next clip.
+enabled = true
+auto_clips = true        # also play it when an auto-clip is saved
+volume = 0.6
+device = ""              # "" plays on the Windows default; your headset is best
+# Your own WAV files instead of the built-in sounds, e.g. 'D:\sounds\saved.wav'.
+# auto_sound is for auto-clips; leave it empty to use `sound` for both.
+sound = ""
+auto_sound = ""
+
+[auto_clip]
+# Clips saved automatically from game events. Changes apply instantly.
+enabled = true
+pre_roll_secs = 8        # kept before the first event of a clip
+post_roll_secs = 4       # kept after the last one
+merge_gap_secs = 12      # events this close together become one clip
+
+[auto_clip.cs2]
+# Uses Valve's Game State Integration (restart CS2 once after the first run).
+enabled = true
+headshot = true          # every headshot kill
+multi_kill_min = 2       # clip 2+ kills (3 = only 3k and up, 0 = off)
+# "streak": kills close together (within merge_gap_secs) count as a multi-kill.
+# "round": kills anywhere in the same round count, like the scoreboard.
+multi_kill_mode = "streak"
+any_kill = false         # every kill
+knife_or_zeus_kill = false
+death = false
+mvp = false
+port = 52741             # local port CS2 sends game state to
+debug_log = false        # log every game-state update to cs2.log (for timing checks)
+
+# Different timing for specific events. Event names: kill, headshot, 2k, 3k,
+# 4k, ace, multikill (all of 2k to ace), knife, zeus, death, mvp. For example:
+# [auto_clip.timing.ace]
+# pre_roll_secs = 20
+
+[games]
+# Extra games for folder names: "exe name" = "Folder name".
+# Games installed through Steam, Epic, Riot, GOG, EA, Ubisoft or Xbox are found automatically.
+# "mygame.exe" = "My Game"
