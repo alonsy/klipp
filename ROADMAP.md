@@ -9,14 +9,16 @@ Klipp is young. Here's where it's going, and what won't change on the way.
 - **Your clips are yours.** Klipp works fully offline and needs no account. Nothing leaves your PC unless you send it somewhere.
 - **Light by design.** A recorder that runs all day has to cost nothing while it does. Every release is checked for memory growth.
 
-## Now: 0.2
+## Now: 0.3
 
 - A one-click installer, with a setup that checks what your PC can record and asks for your audio and video choices.
-- Updates inside the app, in one click.
+- Updates inside the app, in one click, installed quietly in the background.
 - Always-on replay buffer with a save hotkey; presses close together become one clip.
 - Counter-Strike 2 auto-clips (headshots, multi-kills, knife and Zeus kills) through Valve's Game State Integration.
 - Separate audio tracks, a session-grouped library, an editor with waveforms, and exports for sharing.
-- NVIDIA graphics cards (AV1 or H.264), Windows 11.
+- Optional indicators on top of your game ("Auto-clips ON", clip saved), never in your clips.
+- The save sound stays out of your clips by itself.
+- NVIDIA, AMD and Intel graphics (AV1 or H.264), Windows 10 and 11, any of your screens.
 
 ## Next
 
@@ -30,8 +32,7 @@ So we're building a **non-invasive event capturer**: a model that recognizes mom
 
 ### More hardware
 
-- AMD (AMF) and Intel (Quick Sync) encoders.
-- Windows 10 support, tested.
+- Gaming laptops recording on their NVIDIA GPU (today they record on the processor's built-in graphics).
 - Signed installers (no more Windows warning), and installs through winget and Scoop.
 
 ### Cloud, your way, free
@@ -43,7 +44,6 @@ Local-only stays the default. The cloud is opt-in, and turning it off leaves eve
 ### Smaller things
 
 - Switching from SteelSeries Moments in one step, clips and settings included.
-- Leaving the save sound out of recordings automatically.
 - Storage limits that tidy up old clips you didn't favorite.
 - Screenshots, and stitching several clips into one.
 

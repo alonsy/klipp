@@ -27,9 +27,20 @@ pub struct Settings {
     pub audio: Audio,
     pub storage: Storage,
     pub cue: Cue,
+    pub indicators: Indicators,
     pub auto_clip: AutoClip,
     /// Extra exe name → folder name mappings.
     pub games: BTreeMap<String, String>,
+}
+
+/// The on-screen indicators (see `overlay`). Both off unless switched on.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Indicators {
+    /// "Auto-clips ON" when a CS2 match starts.
+    pub autoclips_on: bool,
+    /// A mark when a clip is saved, or can't be.
+    pub saves: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -143,6 +154,19 @@ pub enum Resolution {
     P720,
 }
 
+/// How the screen is captured.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMethod {
+    /// Desktop Duplication on Windows 10 (no yellow border there), Windows
+    /// Graphics Capture on Windows 11.
+    Auto,
+    /// Windows Graphics Capture.
+    Wgc,
+    /// DXGI Desktop Duplication.
+    Duplication,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Video {
@@ -151,11 +175,26 @@ pub struct Video {
     pub fps: u32,
     pub quality: u8,
     pub max_bitrate_mbps: u32,
+    /// The monitor to record ("" = the main display).
+    pub monitor: String,
+    pub capture: CaptureMethod,
+    /// Part of a graphics card's name to encode on instead of the one that
+    /// drives the screen ("" = that one). For testing.
+    pub gpu: String,
 }
 
 impl Default for Video {
     fn default() -> Self {
-        Self { codec: Codec::Av1, resolution: Resolution::Native, fps: 60, quality: 30, max_bitrate_mbps: 40 }
+        Self {
+            codec: Codec::Av1,
+            resolution: Resolution::Native,
+            fps: 60,
+            quality: 30,
+            max_bitrate_mbps: 40,
+            monitor: String::new(),
+            capture: CaptureMethod::Auto,
+            gpu: String::new(),
+        }
     }
 }
 
@@ -321,6 +360,9 @@ impl Settings {
             },
             quality: v.quality,
             max_mbps: v.max_bitrate_mbps,
+            monitor: v.monitor.clone(),
+            capture: v.capture,
+            gpu: v.gpu.clone(),
         }
     }
 
@@ -353,6 +395,8 @@ impl Settings {
                     Kind::Loopback => SourceKind::Loopback,
                     Kind::Capture => SourceKind::Capture,
                 },
+                // The same device by name ("" is the Windows default for both).
+                skip_klipp: s.kind == Kind::Loopback && self.cue.enabled && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()),
             })
             .collect()
     }

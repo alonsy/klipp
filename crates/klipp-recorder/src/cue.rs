@@ -116,6 +116,11 @@ pub fn play_once(sound: Sound, device: &str, volume: f32) -> Result<()> {
 const SAVED_WAV: &[u8] = include_bytes!("../../../assets/sounds/recorded.wav");
 const ERROR_WAV: &[u8] = include_bytes!("../../../assets/sounds/error.wav");
 
+/// The built-in save sound (for `--test-audio` to look for).
+pub fn saved_sound() -> Clip {
+    builtin(SAVED_WAV)
+}
+
 fn builtin(wav: &[u8]) -> Clip {
     parse_wav(wav).expect("built-in sounds are valid WAVs (checked by a test)")
 }

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import * as api from "../api";
+  import type { MonitorInfo } from "../api";
   import Icon from "../Icon.svelte";
   import Field from "../ui/Field.svelte";
   import Segmented from "../ui/Segmented.svelte";
@@ -8,6 +11,14 @@
   const s = $derived(store.s!);
   let quality = $state(store.s!.video.quality as number);
 
+  let screens = $state<MonitorInfo[]>([]);
+  onMount(() => {
+    api.monitors().then((m) => (screens = m), () => {});
+  });
+  const label = (m: MonitorInfo) => `${m.name} · ${m.width} × ${m.height}`;
+  /** The saved monitor, if it isn't connected now (it's still recorded once it is). */
+  const missing = $derived(!!s.video.monitor && screens.length > 0 && !screens.some((m) => m.id === s.video.monitor));
+
   function qualityName(q: number) {
     return q <= 24 ? "Very high" : q <= 30 ? "High" : q <= 35 ? "Medium" : "Low";
   }
@@ -16,6 +27,15 @@
 <div class="banner"><Icon name="info" size={17} />Changing these restarts recording for about a second, and what was buffered so far is dropped.</div>
 
 <div class="group">
+  {#if screens.length > 1 || missing}
+    <Field title="Screen" hint={missing ? "The screen chosen before isn't connected, so Klipp records the main display until it is." : "Which screen Klipp records."}>
+      <select class="screen" value={s.video.monitor} onchange={(e) => set(["video", "monitor"], e.currentTarget.value)} aria-label="Screen">
+        <option value="">Main display{screens[0]?.primary ? ` (${screens[0].name})` : ""}</option>
+        {#each screens as m (m.id)}<option value={m.id}>{label(m)}</option>{/each}
+        {#if missing}<option value={s.video.monitor}>Not connected</option>{/if}
+      </select>
+    </Field>
+  {/if}
   <Field title="Codec" hint="AV1 makes files about half the size. H.264 plays on anything, even old phones.">
     <Segmented value={s.video.codec} label="Codec" options={[["av1", "AV1"], ["h264", "H.264"]]} onchange={(v) => set(["video", "codec"], v)} />
   </Field>
@@ -45,5 +65,9 @@
 <style>
   .unit {
     font-size: 10px;
+  }
+
+  .screen {
+    max-width: 300px;
   }
 </style>

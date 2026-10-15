@@ -3,6 +3,14 @@
   import { openPage, prefs, recorder, refreshRecorder, setPref, toast, ui } from "../state.svelte";
   import Field from "../ui/Field.svelte";
   import Toggle from "../ui/Toggle.svelte";
+  import { set, store } from "./store.svelte";
+
+  const s = $derived(store.s!);
+
+  /** Shows the pill on screen now, as it will look over a game. */
+  function preview(kind: "on" | "saved" | "failed") {
+    api.previewIndicator(kind).catch((e) => toast(`Couldn't show it: ${e}`));
+  }
 
   const accents = [
     ["#ff5a2e", "Ember"],
@@ -28,6 +36,19 @@
   </Field>
   <Field title="Explain closing the window" hint="Closing this window keeps Klipp recording in the tray. Shows a reminder when you close it.">
     <Toggle checked={prefs.closeNotice} label="Explain closing the window" onchange={(v) => setPref("closeNotice", v)} />
+  </Field>
+</div>
+
+<span class="label group-title">On screen</span>
+<div class="group">
+  <Field title="Show &ldquo;Auto-clips ON&rdquo;" hint="When a CS2 match starts, top right under the kill feed. Never in your clips, and it never takes focus from the game.">
+    <button class="ghost preview" onclick={() => preview("on")}>Preview</button>
+    <Toggle checked={s.indicators?.autoclips_on ?? false} label="Show Auto-clips ON" onchange={(v) => set(["indicators", "autoclips_on"], v)} />
+  </Field>
+  <Field title="Show when a clip saves" hint="A small mark when a clip is saved, and a red one when it can't be. Auto-clips follow &ldquo;Also for auto-clips&rdquo; in Sounds.">
+    <button class="ghost preview" onclick={() => preview("saved")}>Saved</button>
+    <button class="ghost preview" onclick={() => preview("failed")}>Failed</button>
+    <Toggle checked={s.indicators?.saves ?? false} label="Show when a clip saves" onchange={(v) => set(["indicators", "saves"], v)} />
   </Field>
 </div>
 
@@ -69,6 +90,12 @@
   .swatches {
     display: flex;
     gap: 10px;
+  }
+
+  .preview {
+    padding: 5px 10px;
+    font-size: 12.5px;
+    color: var(--muted);
   }
 
   .swatch {

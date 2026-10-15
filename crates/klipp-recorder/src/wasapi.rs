@@ -123,6 +123,28 @@ impl Capturer {
         }
     }
 
+    /// Everything this PC plays except Klipp's own sounds (see `process_loopback`).
+    pub fn open_excluding_klipp() -> Result<Self> {
+        let client = crate::process_loopback::activate_excluding_self()?;
+        unsafe {
+            let format = WAVEFORMATEX {
+                wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
+                nChannels: CHANNELS as u16,
+                nSamplesPerSec: klipp_media::SAMPLE_RATE,
+                nAvgBytesPerSec: klipp_media::SAMPLE_RATE * 8,
+                nBlockAlign: 8,
+                wBitsPerSample: 32,
+                cbSize: 0,
+            };
+            // This virtual device has no format of its own: it delivers the one asked for.
+            let flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &format, None)?;
+            let capture: IAudioCaptureClient = client.GetService()?;
+            client.Start()?;
+            Ok(Self { client, capture, device_name: "everything but Klipp".into() })
+        }
+    }
+
     /// Hands every waiting packet to `on_packet(time, samples, frames)`. `time` is
     /// the first sample's capture time on the shared clock; `samples` is
     /// interleaved stereo, or `None` when the packet is silence.

@@ -31,7 +31,7 @@
       ><Icon name="warning" size={15} /></button
     >
   </Field>
-  <Field title="Play on" hint="Pick a device you don't record, like your headset, or the sound ends up in your next clip.">
+  <Field title="Play on" hint="Klipp keeps its sound out of your clips. With Sonar, Voicemeeter or another audio mixer, pick your headset instead.">
     <select class="device" value={matchDevice("loopback", cue.device)} onchange={(e) => set(["cue", "device"], e.currentTarget.value)} aria-label="Play on">
       <option value="">Windows default</option>
       {#each deviceOptions("loopback", cue.device) as name (name)}<option value={name}>{name}</option>{/each}
@@ -39,8 +39,33 @@
   </Field>
 </div>
 
+<p class="credits">
+  The save and error sounds are by
+  <button class="handle" onclick={() => api.openFile("https://instagram.com/f.inancimen")}>@f.inancimen</button>. Thank you!
+</p>
+
 <style>
   .device {
     max-width: 300px;
+  }
+
+  .credits {
+    margin: 0 4px;
+    font-size: 12px;
+    color: var(--faint);
+  }
+
+  .handle {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: inherit;
+    color: var(--accent);
+  }
+
+  .handle:hover {
+    background: none;
+    text-decoration: underline;
   }
 </style>

@@ -11,7 +11,7 @@ mod mux;
 mod stream;
 
 pub use audio::{AudioEncoder, SAMPLE_RATE};
-pub use encoder::{Packet, VideoCodec, VideoEncoder, VideoEncoderConfig};
+pub use encoder::{Packet, Vendor, VideoCodec, VideoEncoder, VideoEncoderConfig};
 pub use hw::{HwDevice, HwFrame};
 pub use mux::{Chapter, Mp4Writer};
 pub use stream::StreamInfo;

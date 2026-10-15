@@ -65,6 +65,22 @@ pub fn play_sound(device: &str, volume: f64, error: bool) -> Result<()> {
     Ok(())
 }
 
+/// Shows an on-screen indicator once through the recorder (`on`, `saved` or
+/// `failed`), on the screen Klipp records.
+pub fn preview_indicator(kind: &str) -> Result<()> {
+    anyhow::ensure!(["on", "saved", "failed"].contains(&kind), "unknown indicator {kind}");
+    let exe = std::env::current_exe()?.with_file_name("klipp-recorder.exe");
+    Command::new(&exe)
+        .args(["--show-indicator", kind])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .spawn()
+        .with_context(|| format!("starting {}", exe.display()))?;
+    Ok(())
+}
+
 /// Whether a program with this file name (e.g. "cs2.exe") is running.
 pub fn process_running(exe: &str) -> bool {
     use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};

@@ -54,6 +54,7 @@ pub struct Recorder {
     arrivals: Arc<Arrivals>,
     /// Auto-clip chains shown as arriving, by their first event time.
     auto_arrivals: BTreeMap<i64, u64>,
+    watchdog: crate::watchdog::Watchdog,
 }
 
 /// A clip saved with the hotkey that more presses can still extend. Each
@@ -100,7 +101,9 @@ impl Recorder {
             events_tx,
             events_rx,
             burst: None,
+            watchdog: crate::watchdog::Watchdog::default(),
         };
+        crate::watchdog::clear_health();
         r.video = Some(VideoPipeline::start(r.settings.video_settings(), r.shared.clone())?);
         r.start_audio();
         r.register_hotkey();
@@ -123,6 +126,28 @@ impl Recorder {
 
     pub fn last_clip(&self) -> Option<std::path::PathBuf> {
         self.saver.as_ref().and_then(Saver::last_clip)
+    }
+
+    /// The watchdog's look at the video (every couple of seconds): restarts it
+    /// if frames stopped; tells the window if it can't keep up.
+    pub fn check_health(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let frames = self.shared.frames.load(Relaxed);
+        let late = self.shared.late_frames.load(Relaxed) + self.shared.skipped_ticks.load(Relaxed);
+        if self.paused {
+            self.watchdog.reset(frames, late);
+            return;
+        }
+        if self.watchdog.check(Instant::now(), frames, late, self.video.is_some()) == crate::watchdog::Verdict::RestartVideo {
+            // A new encoder's packets can't continue the old ones in a clip.
+            self.flush_burst();
+            self.video = None;
+            self.shared.buffer.lock().unwrap().clear();
+            match VideoPipeline::start(self.settings.video_settings(), self.shared.clone()) {
+                Ok(v) => self.video = Some(v),
+                Err(e) => warning!("watchdog: the video didn't restart ({e:#}); trying again later"),
+            }
+        }
     }
 
     /// Pausing stops capture and forgets what was buffered, for moments that
@@ -155,7 +180,8 @@ impl Recorder {
             || old.video.max_bitrate_mbps != self.settings.video.max_bitrate_mbps;
         let hotkey_changed = old.replay.hotkey != self.settings.replay.hotkey;
         let video_changed = old.video != self.settings.video;
-        let audio_changed = old.audio != self.settings.audio;
+        // Also when moving the save sound changes whether a track leaves it out.
+        let audio_changed = old.audio != self.settings.audio || old.audio_sources() != self.settings.audio_sources();
         let integrations_changed = old.auto_clip.enabled != self.settings.auto_clip.enabled
             || old.auto_clip.cs2.enabled != self.settings.auto_clip.cs2.enabled
             || old.auto_clip.cs2.port != self.settings.auto_clip.cs2.port
@@ -202,9 +228,12 @@ impl Recorder {
 
     /// Feedback for a hotkey press, right away: the save sound (restarting if
     /// it's still playing), or the error sound if there's nothing to save.
-    pub fn press(&self) {
+    /// False in that second case (for the on-screen indicator).
+    pub fn press(&self) -> bool {
         let empty = self.shared.buffer.lock().unwrap().duration() == 0;
-        self.cue.handle().play(if self.paused || empty { Sound::Error } else { Sound::Saved });
+        let ok = !self.paused && !empty;
+        self.cue.handle().play(if ok { Sound::Saved } else { Sound::Error });
+        ok
     }
 
     /// Saves the last `replay.length_secs` seconds, ending at `end` (shared

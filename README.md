@@ -35,6 +35,7 @@ No account, no ads, no telemetry. Your clips stay on your PC.
 - **A library that reads like a history.** Clips are filed per game and grouped into play sessions by time and map, with event icons and filters.
 - **An editor that stays out of the way.** Waveforms for every track, event markers, trim handles that snap, and trims and levels that are remembered per clip.
 - **Share in a click.** Export under 10, 50 or 500 MB for chat apps, a high quality copy, or a lossless trim. It can go straight to your clipboard.
+- **Indicators on top of your game, if you want them.** "Auto-clips ON" when a CS2 match starts, and a small mark when a clip saves. They're a separate window: never in your clips, never touching the game.
 
 <p align="center">
   <img src="assets/readme/editor.webp" width="900" alt="The editor: playing a 4K clip, setting the start and end while it plays, muting a track">
@@ -54,13 +55,13 @@ Run **Klipp-Setup.exe**. It installs for your user in a few seconds (no admin ne
 
 > The installer isn't signed yet, so Windows may say it protected your PC. Click **More info**, then **Run anyway**. Signed builds are on the way.
 
-**You need** Windows 11 and an NVIDIA graphics card. Cards from the GeForce RTX 40-series on record AV1 (smaller files); older ones record H.264 automatically. AMD and Intel are on the [roadmap](ROADMAP.md).
+**You need** Windows 10 or 11 and graphics from NVIDIA, AMD or Intel, including the graphics built into most processors. Newer chips record AV1 (smaller files): GeForce RTX 40-series and up, Radeon RX 7000 and up, Radeon 700M/800M, Intel Arc and Core Ultra. Others record H.264 automatically.
 
 To build it yourself, see [docs/BUILDING.md](docs/BUILDING.md).
 ## Good to know
 
 - **CS2 auto-clips** need one restart of CS2 after installing, so it picks up Klipp's integration file.
-- **The save sound** plays on the device you picked in setup. If Klipp also records that device, the sound ends up in your next clip; pick your headset in **Settings → Sounds**.
+- **The save sound** stays out of your clips by itself. With SteelSeries Sonar, Voicemeeter or another audio mixer, play it on your headset instead (**Settings → Sounds**).
 - **Clips** go to `Videos\Klipp` by default, one folder per game. Klipp keeps its notes about them (markers, thumbnails, trims) in a hidden `.klipp` folder there.
 - **Uninstalling** (Windows Settings → Apps) removes Klipp and its startup entry. Your clips and settings stay.
 
@@ -70,7 +71,7 @@ To build it yourself, see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Roadmap
 
-More games, AMD and Intel encoders, and optional self-hosted cloud backup are next. See [ROADMAP.md](ROADMAP.md), and our promises: no ads, ever, and always open source.
+More games, recording on the NVIDIA GPU of gaming laptops, and optional self-hosted cloud backup are next. See [ROADMAP.md](ROADMAP.md), and our promises: no ads, ever, and always open source.
 
 ## Thanks
 

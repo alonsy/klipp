@@ -67,7 +67,19 @@ export async function setArrivals(list: Arrival[]) {
   }, 2600);
 }
 
-export const recorder = $state({ running: true, autostart: false, hotkey: "Alt+F10", lengthSecs: 60 });
+export const recorder = $state({
+  running: true,
+  autostart: false,
+  hotkey: "Alt+F10",
+  lengthSecs: 60,
+  /** From the recorder's watchdog: "stopped" (video restarting) or "slow" (can't keep up). */
+  problem: null as "stopped" | "slow" | null,
+  /** Restart the recorder if it stops while this window is open (not before setup is done). */
+  autoRestart: false,
+});
+
+let wasRunning = false;
+let lastRestart = 0;
 
 export async function loadPrefs() {
   try {
@@ -91,8 +103,19 @@ function applyAccent() {
 export async function refreshRecorder() {
   try {
     const [status, settings] = await Promise.all([api.recorderStatus(), api.readSettings()]);
+    // It was recording and stopped without "Quit Klipp" (which closes this
+    // window too): it crashed or was killed, so start it again (once a minute at most).
+    if (!status.running && wasRunning && recorder.autoRestart && Date.now() - lastRestart > 60_000) {
+      lastRestart = Date.now();
+      api.startRecorder().then(
+        () => toast("Klipp's recorder stopped unexpectedly, so it was started again."),
+        (e) => toast(`Klipp's recorder stopped and couldn't start again: ${e}`),
+      );
+    }
+    wasRunning = status.running;
     recorder.running = status.running;
     recorder.autostart = status.autostart;
+    recorder.problem = status.problem;
     recorder.hotkey = settings.replay?.hotkey ?? recorder.hotkey;
     recorder.lengthSecs = settings.replay?.length_secs ?? recorder.lengthSecs;
   } catch {

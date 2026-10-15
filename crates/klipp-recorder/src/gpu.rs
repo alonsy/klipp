@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result, bail};
+use klipp_media::Vendor;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -16,20 +17,37 @@ pub struct Gpu {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
     pub adapter_name: String,
+    /// Whose encoder it has; `None` for cards Klipp can't encode on.
+    pub vendor: Option<Vendor>,
 }
 
 impl Gpu {
     /// Creates a device on the GPU that drives `monitor`, so captured frames never cross adapters.
     pub fn for_monitor(monitor: HMONITOR) -> Result<Self> {
-        let adapter = adapter_for_monitor(monitor)?;
-        let desc = unsafe { adapter.GetDesc1()? };
-        let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
-        let adapter_name = String::from_utf16_lossy(&desc.Description[..len]);
+        Self::open(&adapter_for_monitor(monitor)?)
+    }
+
+    /// The GPU whose name contains `name` (the `video.gpu` setting, for
+    /// testing a card that doesn't drive the screen).
+    pub fn by_name(name: &str) -> Result<Self> {
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
+        for i in 0.. {
+            let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else { break };
+            if adapter_name(&adapter)?.to_lowercase().contains(&name.to_lowercase()) {
+                return Self::open(&adapter);
+            }
+        }
+        bail!("no graphics card named like \"{name}\"")
+    }
+
+    fn open(adapter: &IDXGIAdapter1) -> Result<Self> {
+        let adapter_name = adapter_name(adapter)?;
+        let vendor = Vendor::from_pci_id(unsafe { adapter.GetDesc1()? }.VendorId);
 
         let (mut device, mut context) = (None, None);
         unsafe {
             D3D11CreateDevice(
-                &adapter,
+                adapter,
                 D3D_DRIVER_TYPE_UNKNOWN,
                 HMODULE::default(),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
@@ -49,8 +67,14 @@ impl Gpu {
         unsafe {
             let _ = mt.SetMultithreadProtected(true);
         }
-        Ok(Self { device, context, adapter_name })
+        Ok(Self { device, context, adapter_name, vendor })
     }
+}
+
+fn adapter_name(adapter: &IDXGIAdapter1) -> Result<String> {
+    let desc = unsafe { adapter.GetDesc1()? };
+    let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
+    Ok(String::from_utf16_lossy(&desc.Description[..len]))
 }
 
 /// A BGRA texture that both the capture copy and the video processor can use.

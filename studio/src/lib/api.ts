@@ -90,14 +90,44 @@ export const setPref = (key: string, value: unknown) => invoke<void>("set_pref",
 export interface RecorderStatus {
   running: boolean;
   autostart: boolean;
+  /** From the recorder's watchdog: video restarting, or can't keep up. */
+  problem: "stopped" | "slow" | null;
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
+
+/** A screen Klipp can record; `id` is what `video.monitor` stores. */
+export interface MonitorInfo {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  refreshHz: number;
+  primary: boolean;
+}
+export const monitors = () => invoke<MonitorInfo[]>("monitors");
+
+/** One of the PC's own drives, and the folder Klipp would make there. */
+export interface Drive {
+  letter: string;
+  label: string;
+  freeGb: number;
+  totalGb: number;
+  /** The Windows drive (clips go in Videos\Klipp there). */
+  system: boolean;
+  folder: string;
+}
+export const drives = () => invoke<Drive[]>("drives");
+export const createFolder = (path: string) => invoke<void>("create_folder", { path });
 
 /** What `klipp-recorder --probe` found, plus free space where clips go. */
 export interface SystemCheck {
   gpus: { name: string; vendor: "nvidia" | "amd" | "intel" | "other"; vramMb: number }[];
+  monitors: MonitorInfo[];
   monitor: { width: number; height: number; refreshHz: number } | null;
   recordingGpu: string | null;
+  recordingVendor: "nvidia" | "amd" | "intel" | null;
+  /** "NVENC", "AMD AMF" or "Intel Quick Sync". */
+  encoder: string | null;
   encoders: { codec: "av1" | "h264"; width: number; height: number; ok: boolean; error: string | null }[];
   ramMb: number;
   cs2: boolean;
@@ -111,6 +141,9 @@ export const supportDetails = () => invoke<string>("support_details");
 
 /** Plays the save sound (or the error sound) once, as a real save would. */
 export const playSound = (device: string, volume: number, error = false) => invoke<void>("play_sound", { device, volume, error });
+
+/** Flashes an on-screen indicator now (Settings → General → On screen). */
+export const previewIndicator = (kind: "on" | "saved" | "failed") => invoke<void>("preview_indicator", { kind });
 
 /** CS2 is running (updating now would clear the replay buffer mid-game). */
 export const gameRunning = () => invoke<boolean>("game_running");

@@ -8,14 +8,16 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use klipp_media::{HwDevice, HwFrame, Packet, VideoCodec, VideoEncoder, VideoEncoderConfig};
-use windows::Win32::Foundation::POINT;
-use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 
-use crate::capture::MonitorCapture;
+use crate::capture::{Capture, MonitorCapture};
 use crate::clock;
+use crate::duplication::{self, DuplicationCapture};
 use crate::gpu::{Converter, Gpu};
+use crate::log::{info, warning};
 use crate::replay::{PacketInfo, VIDEO};
+use crate::settings::CaptureMethod;
 use crate::state::Shared;
 
 #[derive(Clone, Debug)]
@@ -26,6 +28,11 @@ pub struct VideoSettings {
     pub height: Option<u32>,
     pub quality: u8,
     pub max_mbps: u32,
+    /// The monitor to record ("" = the main display; see `monitors`).
+    pub monitor: String,
+    pub capture: CaptureMethod,
+    /// Encode on the card whose name contains this instead ("" = the screen's).
+    pub gpu: String,
 }
 
 /// After a stall longer than this (sleep, hibernate, debugger), skip ahead
@@ -79,28 +86,48 @@ fn output_size(src_w: u32, src_h: u32, height: Option<u32>) -> (u32, u32) {
     }
 }
 
+/// Starts the capture method the settings ask for. On Windows 10, "auto" means
+/// Desktop Duplication (no yellow border); if that can't start, it falls back
+/// to Windows Graphics Capture.
+fn start_capture(gpu: &Gpu, monitor: HMONITOR, s: &VideoSettings) -> Result<Capture> {
+    let duplicate = match s.capture {
+        CaptureMethod::Duplication => true,
+        CaptureMethod::Wgc => false,
+        CaptureMethod::Auto => duplication::border_cannot_be_hidden(),
+    };
+    if duplicate {
+        match DuplicationCapture::start(gpu, monitor, s.fps) {
+            Ok(c) => return Ok(Capture::Duplication(c)),
+            Err(e) => warning!("video: desktop duplication unavailable ({e:#}); using Windows Graphics Capture"),
+        }
+    }
+    Ok(Capture::Wgc(MonitorCapture::start(gpu, monitor, s.fps)?))
+}
+
 fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<Result<()>>) -> Result<()> {
     let _priority = crate::mmcss::CaptureThread::register();
     let setup = || -> Result<_> {
         unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
-        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
-        let gpu = Gpu::for_monitor(monitor)?;
-        let capture = MonitorCapture::start(&gpu, monitor, s.fps)?;
+        let (monitor, chosen) = crate::monitors::find(&s.monitor);
+        let gpu = if s.gpu.is_empty() { Gpu::for_monitor(monitor)? } else { Gpu::by_name(&s.gpu)? };
+        let vendor = gpu.vendor.with_context(|| format!("{} has no video encoder Klipp can use", gpu.adapter_name))?;
+        let capture = start_capture(&gpu, monitor, s)?;
         // The output size is fixed for the life of the encoder. If the display
         // mode changes later, the converter scales the new size to fit it.
         let (converter, (w, h), size_generation) = {
-            let latest = capture.latest.lock();
+            let latest = capture.latest().lock();
             let out = output_size(latest.width, latest.height, s.height);
             let converter = Converter::new(&gpu, &latest.texture, (latest.width, latest.height), out, s.fps)?;
             (converter, out, latest.size_generation)
         };
         let device = HwDevice::from_d3d11(&gpu.device, &gpu.context)?;
-        let config = |codec| VideoEncoderConfig { codec, width: w, height: h, fps: s.fps, quality: s.quality, max_bitrate: s.max_mbps * 1_000_000 };
-        // Older cards can't encode AV1 (it needs a GeForce RTX 40 or newer); they still record, in H.264.
+        let config = |codec| VideoEncoderConfig { vendor, codec, width: w, height: h, fps: s.fps, quality: s.quality, max_bitrate: s.max_mbps * 1_000_000 };
+        // Older cards can't encode AV1 (it needs a GeForce RTX 40, Radeon RX 7000,
+        // Intel Arc or newer); they still record, in H.264.
         let (encoder, codec) = match VideoEncoder::new(&device, &config(s.codec)) {
             Ok(e) => (e, s.codec),
             Err(e) if s.codec == VideoCodec::Av1 => {
-                crate::log::warning!("video: {} can't encode AV1 ({e:#}); recording H.264 instead", gpu.adapter_name);
+                warning!("video: {} can't encode AV1 ({e:#}); recording H.264 instead", gpu.adapter_name);
                 (VideoEncoder::new(&device, &config(VideoCodec::H264))?, VideoCodec::H264)
             }
             Err(e) => return Err(e),
@@ -109,13 +136,18 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
 
         // Windows sends a first frame right after capture starts.
         let waited = Instant::now();
-        while capture.latest.generation() == 0 {
+        while capture.latest().generation() == 0 {
             if waited.elapsed() > Duration::from_secs(3) {
                 bail!("no frame captured within 3 s");
             }
             thread::sleep(Duration::from_millis(5));
         }
-        crate::log::info!("video: {} | encoding {}x{} {:?} @ {} fps", gpu.adapter_name, w, h, codec, s.fps);
+        let method = match capture {
+            Capture::Wgc(_) => "Windows Graphics Capture",
+            Capture::Duplication(_) => "Desktop Duplication",
+        };
+        let screen = chosen.map_or("the main display".to_string(), |m| m.name);
+        info!("video: {} ({}) | {screen} via {method} | encoding {}x{} {:?} @ {} fps", gpu.adapter_name, vendor.encoder(), w, h, codec, s.fps);
         Ok((gpu, capture, converter, size_generation, (w, h), device, encoder))
     };
     // `_device` must outlive the encoder.
@@ -165,11 +197,11 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             shared.late_frames.fetch_add(1, Ordering::Relaxed);
         }
 
-        let generation = capture.latest.generation();
+        let generation = capture.latest().generation();
         if current.is_none() || generation != last_generation {
-            let latest = capture.latest.lock();
+            let latest = capture.latest().lock();
             if latest.size_generation != converter_generation {
-                crate::log::info!("video: capture size changed to {}x{}; scaling to {}x{}", latest.width, latest.height, out_size.0, out_size.1);
+                info!("video: capture size changed to {}x{}; scaling to {}x{}", latest.width, latest.height, out_size.0, out_size.1);
                 converter = Converter::new(&gpu, &latest.texture, (latest.width, latest.height), out_size, s.fps)?;
                 converter_generation = latest.size_generation;
             }
@@ -183,7 +215,7 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
         }
         encoder.encode(current.as_mut().context("no frame")?, i, &mut sink)?;
         shared.frames.fetch_add(1, Ordering::Relaxed);
-        shared.capture_resizes.store(capture.latest.resizes(), Ordering::Relaxed);
+        shared.capture_resizes.store(capture.latest().resizes(), Ordering::Relaxed);
         i += 1;
     }
     drop(current);

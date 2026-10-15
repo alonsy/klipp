@@ -4,11 +4,11 @@
   // recording with them. Also reachable from Settings ("Run setup again").
   import { onMount } from "svelte";
   import * as api from "../api";
-  import type { AudioDevice, SystemCheck } from "../api";
+  import type { AudioDevice, Drive, SystemCheck } from "../api";
   import HotkeyInput from "../HotkeyInput.svelte";
   import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
-  import { openPage, refreshRecorder, reload, toast } from "../state.svelte";
+  import { library, openPage, refreshRecorder, reload, toast } from "../state.svelte";
   import Segmented from "../ui/Segmented.svelte";
   import Slider from "../ui/Slider.svelte";
   import Toggle from "../ui/Toggle.svelte";
@@ -30,6 +30,12 @@
   let check = $state<SystemCheck | null>(null);
   let checkError = $state("");
   let devices = $state<AudioDevice[]>([]);
+  let drives = $state<Drive[]>([]);
+  /** The drive letter clips go on ("" until drives are known). */
+  let drive = $state("");
+  const chosenDrive = $derived(drives.find((d) => d.letter === drive));
+  /** Setup run again with a different drive than the current clips folder's. */
+  const driveChanged = $derived(rerun && !!drive && !library.clipsDir.toUpperCase().startsWith(drive));
   let finishing = $state(false);
 
   // Choices, preselected once the check is done.
@@ -46,6 +52,8 @@
     resolution: "native" as "native" | "1440p" | "1080p" | "720p",
     fps: 60,
     codec: "av1" as "av1" | "h264",
+    /** "" = the main display. */
+    monitor: "",
     hotkey: "Alt+F10",
     length: 60,
     autostart: true,
@@ -61,6 +69,13 @@
   onMount(() => {
     // Both take a moment; start them while Welcome is on screen.
     api.audioDevices().then((d) => (devices = d), () => {});
+    api.drives().then((list) => {
+      drives = list;
+      // Run again: where clips are now. First run: the drive with the most room.
+      const current = list.find((d) => library.clipsDir.toUpperCase().startsWith(d.letter));
+      const roomiest = [...list].sort((a, b) => b.freeGb - a.freeGb)[0];
+      drive = (rerun ? current : roomiest)?.letter ?? current?.letter ?? "";
+    }, () => {});
     api.systemCheck().then(
       (r) => {
         check = r;
@@ -74,6 +89,7 @@
         c.length = s.replay?.length_secs ?? c.length;
         c.cue = s.cue?.device ?? "";
         c.sound = s.cue?.enabled ?? true;
+        c.monitor = s.video?.monitor ?? "";
         c.volume = Number(s.cue?.volume ?? 0.6);
       }, () => {});
     }
@@ -120,14 +136,21 @@
   );
   const canAv1 = $derived(encodes("av1", heightOf(c.resolution)));
   const canH264 = $derived(encodes("h264", heightOf(c.resolution)));
-  const hasNvidia = $derived(!!check?.gpus.some((g) => g.vendor === "nvidia"));
   const canRecord = $derived(!!check && check.encoders.some((e) => e.ok));
+  /** Built-in graphics (shares the PC's memory): the recording GPU has under 1 GB of its own. */
+  const integrated = $derived.by(() => {
+    const gpu = check?.gpus.find((g) => g.name === check?.recordingGpu);
+    return !!gpu && gpu.vendor !== "nvidia" && gpu.vramMb < 1024;
+  });
   const refresh = $derived(check?.monitor?.refreshHz ?? 60);
 
   function recommend(r: SystemCheck) {
     const h = r.monitor?.height ?? 1080;
+    const gpu = r.gpus.find((g) => g.name === r.recordingGpu);
+    const builtIn = !!gpu && gpu.vendor !== "nvidia" && gpu.vramMb < 1024;
     // 4K and up records at 1440p by default: sharp, at a third of the memory.
-    c.resolution = h > 1440 ? "1440p" : "native";
+    // Built-in graphics record 1080p, which they can keep up with at 60 fps.
+    c.resolution = builtIn && h > 1080 ? "1080p" : h > 1440 ? "1440p" : "native";
     c.codec = encodes("av1", heightOf(c.resolution)) ? "av1" : "h264";
     c.fps = 60;
     c.cs2 = r.cs2;
@@ -174,6 +197,10 @@
   async function finish() {
     finishing = true;
     try {
+      if (chosenDrive) {
+        await api.createFolder(chosenDrive.folder);
+        await api.writeSettings([{ key: ["storage", "clips_dir"], value: chosenDrive.folder }]);
+      }
       await api.writeSettings([
         { key: ["audio", "sources"], value: sources() },
         { key: ["cue", "enabled"], value: c.sound },
@@ -182,6 +209,7 @@
         { key: ["video", "codec"], value: c.codec },
         { key: ["video", "resolution"], value: c.resolution },
         { key: ["video", "fps"], value: c.fps },
+        { key: ["video", "monitor"], value: c.monitor },
         { key: ["replay", "hotkey"], value: c.hotkey },
         { key: ["replay", "length_secs"], value: c.length },
         { key: ["auto_clip", "cs2", "enabled"], value: c.cs2 },
@@ -255,15 +283,17 @@
               <div class="checking"><span class="spinner"></span>Checking your graphics card…</div>
             {:else}
               <ul class="checks">
-                <li class:ok={hasNvidia && canRecord} class:bad={!canRecord}>
+                <li class:ok={canRecord} class:bad={!canRecord}>
                   <span class="mark"><Icon name={canRecord ? "check" : "warning"} size={16} /></span>
                   <div>
                     <b>Graphics card</b>
-                    <span>{check.recordingGpu ?? check.gpus[0]?.name ?? "Not found"}</span>
-                    {#if !canRecord && hasNvidia}
-                      <span class="note">Your screen runs on the processor's built-in graphics, not the NVIDIA card (most laptops are wired this way). Klipp can't record on built-in graphics yet; the next update adds it.</span>
-                    {:else if !canRecord}
-                      <span class="note">Klipp records with NVIDIA graphics cards for now; AMD and Intel are coming.</span>
+                    <span>{check.recordingGpu ?? check.gpus[0]?.name ?? "Not found"}{check.encoder ? ` · ${check.encoder}` : ""}</span>
+                    {#if !canRecord}
+                      <span class="note">
+                        {check.encoder
+                          ? "Klipp couldn't start this card's video encoder. A newer graphics driver often fixes that."
+                          : "This graphics card has no video encoder Klipp can use. Klipp records with NVIDIA, AMD and Intel graphics."}
+                      </span>
                     {/if}
                   </div>
                 </li>
@@ -272,7 +302,12 @@
                     <span class="mark"><Icon name={encodes("av1", nativeH) ? "check" : "info"} size={16} /></span>
                     <div>
                       <b>Video encoding</b>
-                      <span>{encodes("av1", nativeH) ? "AV1: small files at high quality" : "H.264 (AV1 needs a GeForce RTX 40 or newer)"}</span>
+                      <span>
+                        {encodes("av1", nativeH)
+                          ? "AV1: small files at high quality"
+                          : "H.264 (AV1 needs a GeForce RTX 40, Radeon RX 7000 or 700M, Intel Arc or newer)"}
+                      </span>
+                      {#if integrated}<span>Built-in graphics: 1080p is suggested so recording keeps up at 60 fps.</span>{/if}
                     </div>
                   </li>
                 {/if}
@@ -359,7 +394,9 @@
             </div>
             {#if c.sound}
               <label class="row sub">
-                <span class="what"><span>Plays on: pick your headset, not something Klipp records</span></span>
+                <span class="what"
+                  ><span>{c.sonar ? "Plays on: pick your headset, not a Sonar device" : "Plays on (Klipp keeps it out of your clips)"}</span></span
+                >
                 <select bind:value={c.cue}>
                   <option value="">Windows default</option>
                   {#each playback as name (name)}<option value={name}>{name}</option>{/each}
@@ -377,6 +414,15 @@
           {:else if step === "video"}
             <h1>Video</h1>
             <p class="lead">Preselected for your screen and graphics card. Options it can't record are marked.</p>
+            {#if (check?.monitors.length ?? 0) > 1}
+              <label class="row">
+                <span class="what"><b>Screen</b><span>The one your games run on</span></span>
+                <select bind:value={c.monitor}>
+                  <option value="">Main display ({check?.monitors[0]?.name})</option>
+                  {#each check?.monitors ?? [] as m (m.id)}<option value={m.id}>{m.name} · {m.width} × {m.height}</option>{/each}
+                </select>
+              </label>
+            {/if}
             <div class="row">
               <span class="what"><b>Resolution</b><span>{c.resolution === "native" ? `Your screen's size, ${check?.monitor?.width ?? ""} × ${nativeH}` : "Scaled down: smaller files and less memory"}</span></span>
               <Segmented
@@ -411,6 +457,22 @@
           {:else if step === "saving"}
             <h1>Saving clips</h1>
             <p class="lead">One key saves the last moments, from anywhere, even in fullscreen games.</p>
+            {#if drives.length > 0}
+              <label class="row">
+                <span class="what">
+                  <b>Save clips on</b>
+                  <span>
+                    {chosenDrive ? `Klipp makes a folder there: ${chosenDrive.folder}` : ""}
+                    {driveChanged ? " Clips already saved stay where they are; Settings → Storage can move them." : ""}
+                  </span>
+                </span>
+                <select bind:value={drive}>
+                  {#each drives as d (d.letter)}
+                    <option value={d.letter}>{d.letter} {d.label || (d.system ? "Windows" : "Drive")} · {d.freeGb} GB free</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
             <div class="row">
               <span class="what"><b>Save hotkey</b></span>
               <HotkeyInput value={c.hotkey} onchange={(h) => (c.hotkey = h)} />
@@ -699,12 +761,14 @@
     margin-top: 12px;
   }
 
+  /* Rows share the option card's side padding, so labels and switches line
+     up with the card's whether or not a card is above them. */
   .option,
   .row {
     display: flex;
     align-items: center;
     gap: 20px;
-    padding: 14px 0;
+    padding: 14px 16px;
     border-bottom: 1px solid var(--line);
   }
 

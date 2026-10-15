@@ -126,6 +126,7 @@ impl Saver {
                         // Hotkey clips played their sound at the press already.
                         if kind == ClipKind::Auto {
                             cue.play(Sound::AutoSaved);
+                            crate::overlay::post(crate::overlay::Indicator::AutoSaved);
                         }
                         info!(
                             "saved {} ({:.1} s, {:.1} MB) in {} ms",
@@ -143,6 +144,7 @@ impl Saver {
                     }
                     Err(e) => {
                         cue.play(Sound::Error);
+                        crate::overlay::post(crate::overlay::Indicator::Failed);
                         warning!("saving clip failed: {e:#}");
                     }
                 }

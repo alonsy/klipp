@@ -156,7 +156,12 @@ impl Job {
         }
         let (events, context) = {
             let mut tracker = self.tracker.lock().unwrap();
-            (tracker.update(&json, arrived), tracker.context.clone())
+            let events = tracker.update(&json, arrived);
+            if tracker.match_started {
+                info!("cs2: a match started on {}", tracker.context.map);
+                crate::overlay::post(crate::overlay::Indicator::MatchStarted);
+            }
+            (events, tracker.context.clone())
         };
         if !context.map.is_empty() {
             *self.context.lock().unwrap() = MatchContext { seen: arrived, ..context };
@@ -293,14 +298,29 @@ pub struct Tracker {
     round_phase: String,
     bomb: String,
     context: MatchContext,
+    /// The map's phase ("warmup", "live", "gameover"…), "" in the menus.
+    map_phase: String,
+    /// The last update started a match (a map loaded, or the same map again
+    /// after a match ended): the "Auto-clips ON" indicator's cue.
+    pub match_started: bool,
 }
 
 impl Tracker {
     pub fn update(&mut self, json: &Value, now: i64) -> Vec<GameEvent> {
         let mut events = Vec::new();
+        self.match_started = false;
         if let Some(map) = json["map"]["name"].as_str() {
+            let phase = json["map"]["phase"].as_str().unwrap_or_default();
+            let new_map = map != self.context.map;
+            let rematch = self.map_phase == "gameover" && phase != "gameover";
+            self.match_started = (new_map || rematch) && phase != "gameover";
+            self.map_phase = phase.to_string();
             self.context.map = map.to_string();
             self.context.mode = json["map"]["mode"].as_str().unwrap_or_default().to_string();
+        } else if !json["provider"].is_null() {
+            // In the menus: whatever map loads next is a new match, even the same one.
+            self.context.map.clear();
+            self.map_phase.clear();
         }
         self.round_events(json, now, &mut events);
         self.player_events(json, now, &mut events);

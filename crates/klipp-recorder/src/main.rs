@@ -12,16 +12,21 @@ mod capture;
 mod clock;
 mod cs2;
 mod cue;
+mod duplication;
 mod events;
 mod games;
 mod gpu;
 mod hotkey;
 mod log;
 mod mmcss;
+mod monitors;
+mod overlay;
 mod probe;
+mod process_loopback;
 mod recorder;
 mod replay;
 mod save;
+mod selftest;
 mod settings;
 mod state;
 mod stats;
@@ -29,6 +34,7 @@ mod timeline;
 mod tray;
 mod update;
 mod video;
+mod watchdog;
 mod wasapi;
 
 use std::fs;
@@ -61,7 +67,10 @@ struct Args {
 }
 
 const USAGE: &str = "usage: klipp-recorder [--settings FILE]\n       \
-klipp-recorder --list-audio | --probe | --cleanup | --check-update\n       \
+klipp-recorder --list-audio | --list-monitors | --cleanup | --check-update\n       \
+klipp-recorder --probe [--monitor ID] [--gpu NAME]\n       \
+klipp-recorder --test-recording SECONDS FILE [--settings FILE]\n       \
+klipp-recorder --show-indicator on|saved|failed\n       \
 klipp-recorder --play-sound [error] [--device NAME] [--volume 0-1]\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
@@ -77,7 +86,54 @@ fn parse_args() -> Result<Args> {
                 std::process::exit(0);
             }
             "--probe" => {
-                probe::run()?;
+                // Optional: --monitor ID (default the main display), --gpu NAME (test another card).
+                let (mut monitor, mut gpu) = (String::new(), String::new());
+                while let Some(opt) = it.next() {
+                    match opt.as_str() {
+                        "--monitor" => monitor = it.next().context("--monitor needs a value")?,
+                        "--gpu" => gpu = it.next().context("--gpu needs a value")?,
+                        other => bail!("unknown argument {other}\n{USAGE}"),
+                    }
+                }
+                probe::run(&monitor, &gpu)?;
+                std::process::exit(0);
+            }
+            "--test-recording" => {
+                let seconds: u32 = it.next().context("--test-recording needs SECONDS FILE")?.parse()?;
+                let out = PathBuf::from(it.next().context("--test-recording needs SECONDS FILE")?);
+                let mut path = a.settings.clone();
+                while let Some(opt) = it.next() {
+                    match opt.as_str() {
+                        "--settings" => path = Some(PathBuf::from(it.next().context("--settings needs a value")?)),
+                        other => bail!("unknown argument {other}\n{USAGE}"),
+                    }
+                }
+                let settings = match path {
+                    Some(p) => Settings::load_or_create(&p)?,
+                    None => Settings::load_or_create(&Settings::default_path()?)?,
+                };
+                selftest::run(seconds.clamp(1, 120), &out, &settings)?;
+                std::process::exit(0);
+            }
+            "--test-audio" => {
+                let seconds: u32 = it.next().context("--test-audio needs SECONDS FILE")?.parse()?;
+                let out = PathBuf::from(it.next().context("--test-audio needs SECONDS FILE")?);
+                selftest::run_audio(seconds.clamp(2, 60), &out)?;
+                std::process::exit(0);
+            }
+            "--show-indicator" => {
+                let pill = match it.next().as_deref() {
+                    Some("on") => overlay::Pill::AutoClipsOn,
+                    Some("saved") => overlay::Pill::Saved,
+                    Some("failed") => overlay::Pill::Failed,
+                    _ => bail!("--show-indicator needs on, saved or failed\n{USAGE}"),
+                };
+                let settings = Settings::load_or_create(&a.settings.clone().map_or_else(Settings::default_path, Ok)?).unwrap_or_default();
+                overlay::preview(pill, monitors::find(&settings.video.monitor).0)?;
+                std::process::exit(0);
+            }
+            "--list-monitors" => {
+                println!("{}", serde_json::to_string(&monitors::list())?);
                 std::process::exit(0);
             }
             "--cleanup" => {
@@ -248,6 +304,20 @@ fn open_path(path: &Path) {
     }
 }
 
+/// Shows an indicator if the settings want this one: "Auto-clips ON" needs
+/// CS2 auto-clips on; auto-clip saves follow "also for auto-clips".
+fn indicate(indicators: &mut overlay::Indicators, s: &Settings, what: overlay::Indicator) {
+    use overlay::{Indicator, Pill};
+    let pill = match what {
+        Indicator::MatchStarted if s.indicators.autoclips_on && s.auto_clip.enabled && s.auto_clip.cs2.enabled => Pill::AutoClipsOn,
+        Indicator::Saved if s.indicators.saves => Pill::Saved,
+        Indicator::AutoSaved if s.indicators.saves && s.cue.auto_clips => Pill::Saved,
+        Indicator::Failed if s.indicators.saves => Pill::Failed,
+        _ => return,
+    };
+    indicators.show(pill, monitors::find(&s.video.monitor).0);
+}
+
 fn open_url(url: &str) {
     unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
 }
@@ -257,6 +327,10 @@ fn tooltip(s: &Settings) -> String {
 }
 
 fn main() {
+    // Real pixels on every monitor: sharp indicators and tray icon at any display scaling.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
     attach_console();
     let log_path = log::init();
     if let Err(e) = run(log_path) {
@@ -283,6 +357,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         Settings::default()
     });
     MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+    overlay::set_main_thread();
+    let mut indicators = overlay::Indicators::default();
     unsafe {
         // Only works when attached to a console; Ctrl+C there quits cleanly.
         let _ = SetConsoleCtrlHandler(Some(on_console_ctrl), true);
@@ -321,12 +397,20 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         }
         match msg.message {
             WM_HOTKEY if msg.wParam.0 == HOTKEY_SAVE as usize => {
-                recorder.press();
+                let ok = recorder.press();
+                indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
                 schedule_save(&mut pending_save);
             }
+            overlay::WM_INDICATOR => {
+                if let Some(what) = overlay::Indicator::from_wparam(msg.wParam.0) {
+                    indicate(&mut indicators, recorder.settings(), what);
+                }
+            }
+            WM_TIMER if indicators.owns(msg.wParam.0) => indicators.tick(),
             WM_TRAY_COMMAND => match Command::from_wparam(msg.wParam.0) {
                 Some(Command::SaveClip) => {
-                    recorder.press();
+                    let ok = recorder.press();
+                    indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
                     schedule_save(&mut pending_save);
                 }
                 Some(Command::OpenClips) => {
@@ -400,7 +484,10 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                     }
                 }
             }
-            WM_TIMER if msg.wParam.0 == games_timer => recorder.games.poll(&recorder.settings().games.clone()),
+            WM_TIMER if msg.wParam.0 == games_timer => {
+                recorder.games.poll(&recorder.settings().games.clone());
+                recorder.check_health();
+            }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {
                 let _ = unsafe { KillTimer(None, msg.wParam.0) };

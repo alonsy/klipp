@@ -18,6 +18,21 @@ use windows::core::{IInspectable, Interface, Ref, factory};
 
 use crate::gpu::{Gpu, create_bgra_texture};
 
+/// Either capture method: both keep the newest frame in a `LatestFrame`.
+pub enum Capture {
+    Wgc(MonitorCapture),
+    Duplication(crate::duplication::DuplicationCapture),
+}
+
+impl Capture {
+    pub fn latest(&self) -> &Arc<LatestFrame> {
+        match self {
+            Capture::Wgc(c) => &c.latest,
+            Capture::Duplication(c) => &c.latest,
+        }
+    }
+}
+
 const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
 /// Our copy of the newest captured frame. Replaced (with a new size) when the
@@ -44,6 +59,27 @@ unsafe impl Send for LatestFrame {}
 unsafe impl Sync for LatestFrame {}
 
 impl LatestFrame {
+    pub fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            latest: Mutex::new(Latest { texture: create_bgra_texture(device, width, height)?, width, height, size_generation: 0 }),
+            generation: AtomicU64::new(0),
+            resizes: AtomicU64::new(0),
+        }))
+    }
+
+    /// A new frame is in the texture.
+    pub fn publish(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// The capture size changed: a new texture of the new size.
+    pub fn resize(&self, latest: &mut Latest, device: &ID3D11Device, width: u32, height: u32) -> Result<()> {
+        let texture = create_bgra_texture(device, width, height)?;
+        *latest = Latest { texture, width, height, size_generation: latest.size_generation + 1 };
+        self.resizes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     /// Increases every time a new frame lands in the texture. 0 = nothing captured yet.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
@@ -82,16 +118,7 @@ impl MonitorCapture {
         let size = item.Size()?;
         let (width, height) = (size.Width as u32, size.Height as u32);
 
-        let latest = Arc::new(LatestFrame {
-            latest: Mutex::new(Latest {
-                texture: create_bgra_texture(&gpu.device, width, height)?,
-                width,
-                height,
-                size_generation: 0,
-            }),
-            generation: AtomicU64::new(0),
-            resizes: AtomicU64::new(0),
-        });
+        let latest = LatestFrame::new(&gpu.device, width, height)?;
 
         let dxgi: IDXGIDevice = gpu.device.cast()?;
         let winrt_device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? }.cast()?;
@@ -119,17 +146,14 @@ impl MonitorCapture {
                     // size, so skip it, resize the pool, and replace our copy.
                     frame.Close()?;
                     pool.Recreate(&cb.winrt_device, FORMAT, 2, content)?;
-                    if let Ok(texture) = create_bgra_texture(&cb.device, w, h) {
-                        *latest = Latest { texture, width: w, height: h, size_generation: latest.size_generation + 1 };
-                        shared.resizes.fetch_add(1, Ordering::Relaxed);
-                    }
+                    let _ = shared.resize(&mut latest, &cb.device, w, h);
                     return Ok(());
                 }
                 let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
                 let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
                 unsafe { cb.context.CopyResource(&latest.texture, &source) };
                 drop(latest);
-                shared.generation.fetch_add(1, Ordering::Release);
+                shared.publish();
                 frame.Close()
             },
         ))?;

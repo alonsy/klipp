@@ -10,7 +10,7 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
-  import { library, loadPrefs, openClip, openPage, refreshRecorder, reload, setArrivals, toast, ui } from "./lib/state.svelte";
+  import { library, loadPrefs, openClip, openPage, recorder, refreshRecorder, reload, setArrivals, toast, ui } from "./lib/state.svelte";
 
   async function handle(request: api.OpenRequest) {
     if (request.page === "settings") openPage("settings");
@@ -32,6 +32,7 @@
     loadPrefs();
     refreshRecorder();
     api.setupNeeded().then((needed) => {
+      recorder.autoRestart = !needed;
       if (needed) {
         ui.setupRerun = false;
         ui.page = "setup";

@@ -1,4 +1,5 @@
-//! Hardware video encoding (NVENC) from D3D11 textures.
+//! Hardware video encoding from D3D11 textures, on the graphics card's own
+//! encoder: NVIDIA NVENC, AMD AMF or Intel Quick Sync.
 
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -16,25 +17,121 @@ pub enum VideoCodec {
     H264,
 }
 
-impl VideoCodec {
-    fn encoder_name(self) -> &'static CStr {
+/// Whose hardware encoder: the one on the graphics card that records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vendor {
+    Nvidia,
+    Amd,
+    Intel,
+}
+
+impl Vendor {
+    /// From a PCI vendor id (`DXGI_ADAPTER_DESC1::VendorId`); `None` for
+    /// cards without an encoder Klipp can use.
+    pub fn from_pci_id(id: u32) -> Option<Self> {
+        match id {
+            0x10DE => Some(Self::Nvidia),
+            0x1002 | 0x1022 => Some(Self::Amd),
+            0x8086 => Some(Self::Intel),
+            _ => None,
+        }
+    }
+
+    /// The encoder's name, for logs and the setup screen.
+    pub fn encoder(self) -> &'static str {
         match self {
-            VideoCodec::Av1 => c"av1_nvenc",
-            VideoCodec::H264 => c"h264_nvenc",
+            Self::Nvidia => "NVENC",
+            Self::Amd => "AMD AMF",
+            Self::Intel => "Intel Quick Sync",
         }
     }
 }
 
+fn encoder_name(vendor: Vendor, codec: VideoCodec) -> &'static CStr {
+    match (vendor, codec) {
+        (Vendor::Nvidia, VideoCodec::Av1) => c"av1_nvenc",
+        (Vendor::Nvidia, VideoCodec::H264) => c"h264_nvenc",
+        (Vendor::Amd, VideoCodec::Av1) => c"av1_amf",
+        (Vendor::Amd, VideoCodec::H264) => c"h264_amf",
+        (Vendor::Intel, VideoCodec::Av1) => c"av1_qsv",
+        (Vendor::Intel, VideoCodec::H264) => c"h264_qsv",
+    }
+}
+
+/// Textures in the Quick Sync pool: what the encoder holds while working
+/// (its depth is set to 2), plus the frame being shown and the next one.
+const QSV_POOL: i32 = 8;
+
 #[derive(Clone, Debug)]
 pub struct VideoEncoderConfig {
+    pub vendor: Vendor,
     pub codec: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// NVENC constant-quality target; lower is better quality.
+    /// Constant-quality target on NVENC's scale (0–51, lower is better
+    /// quality); AMD's scale is mapped from it.
     pub quality: u8,
     /// Hard bitrate ceiling in bits/s. Keeps the replay buffer's size predictable.
     pub max_bitrate: u32,
+}
+
+/// Quick Sync takes its own frame type: a Quick Sync device made from our
+/// D3D11 device, and a view of our texture pool as Quick Sync surfaces. Each
+/// frame is shared, not copied.
+struct Qsv {
+    device: *mut ff::AVBufferRef,
+    frames: *mut ff::AVBufferRef,
+}
+
+impl Qsv {
+    fn derive(device: &HwDevice, d3d11_frames: *mut ff::AVBufferRef) -> Result<Self> {
+        unsafe {
+            let mut qsv = Self { device: ptr::null_mut(), frames: ptr::null_mut() };
+            check(
+                ff::av_hwdevice_ctx_create_derived(&mut qsv.device, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_QSV, device.r, 0),
+                "starting Quick Sync on this graphics card",
+            )?;
+            check(
+                ff::av_hwframe_ctx_create_derived(&mut qsv.frames, ff::AVPixelFormat::AV_PIX_FMT_QSV, qsv.device, d3d11_frames, 0),
+                "sharing textures with Quick Sync",
+            )?;
+            Ok(qsv)
+        }
+    }
+
+    /// `frame` as a Quick Sync surface (it keeps the D3D11 frame alive).
+    fn map(&self, frame: *const ff::AVFrame) -> Result<*mut ff::AVFrame> {
+        unsafe {
+            let mut mapped = ff::av_frame_alloc();
+            if mapped.is_null() {
+                bail!("av_frame_alloc returned null");
+            }
+            (*mapped).format = ff::AVPixelFormat::AV_PIX_FMT_QSV as i32;
+            (*mapped).hw_frames_ctx = ff::av_buffer_ref(self.frames);
+            let flags = ff::AV_HWFRAME_MAP_READ as i32 | ff::AV_HWFRAME_MAP_DIRECT as i32;
+            if let Err(e) = check(ff::av_hwframe_map(mapped, frame, flags), "handing the frame to Quick Sync") {
+                ff::av_frame_free(&mut mapped);
+                return Err(e);
+            }
+            Ok(mapped)
+        }
+    }
+}
+
+impl Drop for Qsv {
+    fn drop(&mut self) {
+        unsafe {
+            ff::av_buffer_unref(&mut self.frames);
+            ff::av_buffer_unref(&mut self.device);
+        }
+    }
+}
+
+/// AMD's QVBR quality level (1–51, higher is better) for an NVENC-scale
+/// constant-quality value (lower is better): both are QP-like, mirrored.
+fn amf_quality_level(nvenc_cq: u8) -> u8 {
+    52u8.saturating_sub(nvenc_cq).clamp(1, 51)
 }
 
 /// An encoded packet. Only valid inside the sink callback it was passed to.
@@ -79,6 +176,8 @@ pub struct VideoEncoder {
     ctx: *mut ff::AVCodecContext,
     frames: *mut ff::AVBufferRef,
     pkt: *mut ff::AVPacket,
+    /// Intel only.
+    qsv: Option<Qsv>,
 }
 
 // SAFETY: the encoder is only used from one thread at a time; FFmpeg codec
@@ -88,16 +187,18 @@ unsafe impl Send for VideoEncoder {}
 impl VideoEncoder {
     pub fn new(device: &HwDevice, cfg: &VideoEncoderConfig) -> Result<Self> {
         unsafe {
-            let codec = ff::avcodec_find_encoder_by_name(cfg.codec.encoder_name().as_ptr());
+            let name = encoder_name(cfg.vendor, cfg.codec);
+            let codec = ff::avcodec_find_encoder_by_name(name.as_ptr());
             if codec.is_null() {
-                bail!("{:?} is not available in this FFmpeg build", cfg.codec.encoder_name());
+                bail!("{name:?} is not available in this FFmpeg build");
             }
             // Built first so Drop cleans up whatever was allocated if a later step fails.
-            let mut enc = Self { ctx: ff::avcodec_alloc_context3(codec), frames: ptr::null_mut(), pkt: ff::av_packet_alloc() };
+            let mut enc = Self { ctx: ff::avcodec_alloc_context3(codec), frames: ptr::null_mut(), pkt: ff::av_packet_alloc(), qsv: None };
             if enc.ctx.is_null() || enc.pkt.is_null() {
                 bail!("out of memory while creating the encoder");
             }
-            enc.frames = hw::alloc_nv12_frames(device, cfg.width as i32, cfg.height as i32)?;
+            let intel = cfg.vendor == Vendor::Intel;
+            enc.frames = hw::alloc_nv12_frames(device, cfg.width as i32, cfg.height as i32, if intel { QSV_POOL } else { 0 })?;
 
             let fps = cfg.fps as i32;
             let c = &mut *enc.ctx;
@@ -105,12 +206,19 @@ impl VideoEncoder {
             c.height = cfg.height as i32;
             c.time_base = ff::AVRational { num: 1, den: fps };
             c.framerate = ff::AVRational { num: fps, den: 1 };
-            c.pix_fmt = ff::AVPixelFormat::AV_PIX_FMT_D3D11;
-            c.hw_frames_ctx = ff::av_buffer_ref(enc.frames);
+            if intel {
+                let qsv = Qsv::derive(device, enc.frames)?;
+                c.pix_fmt = ff::AVPixelFormat::AV_PIX_FMT_QSV;
+                c.hw_frames_ctx = ff::av_buffer_ref(qsv.frames);
+                enc.qsv = Some(qsv);
+            } else {
+                // NVENC and AMF read the D3D11 textures directly.
+                c.pix_fmt = ff::AVPixelFormat::AV_PIX_FMT_D3D11;
+                c.hw_frames_ctx = ff::av_buffer_ref(enc.frames);
+            }
             // A keyframe every second, so a saved clip starts within 1 s of the requested time.
             c.gop_size = fps;
             c.max_b_frames = 0;
-            c.bit_rate = 0;
             c.rc_max_rate = cfg.max_bitrate as i64;
             c.rc_buffer_size = cfg.max_bitrate.saturating_mul(2).min(i32::MAX as u32) as i32;
             c.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
@@ -120,14 +228,38 @@ impl VideoEncoder {
             // MP4 stores codec headers once, up front.
             c.flags |= ff::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
 
-            set_opt(c.priv_data, "preset", "p4")?;
-            set_opt(c.priv_data, "tune", "hq")?;
-            set_opt(c.priv_data, "rc", "vbr")?;
-            set_opt(c.priv_data, "cq", &cfg.quality.to_string())?;
-            // Each NVENC surface holds an output buffer in system RAM (~9.5 MB at
-            // 1440p). FFmpeg defaults to 4; we feed one frame at a time and drain
-            // immediately, so 2 keeps up at 60 fps and saves ~19 MB.
-            set_opt(c.priv_data, "surfaces", "2")?;
+            match cfg.vendor {
+                Vendor::Nvidia => {
+                    // Constant quality, capped at the ceiling.
+                    c.bit_rate = 0;
+                    set_opt(c.priv_data, "preset", "p4")?;
+                    set_opt(c.priv_data, "tune", "hq")?;
+                    set_opt(c.priv_data, "rc", "vbr")?;
+                    set_opt(c.priv_data, "cq", &cfg.quality.to_string())?;
+                    // Each NVENC surface holds an output buffer in system RAM (~9.5 MB at
+                    // 1440p). FFmpeg defaults to 4; we feed one frame at a time and drain
+                    // immediately, so 2 keeps up at 60 fps and saves ~19 MB.
+                    set_opt(c.priv_data, "surfaces", "2")?;
+                }
+                Vendor::Amd => {
+                    // Quality-defined variable bitrate (AMD's constant quality), peaking at the ceiling.
+                    c.bit_rate = cfg.max_bitrate as i64 * 3 / 5;
+                    set_opt(c.priv_data, "usage", "transcoding")?;
+                    set_opt(c.priv_data, "quality", "balanced")?;
+                    set_opt(c.priv_data, "rc", "qvbr")?;
+                    set_opt(c.priv_data, "qvbr_quality_level", &amf_quality_level(cfg.quality).to_string())?;
+                    set_opt(c.priv_data, "bf", "0")?;
+                    // Frames in flight; each holds GPU and system memory. We drain every frame.
+                    set_opt(c.priv_data, "async_depth", "2")?;
+                }
+                Vendor::Intel => {
+                    // Plain variable bitrate: the mode every Quick Sync generation and
+                    // codec supports (AV1 has no quality-defined mode on all of them).
+                    c.bit_rate = cfg.max_bitrate as i64 * 3 / 5;
+                    set_opt(c.priv_data, "preset", "veryfast")?;
+                    set_opt(c.priv_data, "async_depth", "2")?;
+                }
+            }
 
             check(ff::avcodec_open2(enc.ctx, codec, ptr::null_mut()), "avcodec_open2")?;
             Ok(enc)
@@ -145,7 +277,18 @@ impl VideoEncoder {
         unsafe {
             let f = frame.as_ptr();
             (*f).pts = pts;
-            check(ff::avcodec_send_frame(self.ctx, f), "avcodec_send_frame")?;
+            match &self.qsv {
+                Some(qsv) => {
+                    let mut mapped = qsv.map(f)?;
+                    (*mapped).pts = pts;
+                    let sent = check(ff::avcodec_send_frame(self.ctx, mapped), "avcodec_send_frame");
+                    ff::av_frame_free(&mut mapped);
+                    sent?;
+                }
+                None => {
+                    check(ff::avcodec_send_frame(self.ctx, f), "avcodec_send_frame")?;
+                }
+            }
         }
         self.drain(sink)
     }
@@ -179,6 +322,8 @@ impl Drop for VideoEncoder {
     fn drop(&mut self) {
         unsafe {
             ff::avcodec_free_context(&mut self.ctx);
+            // The Quick Sync view of the pool goes before the pool itself.
+            self.qsv = None;
             ff::av_buffer_unref(&mut self.frames);
             ff::av_packet_free(&mut self.pkt);
         }

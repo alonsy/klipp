@@ -2,9 +2,10 @@
   // "Klipp 0.2.1 is ready": checks GitHub releases when the window opens (and
   // every few hours while it stays open, or right away when the tray's
   // "Update to Klipp …" opened it). One click downloads the signed installer,
-  // which closes Klipp, updates it and opens it again. Updating restarts the
-  // recorder, which clears the replay buffer, so the card says so, and warns
-  // while CS2 is running.
+  // which runs without a window of its own (the updater's "quiet" mode): this
+  // card shows the download and then "Installing…", Klipp closes, and it
+  // opens again on the new version. Updating restarts the recorder, which
+  // clears the replay buffer, so the card says so, and warns while CS2 is running.
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
   import * as api from "./api";
@@ -15,6 +16,7 @@
 
   let update = $state<Update | null>(null);
   let progress = $state<number | null>(null);
+  let installing = $state(false);
   let inGame = $state(false);
 
   onMount(() => {
@@ -56,10 +58,14 @@
         else if (e.event === "Progress") {
           received += e.data.chunkLength;
           progress = total ? received / total : 0;
+        } else if (e.event === "Finished") {
+          progress = 1;
+          installing = true;
         }
       });
     } catch (e) {
       progress = null;
+      installing = false;
       toast(`Couldn't update: ${e}`);
     }
   }
@@ -79,6 +85,9 @@
         <span>Takes a few seconds. Recording restarts, so the last {recorder.lengthSecs} seconds are cleared.</span>
         <button class="primary" onclick={install}>Update now</button>
       {/if}
+    {:else if installing}
+      <span>Installing… Klipp closes and opens again in a few seconds.</span>
+      <div class="bar"><div class="fill busy"></div></div>
     {:else}
       <span class="mono">Downloading… {Math.round(progress * 100)}%</span>
       <div class="bar"><div class="fill" style="width: {progress * 100}%"></div></div>
@@ -134,6 +143,21 @@
     height: 100%;
     background: var(--accent);
     transition: width 0.2s linear;
+  }
+
+  /* Installing has no progress to report: a sweep instead. */
+  .fill.busy {
+    width: 35%;
+    animation: sweep 1.1s ease-in-out infinite;
+  }
+
+  @keyframes sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(290%);
+    }
   }
 
   @keyframes in {

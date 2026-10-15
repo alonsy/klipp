@@ -77,6 +77,9 @@ impl OpenRequest {
 struct RecorderStatus {
     running: bool,
     autostart: bool,
+    /// What the recorder's watchdog reports: "stopped" (video restarting) or
+    /// "slow" (can't keep up with the video settings).
+    problem: Option<String>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -222,6 +225,24 @@ async fn system_check() -> CmdResult<Value> {
     blocking(move || setup::system_check(&config.clips_dir, &config.log_dir)).await
 }
 
+/// The PC's drives, for setup's "Save clips on".
+#[tauri::command]
+fn drives() -> Vec<Value> {
+    setup::drives()
+}
+
+/// Makes the clips folder setup chose, so it's there before the first clip.
+#[tauri::command]
+fn create_folder(path: String) -> CmdResult<()> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("couldn't create {path}: {e}"))
+}
+
+/// The monitors Klipp can record, main display first (Settings → Video).
+#[tauri::command]
+async fn monitors() -> CmdResult<Value> {
+    blocking(setup::monitors).await
+}
+
 /// "Copy details": the PC, setup's last check, key settings and the log's end.
 #[tauri::command]
 async fn support_details(handle: AppHandle) -> CmdResult<String> {
@@ -233,6 +254,12 @@ async fn support_details(handle: AppHandle) -> CmdResult<String> {
 #[tauri::command]
 fn play_sound(device: String, volume: f64, error: bool) -> CmdResult<()> {
     lifecycle::play_sound(&device, volume, error).map_err(err)
+}
+
+/// Flashes an on-screen indicator (Settings → General → On screen).
+#[tauri::command]
+fn preview_indicator(kind: String) -> CmdResult<()> {
+    lifecycle::preview_indicator(&kind).map_err(err)
 }
 
 /// A game Klipp records is running (updating then would cost the replay buffer).
@@ -276,7 +303,13 @@ fn arriving() -> Value {
 
 #[tauri::command]
 fn recorder_status() -> RecorderStatus {
-    RecorderStatus { running: lifecycle::recorder_running(), autostart: lifecycle::autostart_enabled() }
+    let running = lifecycle::recorder_running();
+    let problem = running
+        .then(|| std::fs::read(config::load().log_dir.join("health.json")).ok())
+        .flatten()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v["problem"].as_str().map(String::from));
+    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem }
 }
 
 #[tauri::command]
@@ -424,7 +457,11 @@ fn main() {
             game_running,
             free_space,
             plan_move,
-            move_clips
+            move_clips,
+            monitors,
+            drives,
+            create_folder,
+            preview_indicator
         ])
         .build(tauri::generate_context!())
         .expect("Klipp failed to start");

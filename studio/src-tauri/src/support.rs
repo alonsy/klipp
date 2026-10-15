@@ -66,7 +66,8 @@ fn describe_check(out: &mut String, check: &Value) {
         (Some(w), Some(h), Some(hz)) => format!("{w} × {h} at {hz} Hz"),
         _ => "unknown".into(),
     };
-    let _ = writeln!(out, "Records on: {} · screen {screen}", check["recordingGpu"].as_str().unwrap_or("nothing found"));
+    let encoder = check["encoder"].as_str().map(|e| format!(" ({e})")).unwrap_or_default();
+    let _ = writeln!(out, "Records on: {}{encoder} · screen {screen}", check["recordingGpu"].as_str().unwrap_or("nothing found"));
     for codec in ["av1", "h264"] {
         let tries: Vec<&Value> = check["encoders"].as_array().into_iter().flatten().filter(|e| e["codec"] == codec).collect();
         if tries.is_empty() {

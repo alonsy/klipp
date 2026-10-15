@@ -124,7 +124,10 @@
     top: 0;
     left: 0;
     cursor: pointer;
-    contain: layout paint;
+    /* Layout only: paint containment would clip the card to its rounded
+       shape, shaving the corner off the summary's first letter (the text
+       sits at the card's bottom edge). The thumbnail clips itself. */
+    contain: layout;
     border-radius: var(--radius);
     outline: 2px solid transparent;
     outline-offset: 3px;

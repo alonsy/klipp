@@ -73,7 +73,23 @@
   <footer>
     <UpdateCard />
     <LowSpaceCard />
-    {#if recorder.running}
+    {#if recorder.running && recorder.problem === "slow"}
+      <button class="status warn" onclick={() => openPage("settings", "video")} title="Video settings">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>Can't keep up</b>
+          <span>Clips may stutter. Try a lower resolution or frame rate.</span>
+        </span>
+      </button>
+    {:else if recorder.running && recorder.problem === "stopped"}
+      <button class="status warn" onclick={() => openPage("settings", "about")} title="About, logs">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>Restarting video…</b>
+          <span>The screen changed or the graphics driver reset.</span>
+        </span>
+      </button>
+    {:else if recorder.running}
       <button class="status" onclick={() => openPage("settings", "recording")} title="Recording settings">
         <span class="pulse"></span>
         <span class="status-text">
@@ -211,6 +227,16 @@
 
   .status.off .status-text span {
     color: var(--accent);
+  }
+
+  /* The watchdog's warnings: amber, and the hint may wrap. */
+  .status.warn {
+    --accent: #f2c84b;
+    background: color-mix(in srgb, #f2c84b 9%, var(--surface));
+  }
+
+  .status.warn .status-text span {
+    white-space: normal;
   }
 
   .pulse,

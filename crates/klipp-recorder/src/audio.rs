@@ -18,13 +18,16 @@ use crate::state::Shared;
 use crate::timeline::Timeline;
 use crate::wasapi::{Capturer, SourceKind};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AudioSourceConfig {
     /// Track name in the clip, e.g. "Game".
     pub title: String,
     /// Part of the device's name, e.g. "Sonar - Gaming".
     pub device: String,
     pub kind: SourceKind,
+    /// The save sound plays on this same device: record everything but Klipp
+    /// instead (`process_loopback`), unless an audio router is installed.
+    pub skip_klipp: bool,
 }
 
 /// Buffer stream id of the premixed track; sources follow from 2.
@@ -52,6 +55,24 @@ struct Source {
 
 impl Source {
     fn try_open(&mut self, quiet: bool) {
+        if self.cfg.skip_klipp {
+            let devices = crate::wasapi::list_devices().unwrap_or_default();
+            let playback: Vec<String> = devices.into_iter().filter(|d| d.kind == SourceKind::Loopback).map(|d| d.name).collect();
+            if crate::process_loopback::router_present(&playback) {
+                if !quiet {
+                    info!("audio: {}: an audio router is installed, so the save sound should play on another device", self.cfg.title);
+                }
+            } else {
+                match Capturer::open_excluding_klipp() {
+                    Ok(c) => {
+                        info!("audio: {} <- everything this PC plays, except Klipp's own sounds", self.cfg.title);
+                        self.capturer = Some(c);
+                        return;
+                    }
+                    Err(e) => warning!("audio: can't leave Klipp's sounds out ({e:#}); recording the device as is"),
+                }
+            }
+        }
         match Capturer::open(&self.cfg.device, self.cfg.kind) {
             Ok(Some(c)) => {
                 info!("audio: {} <- {}", self.cfg.title, c.device_name);

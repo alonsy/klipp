@@ -14,6 +14,12 @@ resolution = "native"    # "native", "1440p", "1080p" or "720p"
 fps = 60                 # 30, 60 or 120
 quality = 30             # 1-51, lower is better quality and bigger files
 max_bitrate_mbps = 40    # ceiling that keeps the buffer's RAM predictable
+monitor = ""             # "" records the main display; pick another in Settings → Video
+# "auto" uses Desktop Duplication on Windows 10 (where the other method draws a
+# yellow border around the screen) and Windows Graphics Capture on Windows 11.
+# "wgc" or "duplication" forces one.
+capture = "auto"
+gpu = ""                 # "" encodes on the card that drives the screen
 
 [audio]
 # One track per source, plus a "Mix" track of all of them that players use by default.
@@ -36,6 +42,12 @@ enabled = true
 auto_clips = true        # also play it when an auto-clip is saved
 volume = 0.6
 device = ""              # "" plays on the Windows default; your headset is best
+
+[indicators]
+# Small marks on top of the game, top right under the kill feed. They're never
+# in your clips and never take focus from the game.
+autoclips_on = false     # "Auto-clips ON" when a CS2 match starts
+saves = false            # a mark when a clip is saved (or can't be); auto-clips follow cue.auto_clips
 
 [auto_clip]
 # Clips saved automatically from game events. Changes apply instantly.
