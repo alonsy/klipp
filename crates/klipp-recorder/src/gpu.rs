@@ -5,7 +5,7 @@ use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result, bail};
 use klipp_media::Vendor;
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Foundation::{HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -149,6 +149,11 @@ impl Converter {
             vc1.VideoProcessorSetOutputColorSpace1(&processor, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
             video_context.VideoProcessorSetStreamFrameFormat(&processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
             video_context.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
+            // The picture fills the top-left `dst` of the target. Quick Sync's
+            // textures are a few rows larger (multiples of 16); those stay black
+            // and the encoder crops them off.
+            let picture = RECT { left: 0, top: 0, right: dst.0 as i32, bottom: dst.1 as i32 };
+            video_context.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&picture));
 
             let input_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
                 FourCC: 0,

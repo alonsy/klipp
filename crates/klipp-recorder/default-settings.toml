@@ -36,8 +36,8 @@ sources = [
 clips_dir = ''
 
 [cue]
-# Sound played when a clip is saved. Plays on a device that isn't recorded,
-# so it doesn't end up in your next clip.
+# Sound played when a clip is saved. Klipp keeps it out of your clips; with an
+# audio mixer like SteelSeries Sonar or Voicemeeter, play it on your headset.
 enabled = true
 auto_clips = true        # also play it when an auto-clip is saved
 volume = 0.6

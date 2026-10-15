@@ -68,10 +68,11 @@ impl Drop for HwDevice {
 }
 
 /// Creates a pool of NV12 GPU textures that the encoder reads from and our
-/// video processor renders into. `pool` > 0 creates that many up front, which
-/// Quick Sync needs (it registers every texture when it starts); 0 creates
-/// them as needed.
-pub(crate) fn alloc_nv12_frames(device: &HwDevice, width: i32, height: i32, pool: i32) -> Result<*mut ff::AVBufferRef> {
+/// video processor renders into. They're made on demand, one texture each,
+/// then reused. (A pool sized up front would be one texture array: Intel's
+/// driver refuses that for render targets, and Quick Sync could only find
+/// its first slice.)
+pub(crate) fn alloc_nv12_frames(device: &HwDevice, width: i32, height: i32) -> Result<*mut ff::AVBufferRef> {
     unsafe {
         let mut r = ff::av_hwframe_ctx_alloc(device.r);
         if r.is_null() {
@@ -82,9 +83,6 @@ pub(crate) fn alloc_nv12_frames(device: &HwDevice, width: i32, height: i32, pool
         (*frames).sw_format = ff::AVPixelFormat::AV_PIX_FMT_NV12;
         (*frames).width = width;
         (*frames).height = height;
-        // Render targets can't be texture arrays, so these are always individual
-        // textures: made on demand (0) or all up front (`pool`), then reused.
-        (*frames).initial_pool_size = pool;
         let hw = (*frames).hwctx as *mut AVD3D11VAFramesContext;
         (*hw).bind_flags = D3D11_BIND_RENDER_TARGET.0 as u32;
         if let Err(e) = check(ff::av_hwframe_ctx_init(r), "av_hwframe_ctx_init") {

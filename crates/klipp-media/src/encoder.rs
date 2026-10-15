@@ -58,10 +58,6 @@ fn encoder_name(vendor: Vendor, codec: VideoCodec) -> &'static CStr {
     }
 }
 
-/// Textures in the Quick Sync pool: what the encoder holds while working
-/// (its depth is set to 2), plus the frame being shown and the next one.
-const QSV_POOL: i32 = 8;
-
 #[derive(Clone, Debug)]
 pub struct VideoEncoderConfig {
     pub vendor: Vendor,
@@ -77,8 +73,8 @@ pub struct VideoEncoderConfig {
 }
 
 /// Quick Sync takes its own frame type: a Quick Sync device made from our
-/// D3D11 device, and a view of our texture pool as Quick Sync surfaces. Each
-/// frame is shared, not copied.
+/// D3D11 device, and a view of our texture pool as Quick Sync surfaces, made
+/// per frame as textures come and go. Each frame is shared, not copied.
 struct Qsv {
     device: *mut ff::AVBufferRef,
     frames: *mut ff::AVBufferRef,
@@ -125,6 +121,17 @@ impl Drop for Qsv {
             ff::av_buffer_unref(&mut self.frames);
             ff::av_buffer_unref(&mut self.device);
         }
+    }
+}
+
+/// The size of the encoder's input textures. Quick Sync works on surfaces
+/// whose sides are multiples of 16 (FFmpeg sizes its own Quick Sync textures
+/// that way) and crops them to the picture, so 1080p gets 1088 rows. The
+/// picture fills the top-left `width` × `height` of each texture.
+fn texture_size(cfg: &VideoEncoderConfig) -> (u32, u32) {
+    match cfg.vendor {
+        Vendor::Intel => (cfg.width.next_multiple_of(16), cfg.height.next_multiple_of(16)),
+        Vendor::Nvidia | Vendor::Amd => (cfg.width, cfg.height),
     }
 }
 
@@ -198,7 +205,8 @@ impl VideoEncoder {
                 bail!("out of memory while creating the encoder");
             }
             let intel = cfg.vendor == Vendor::Intel;
-            enc.frames = hw::alloc_nv12_frames(device, cfg.width as i32, cfg.height as i32, if intel { QSV_POOL } else { 0 })?;
+            let (w, h) = texture_size(cfg);
+            enc.frames = hw::alloc_nv12_frames(device, w as i32, h as i32)?;
 
             let fps = cfg.fps as i32;
             let c = &mut *enc.ctx;
