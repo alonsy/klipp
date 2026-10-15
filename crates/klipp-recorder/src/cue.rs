@@ -5,8 +5,6 @@
 //! A new sound cuts off the one playing and starts over, so pressing the
 //! hotkey quickly never queues up a long string of chimes.
 
-use std::fs;
-use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -67,8 +65,6 @@ impl CuePlayer {
         let thread = thread::Builder::new().name("cue".into()).spawn(move || {
             let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
             let (chime, error) = (builtin(SAVED_WAV), builtin(ERROR_WAV));
-            // Custom WAVs by path, loaded on first use.
-            let mut custom: Vec<(String, Option<Clip>)> = Vec::new();
             let mut next: Option<Sound> = None;
             while let Some(mut sound) = next.take().or_else(|| rx.recv().ok()) {
                 // Only the newest request counts.
@@ -79,22 +75,7 @@ impl CuePlayer {
                 if !cfg.enabled || (matches!(sound, Sound::AutoSaved) && !cfg.auto_clips) {
                     continue;
                 }
-                let wav = match sound {
-                    Sound::AutoSaved if !cfg.auto_sound.is_empty() => cfg.auto_sound.as_str(),
-                    Sound::Saved | Sound::AutoSaved => cfg.sound.as_str(),
-                    Sound::Error => "",
-                };
-                let clip = if wav.is_empty() {
-                    if matches!(sound, Sound::Error) { &error } else { &chime }
-                } else {
-                    if !custom.iter().any(|(p, _)| p == wav) {
-                        let loaded = load_wav(Path::new(wav))
-                            .inspect_err(|e| warning!("cue: can't use {wav}: {e:#}; playing the built-in sound"))
-                            .ok();
-                        custom.push((wav.to_string(), loaded));
-                    }
-                    custom.iter().find(|(p, _)| p == wav).and_then(|(_, c)| c.as_ref()).unwrap_or(&chime)
-                };
+                let clip = if matches!(sound, Sound::Error) { &error } else { &chime };
                 match play(clip, &cfg.device, cfg.volume, &rx) {
                     Ok(interrupted) => next = interrupted,
                     Err(e) => warning!("cue: playing failed: {e:#}"),
@@ -119,6 +100,18 @@ impl Drop for CuePlayer {
     }
 }
 
+/// Plays one sound and returns when it has finished: the ▶ buttons in setup
+/// and Settings (`klipp-recorder --play-sound`), on the device and at the
+/// volume a real save would use.
+pub fn play_once(sound: Sound, device: &str, volume: f32) -> Result<()> {
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+    let clip = builtin(if matches!(sound, Sound::Error) { ERROR_WAV } else { SAVED_WAV });
+    // Nothing else asks for a sound here; the sender only has to outlive the playback.
+    let (_requests, rx) = mpsc::channel();
+    play(&clip, device, volume, &rx)?;
+    Ok(())
+}
+
 /// The built-in sounds, compiled into the program (assets/sounds).
 const SAVED_WAV: &[u8] = include_bytes!("../../../assets/sounds/recorded.wav");
 const ERROR_WAV: &[u8] = include_bytes!("../../../assets/sounds/error.wav");
@@ -127,11 +120,7 @@ fn builtin(wav: &[u8]) -> Clip {
     parse_wav(wav).expect("built-in sounds are valid WAVs (checked by a test)")
 }
 
-/// Reads a PCM (16/24/32-bit) or float WAV file, mono or stereo, up to 5 s.
-pub fn load_wav(path: &Path) -> Result<Clip> {
-    parse_wav(&fs::read(path)?)
-}
-
+/// Reads a PCM (16/24/32-bit) or float WAV, mono or stereo, up to 5 s.
 fn parse_wav(data: &[u8]) -> Result<Clip> {
     if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
         bail!("not a WAV file");

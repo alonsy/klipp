@@ -36,10 +36,6 @@ enabled = true
 auto_clips = true        # also play it when an auto-clip is saved
 volume = 0.6
 device = ""              # "" plays on the Windows default; your headset is best
-# Your own WAV files instead of the built-in sounds, e.g. 'D:\sounds\saved.wav'.
-# auto_sound is for auto-clips; leave it empty to use `sound` for both.
-sound = ""
-auto_sound = ""
 
 [auto_clip]
 # Clips saved automatically from game events. Changes apply instantly.

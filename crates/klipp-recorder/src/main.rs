@@ -27,6 +27,7 @@ mod state;
 mod stats;
 mod timeline;
 mod tray;
+mod update;
 mod video;
 mod wasapi;
 
@@ -60,7 +61,8 @@ struct Args {
 }
 
 const USAGE: &str = "usage: klipp-recorder [--settings FILE]\n       \
-klipp-recorder --list-audio | --probe | --cleanup\n\n\
+klipp-recorder --list-audio | --probe | --cleanup | --check-update\n       \
+klipp-recorder --play-sound [error] [--device NAME] [--volume 0-1]\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
 fn parse_args() -> Result<Args> {
@@ -82,6 +84,17 @@ fn parse_args() -> Result<Args> {
                 cleanup();
                 std::process::exit(0);
             }
+            "--play-sound" => {
+                play_sound(it.by_ref())?;
+                std::process::exit(0);
+            }
+            "--check-update" => {
+                let latest = update::latest_version()?;
+                let current = env!("CARGO_PKG_VERSION");
+                let newer = if update::is_newer(&latest, current) { "an update" } else { "up to date" };
+                println!("latest {latest}, installed {current}: {newer}");
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -90,6 +103,22 @@ fn parse_args() -> Result<Args> {
         }
     }
     Ok(a)
+}
+
+/// `--play-sound [error] [--device NAME] [--volume 0-1]`: the save (or
+/// error) sound once, for the ▶ buttons in the window.
+fn play_sound(mut it: impl Iterator<Item = String>) -> Result<()> {
+    let (mut sound, mut device, mut volume) = (cue::Sound::Saved, String::new(), 0.6f32);
+    while let Some(flag) = it.next() {
+        let mut value = || it.next().with_context(|| format!("{flag} needs a value\n{USAGE}"));
+        match flag.as_str() {
+            "error" => sound = cue::Sound::Error,
+            "--device" => device = value()?,
+            "--volume" => volume = value()?.parse::<f32>()?.clamp(0.0, 1.0),
+            other => bail!("unknown argument {other}\n{USAGE}"),
+        }
+    }
+    cue::play_once(sound, &device, volume)
 }
 
 /// For the uninstaller: what Klipp set up outside its own folder. Clips and
@@ -219,6 +248,10 @@ fn open_path(path: &Path) {
     }
 }
 
+fn open_url(url: &str) {
+    unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+}
+
 fn tooltip(s: &Settings) -> String {
     format!("Klipp\n{} saves the last {} s", s.replay.hotkey, s.replay.length_secs)
 }
@@ -257,6 +290,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let mut recorder = Recorder::start(settings)?;
     let mut tray = Tray::create(&tooltip(recorder.settings()))?;
+    update::start();
     let mut hotkey_ok = recorder.hotkey_registered();
     if !hotkey_ok {
         let hk = &recorder.settings().replay.hotkey;
@@ -326,6 +360,12 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 Some(Command::ToggleAutostart) => {
                     if let Err(e) = autostart::set(!autostart::is_enabled()) {
                         warning!("start with Windows: {e:#}");
+                    }
+                }
+                // The window shows the update and installs it in one click.
+                Some(Command::Update) => {
+                    if !open_studio(&["--update".as_ref()]) {
+                        open_url("https://github.com/alonsy/klipp/releases/latest");
                     }
                 }
                 Some(Command::ReAddIcon) => tray.add(),

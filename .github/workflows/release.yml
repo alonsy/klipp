@@ -58,7 +58,7 @@ jobs:
           if (-not (Test-Path "$dir/$setup")) { throw "no $setup (does the tag match the version in tauri.conf.json?)" }
           # A stable name, so "latest/download/Klipp-Setup.exe" always works.
           Copy-Item "$dir/$setup" "$dir/Klipp-Setup.exe"
-          $notesFile = "docs/releases/$tag.md"
+          $notesFile = "releases/$tag.md"
           $notes = if (Test-Path $notesFile) { Get-Content -Raw $notesFile } else { "Klipp $version" }
           # What installed copies read to find and verify this update.
           $platform = @{

@@ -37,7 +37,7 @@ No account, no ads, no telemetry. Your clips stay on your PC.
 - **Share in a click.** Export under 10, 50 or 500 MB for chat apps, a high quality copy, or a lossless trim. It can go straight to your clipboard.
 
 <p align="center">
-  <img src="assets/readme/editor.gif" width="900" alt="The editor: playing a 4K clip, setting the start and end while it plays, muting a track">
+  <img src="assets/readme/editor.webp" width="900" alt="The editor: playing a 4K clip, setting the start and end while it plays, muting a track">
 </p>
 
 <p align="center">

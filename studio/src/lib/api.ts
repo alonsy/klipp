@@ -106,6 +106,49 @@ export interface SystemCheck {
   freeGb: number | null;
 }
 
+/** "Copy details": the PC, setup's last check, key settings and the end of the log. */
+export const supportDetails = () => invoke<string>("support_details");
+
+/** Plays the save sound (or the error sound) once, as a real save would. */
+export const playSound = (device: string, volume: number, error = false) => invoke<void>("play_sound", { device, volume, error });
+
+/** CS2 is running (updating now would clear the replay buffer mid-game). */
+export const gameRunning = () => invoke<boolean>("game_running");
+
+/** Free space where clips are saved, in GB. */
+export const freeSpace = () => invoke<number | null>("free_space");
+
+export interface MovePlan {
+  clips: number;
+  bytes: number;
+  sameDrive: boolean;
+  freeBytes: number | null;
+  /** There's room for them there. */
+  room: boolean;
+  /** Why the folder can't be used, if it can't. */
+  problem: string | null;
+}
+export interface MoveReport {
+  moved: number;
+  /** Clips that stayed in the old folder (open elsewhere, or already there). */
+  left: string[];
+}
+export const planMove = (to: string) => invoke<MovePlan>("plan_move", { to });
+export const moveClips = (from: string, to: string) => invoke<MoveReport>("move_clips", { from, to });
+export function onMoveProgress(handler: (done: number, total: number) => void): Promise<UnlistenFn> {
+  return listen<{ done: number; total: number }>("move-progress", (e) => handler(e.payload.done, e.payload.total));
+}
+
+/** Puts text on the clipboard; false if Windows refused. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** A fresh install that still needs setup. */
 export const setupNeeded = () => invoke<boolean>("setup_needed");
 export const systemCheck = () => invoke<SystemCheck>("system_check");

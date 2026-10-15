@@ -50,6 +50,37 @@ pub fn ensure_recorder() -> Result<()> {
     Ok(())
 }
 
+/// Plays the save sound (or the error sound) once through the recorder, on
+/// the device and at the volume it will use for real (the ▶ buttons).
+pub fn play_sound(device: &str, volume: f64, error: bool) -> Result<()> {
+    let exe = std::env::current_exe()?.with_file_name("klipp-recorder.exe");
+    let mut cmd = Command::new(&exe);
+    cmd.arg("--play-sound");
+    if error {
+        cmd.arg("error");
+    }
+    cmd.args(["--device", device, "--volume", &volume.clamp(0.0, 1.0).to_string()]);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW.0);
+    cmd.spawn().with_context(|| format!("starting {}", exe.display()))?;
+    Ok(())
+}
+
+/// Whether a program with this file name (e.g. "cs2.exe") is running.
+pub fn process_running(exe: &str) -> bool {
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else { return false };
+    let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut found = false;
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while more && !found {
+        let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+        found = String::from_utf16_lossy(&entry.szExeFile[..len]).eq_ignore_ascii_case(exe);
+        more = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    let _ = unsafe { CloseHandle(snapshot) };
+    found
+}
+
 /// Calls `quit` (once) when the tray's "Quit Klipp" asks the window to close.
 pub fn on_quit_request(quit: impl FnOnce() + Send + 'static) -> Result<()> {
     // Manual reset, not signaled. It only exists while the window is open, so

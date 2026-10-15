@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import * as api from "./api";
   import type { Clip } from "./api";
@@ -13,6 +14,7 @@
     incoming,
     inScope,
     library,
+    libraryView,
     matches,
     openClip,
     prefs,
@@ -108,6 +110,32 @@
       y += grouped ? SESSION_SPACE : 0;
     }
     return { rows, height: y + PAD };
+  });
+
+  // Back from the editor: the same scroll position, moved only if the clip
+  // you opened isn't in view anymore (then it's centered and glows briefly).
+  let restored = false;
+  $effect(() => {
+    if (restored || width === 0 || height === 0 || library.loading) return;
+    restored = true;
+    const opened = libraryView.opened;
+    libraryView.opened = null;
+    let top = libraryView.scrollTop;
+    const row = opened ? layout.rows.find((r) => r.kind === "cards" && r.clips.some((c) => c.path === opened)) : undefined;
+    const reveal = !!row && (row.y < top || row.y + cardH > top + height);
+    if (row && reveal) top = Math.max(0, Math.round(row.y - (height - cardH) / 2));
+    // The list's full height reaches the page a moment later; scrolling
+    // before that would stop short.
+    tick().then(() => {
+      scroller.scrollTop = top;
+      scrollTop = scroller.scrollTop;
+      if (opened && reveal) {
+        incoming.fresh = [opened];
+        setTimeout(() => {
+          if (incoming.fresh.length === 1 && incoming.fresh[0] === opened) incoming.fresh = [];
+        }, 2600);
+      }
+    });
   });
 
   let inView = $derived(layout.rows.filter((r) => r.y + r.h >= scrollTop - 200 && r.y <= scrollTop + height + 200));
@@ -292,7 +320,7 @@
     bind:this={scroller}
     bind:clientWidth={width}
     bind:clientHeight={height}
-    onscroll={() => (scrollTop = scroller.scrollTop)}
+    onscroll={() => (scrollTop = libraryView.scrollTop = scroller.scrollTop)}
     onpointerdown={dragStart}
     onpointermove={dragMove}
     onpointerup={dragEnd}

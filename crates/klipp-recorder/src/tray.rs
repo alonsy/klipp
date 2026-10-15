@@ -15,7 +15,7 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::autostart;
 
@@ -39,6 +39,8 @@ pub enum Command {
     OpenLastClip = 9,
     /// Windows switched between light and dark; redraw the icon.
     ThemeChanged = 10,
+    /// A newer Klipp is out (see `update`).
+    Update = 11,
 }
 
 impl Command {
@@ -54,6 +56,7 @@ impl Command {
             Self::TogglePause,
             Self::OpenLastClip,
             Self::ThemeChanged,
+            Self::Update,
         ]
         .into_iter()
         .find(|c| *c as usize == w)
@@ -231,6 +234,11 @@ unsafe fn show_menu(hwnd: HWND) {
             let _ = AppendMenuW(menu, MF_STRING | flags, id as usize, text);
         };
         let paused = PAUSED.load(Ordering::Relaxed);
+        let update = crate::update::available().map(|v| HSTRING::from(format!("Update to Klipp {v}")));
+        if let Some(text) = &update {
+            item(Command::Update, PCWSTR(text.as_ptr()), MF_ENABLED);
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        }
         item(Command::OpenStudio, w!("Open Klipp"), MF_DEFAULT);
         item(Command::OpenLastClip, w!("Open last clip"), MF_ENABLED);
         item(Command::SaveClip, w!("Save clip now"), if paused { MF_GRAYED } else { MF_ENABLED });

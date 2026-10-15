@@ -216,10 +216,12 @@ pub struct Cue {
     pub auto_clips: bool,
     pub volume: f32,
     pub device: String,
-    /// Custom WAV; empty means the built-in chime.
-    pub sound: String,
-    /// Custom WAV for auto-clips; empty means the same as `sound`.
-    pub auto_sound: String,
+    /// Ignored since 0.2.1, when custom sounds were dropped (Klipp plays its
+    /// own). Still accepted, so settings files that have them keep loading.
+    #[serde(rename = "sound")]
+    _sound: toml::Value,
+    #[serde(rename = "auto_sound")]
+    _auto_sound: toml::Value,
 }
 
 impl Default for Cue {
@@ -229,8 +231,8 @@ impl Default for Cue {
             auto_clips: true,
             volume: 0.6,
             device: String::new(),
-            sound: String::new(),
-            auto_sound: String::new(),
+            _sound: toml::Value::String(String::new()),
+            _auto_sound: toml::Value::String(String::new()),
         }
     }
 }

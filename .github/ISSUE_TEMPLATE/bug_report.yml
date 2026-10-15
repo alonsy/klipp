@@ -1,0 +1,24 @@
+name: Something doesn't work
+description: Klipp crashed, didn't record, didn't save, or did something odd.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details from Klipp
+      description: In Klipp, open Settings → About and click **Copy details**, then paste here. If setup said your PC can't record, use **Copy details** on that screen. It includes your PC, your settings and the end of the log, with your user folder name left out.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else?
+      description: Screenshots, the game you were playing, whether it happens every time.

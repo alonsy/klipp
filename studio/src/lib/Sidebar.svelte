@@ -3,6 +3,7 @@
   import { size } from "./format";
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
+  import LowSpaceCard from "./LowSpaceCard.svelte";
   import UpdateCard from "./UpdateCard.svelte";
   import { filters, library, openPage, recorder, refreshRecorder, toast, ui } from "./state.svelte";
 
@@ -71,6 +72,7 @@
 
   <footer>
     <UpdateCard />
+    <LowSpaceCard />
     {#if recorder.running}
       <button class="status" onclick={() => openPage("settings", "recording")} title="Recording settings">
         <span class="pulse"></span>

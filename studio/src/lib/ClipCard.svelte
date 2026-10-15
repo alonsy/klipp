@@ -304,6 +304,9 @@
   .name {
     flex: 1;
     min-width: 0;
+    /* Room for the first letter's edge inside the clipped line (as .summary). */
+    padding-left: 2px;
+    margin-left: -2px;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -344,9 +347,12 @@
   }
 
   .summary {
-    /* Room for the first letter's edge inside the clipped line. */
-    padding-left: 1px;
-    margin-left: -1px;
+    /* Room for the first letter's edge inside the clipped line: on scaled
+       displays (125 %, 150 %) text lands between device pixels and its
+       antialiased edge reaches past the box. The card's own edge (2px to the
+       left) is the outer limit. */
+    padding-left: 2px;
+    margin-left: -2px;
     margin-top: 3px;
     font-size: 12px;
     color: var(--muted);

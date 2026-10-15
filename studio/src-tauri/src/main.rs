@@ -14,8 +14,10 @@ mod library;
 mod lifecycle;
 mod meta;
 mod prefs;
+mod relocate;
 mod settings;
 mod setup;
+mod support;
 mod trash;
 
 use std::os::windows::process::CommandExt;
@@ -45,7 +47,8 @@ struct Paths {
 }
 
 /// What Klipp was opened for: `klipp.exe <clip.mp4>` opens the clip in the
-/// editor, `klipp.exe --settings` opens settings.
+/// editor, `klipp.exe --settings` opens settings, `klipp.exe --update` (the
+/// tray's "Update to Klipp x.y.z") checks for the update right away.
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct OpenRequest {
@@ -59,6 +62,8 @@ impl OpenRequest {
         for a in args {
             if a == "--settings" {
                 r.page = Some("settings".into());
+            } else if a == "--update" {
+                r.page = Some("update".into());
             } else if a.to_lowercase().ends_with(".mp4") && PathBuf::from(&a).is_file() {
                 r.clip = Some(a);
             }
@@ -89,11 +94,10 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Sen
 fn paths() -> Paths {
     // Read fresh: the clips folder can be changed in Settings.
     let config = config::load();
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
     Paths {
         clips_dir: config.clips_dir.to_string_lossy().into_owned(),
         settings_path: config.settings_path.to_string_lossy().into_owned(),
-        log_dir: local.join("Klipp").to_string_lossy().into_owned(),
+        log_dir: config.log_dir.to_string_lossy().into_owned(),
     }
 }
 
@@ -214,8 +218,54 @@ fn setup_needed(app: State<App>) -> bool {
 /// What this PC can record, for the setup screens.
 #[tauri::command]
 async fn system_check() -> CmdResult<Value> {
-    let dir = config::load().clips_dir;
-    blocking(move || setup::system_check(&dir)).await
+    let config = config::load();
+    blocking(move || setup::system_check(&config.clips_dir, &config.log_dir)).await
+}
+
+/// "Copy details": the PC, setup's last check, key settings and the log's end.
+#[tauri::command]
+async fn support_details(handle: AppHandle) -> CmdResult<String> {
+    let version = handle.package_info().version.to_string();
+    blocking(move || Ok(support::details(&version, &config::load()))).await
+}
+
+/// The ▶ buttons: the save (or error) sound once, as a real save would play it.
+#[tauri::command]
+fn play_sound(device: String, volume: f64, error: bool) -> CmdResult<()> {
+    lifecycle::play_sound(&device, volume, error).map_err(err)
+}
+
+/// A game Klipp records is running (updating then would cost the replay buffer).
+#[tauri::command]
+fn game_running() -> bool {
+    lifecycle::process_running("cs2.exe")
+}
+
+/// Free space where clips are saved, in GB.
+#[tauri::command]
+fn free_space() -> Option<f64> {
+    setup::free_gb(&config::load().clips_dir)
+}
+
+/// What moving the clips to `to` would involve.
+#[tauri::command]
+async fn plan_move(to: String) -> CmdResult<relocate::Plan> {
+    let from = config::load().clips_dir;
+    blocking(move || Ok(relocate::plan(&from, &PathBuf::from(to)))).await
+}
+
+/// Moves the clips from `from` (the old clips folder) to `to`; progress
+/// arrives as "move-progress" events.
+#[tauri::command]
+async fn move_clips(handle: AppHandle, from: String, to: String) -> CmdResult<relocate::Report> {
+    let to = PathBuf::from(to);
+    let _ = handle.asset_protocol_scope().allow_directory(&to, true);
+    blocking(move || {
+        relocate::run(&PathBuf::from(from), &to, |done, total| {
+            let _ = handle.emit("move-progress", serde_json::json!({ "done": done, "total": total }));
+        })
+    })
+    .await
 }
 
 /// Clips on their way (see `arrivals`).
@@ -311,6 +361,8 @@ fn main() {
         }))
         // New versions from GitHub releases, signed with Klipp's key (see tauri.conf.json).
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // The Windows folder picker (Settings → Storage).
+        .plugin(tauri_plugin_dialog::init())
         .manage(App { config, trash, exports: Exports::default() })
         .setup(move |app| {
             // Let the page load videos and thumbnails from these folders only.
@@ -366,7 +418,13 @@ fn main() {
             arriving,
             start_recorder,
             set_autostart,
-            close_window
+            close_window,
+            support_details,
+            play_sound,
+            game_running,
+            free_space,
+            plan_move,
+            move_clips
         ])
         .build(tauri::generate_context!())
         .expect("Klipp failed to start");

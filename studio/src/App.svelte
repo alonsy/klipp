@@ -14,6 +14,11 @@
 
   async function handle(request: api.OpenRequest) {
     if (request.page === "settings") openPage("settings");
+    // The tray's "Update to Klipp …": the update card (sidebar) checks now.
+    if (request.page === "update") {
+      openPage("clips");
+      window.dispatchEvent(new Event("klipp:check-update"));
+    }
     if (request.clip) {
       await reload();
       const want = request.clip.toLowerCase();

@@ -40,7 +40,9 @@
     chatDevice: "",
     mic: true,
     micDevice: "",
+    sound: true,
     cue: "",
+    volume: 0.6,
     resolution: "native" as "native" | "1440p" | "1080p" | "720p",
     fps: 60,
     codec: "av1" as "av1" | "h264",
@@ -71,6 +73,8 @@
         c.hotkey = s.replay?.hotkey ?? c.hotkey;
         c.length = s.replay?.length_secs ?? c.length;
         c.cue = s.cue?.device ?? "";
+        c.sound = s.cue?.enabled ?? true;
+        c.volume = Number(s.cue?.volume ?? 0.6);
       }, () => {});
     }
   });
@@ -84,6 +88,15 @@
       c.sonar = true;
       const headset = likelyHeadset(playback);
       if (headset && !c.cue) c.cue = headset;
+    }
+  });
+
+  $effect(() => {
+    // Saved settings may name a device by part of its name ("Arctis Nova Pro");
+    // show the full name it stands for, as Settings → Sounds does.
+    if (c.cue && playback.length > 0 && !playback.includes(c.cue)) {
+      const full = playback.find((n) => n.toLowerCase().includes(c.cue.toLowerCase()));
+      if (full) c.cue = full;
     }
   });
 
@@ -163,7 +176,9 @@
     try {
       await api.writeSettings([
         { key: ["audio", "sources"], value: sources() },
+        { key: ["cue", "enabled"], value: c.sound },
         { key: ["cue", "device"], value: c.cue },
+        { key: ["cue", "volume"], value: c.volume },
         { key: ["video", "codec"], value: c.codec },
         { key: ["video", "resolution"], value: c.resolution },
         { key: ["video", "fps"], value: c.fps },
@@ -181,6 +196,16 @@
       toast(`Couldn't finish setup: ${e}`);
     } finally {
       finishing = false;
+    }
+  }
+
+  /** For a message or a GitHub issue when this PC can't record. */
+  async function copyDetails() {
+    try {
+      const ok = await api.copyText(await api.supportDetails());
+      toast(ok ? "Details copied. Paste them into a message or a GitHub issue." : "Couldn't copy the details.");
+    } catch (e) {
+      toast(`Couldn't collect the details: ${e}`);
     }
   }
 
@@ -225,6 +250,7 @@
             <p class="lead">Klipp tested your graphics card's encoders for real, at your screen's size.</p>
             {#if checkError}
               <p class="bad"><Icon name="warning" size={18} />Couldn't check this PC: {checkError}</p>
+              <button class="copy" onclick={copyDetails}><Icon name="copy" size={15} />Copy details</button>
             {:else if !check}
               <div class="checking"><span class="spinner"></span>Checking your graphics card…</div>
             {:else}
@@ -234,7 +260,9 @@
                   <div>
                     <b>Graphics card</b>
                     <span>{check.recordingGpu ?? check.gpus[0]?.name ?? "Not found"}</span>
-                    {#if !canRecord}
+                    {#if !canRecord && hasNvidia}
+                      <span class="note">Your screen runs on the processor's built-in graphics, not the NVIDIA card (most laptops are wired this way). Klipp can't record on built-in graphics yet; the next update adds it.</span>
+                    {:else if !canRecord}
                       <span class="note">Klipp records with NVIDIA graphics cards for now; AMD and Intel are coming.</span>
                     {/if}
                   </div>
@@ -274,6 +302,9 @@
                   </li>
                 {/if}
               </ul>
+              {#if !canRecord}
+                <p class="help">Tell us about it and we'll look into it: <button class="copy" onclick={copyDetails}><Icon name="copy" size={15} />Copy details</button></p>
+              {/if}
             {/if}
           {:else if step === "audio"}
             <h1>Audio</h1>
@@ -322,13 +353,27 @@
                 </select>
               </label>
             {/if}
-            <label class="row">
-              <span class="what"><b>Save sound plays on</b><span>Pick your headset, not something Klipp records</span></span>
-              <select bind:value={c.cue}>
-                <option value="">Windows default</option>
-                {#each playback as name (name)}<option value={name}>{name}</option>{/each}
-              </select>
-            </label>
+            <div class="row">
+              <span class="what"><b>Save sound</b><span>A short sound when a clip is saved, so you know it worked</span></span>
+              <Toggle checked={c.sound} label="Play a sound when a clip is saved" onchange={(v) => (c.sound = v)} />
+            </div>
+            {#if c.sound}
+              <label class="row sub">
+                <span class="what"><span>Plays on: pick your headset, not something Klipp records</span></span>
+                <select bind:value={c.cue}>
+                  <option value="">Windows default</option>
+                  {#each playback as name (name)}<option value={name}>{name}</option>{/each}
+                </select>
+              </label>
+              <div class="row sub">
+                <span class="what"><span>Volume</span></span>
+                <Slider min={0} max={1} step={0.05} value={c.volume} label="Save sound volume" oninput={(v) => (c.volume = v)} />
+                <span class="value mono">{Math.round(c.volume * 100)}%</span>
+                <button class="icon" aria-label="Play the save sound" title="Play it" onclick={() => api.playSound(c.cue, c.volume).catch((e) => toast(`Couldn't play it: ${e}`))}
+                  ><Icon name="play" size={15} /></button
+                >
+              </div>
+            {/if}
           {:else if step === "video"}
             <h1>Video</h1>
             <p class="lead">Preselected for your screen and graphics card. Options it can't record are marked.</p>
@@ -633,6 +678,25 @@
 
   .note {
     color: var(--text) !important;
+  }
+
+  .help {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 16px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .copy {
+    gap: 7px;
+    align-self: flex-start;
+    font-size: 13px;
+  }
+
+  p.bad + .copy {
+    margin-top: 12px;
   }
 
   .option,

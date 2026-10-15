@@ -5,6 +5,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
-  server: { port: 5173, strictPort: true },
+  // The release notes (../releases) are bundled into Settings → About.
+  server: { port: 5173, strictPort: true, fs: { allow: [".", "../releases"] } },
   build: { target: "chrome120", outDir: "dist", emptyOutDir: true },
 });

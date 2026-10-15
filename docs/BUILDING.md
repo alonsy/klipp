@@ -48,7 +48,7 @@ npx tauri build --config src-tauri/tauri.release.conf.json   # target/release/bu
 
 [tauri.release.conf.json](../studio/src-tauri/tauri.release.conf.json) adds the recorder and FFmpeg to the installer, and signs it for updates; everyday builds don't need either. The installer is Tauri's NSIS template with a few changes ([studio/src-tauri/windows](../studio/src-tauri/windows)): it installs to `%LOCALAPPDATA%\Programs\Klipp` in one click and opens Klipp when done.
 
-Releases are built by [GitHub Actions](../.github/workflows/release.yml): pushing a tag like `v0.2.0` builds the installer and drafts a release with it and the update manifest (`latest.json`). Release notes come from `docs/releases/<tag>.md`.
+Releases are built by [GitHub Actions](../.github/workflows/release.yml): pushing a tag like `v0.2.0` builds the installer and drafts a release with it and the update manifest (`latest.json`). Release notes come from `releases/<tag>.md`, which the app also shows in Settings → About.
 
 ## 5. Working on it
 

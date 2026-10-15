@@ -1,0 +1,36 @@
+name: A game doesn't record well
+description: Black clips, missing sound, stutter, or Klipp not noticing a game.
+labels: [game]
+body:
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      placeholder: e.g. Counter-Strike 2, Valorant
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: The game's display mode
+      options:
+        - Fullscreen
+        - Fullscreen windowed / borderless
+        - Windowed
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What's wrong with the clips?
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details from Klipp
+      description: In Klipp, open Settings → About and click **Copy details**, then paste here.
+      render: text
+    validations:
+      required: true

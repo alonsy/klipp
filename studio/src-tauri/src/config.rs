@@ -10,6 +10,8 @@ pub struct Config {
     pub prefs_path: PathBuf,
     /// Studio caches (extracted audio) under %LOCALAPPDATA%.
     pub cache_dir: PathBuf,
+    /// The recorder's logs, and setup's last check of this PC.
+    pub log_dir: PathBuf,
 }
 
 pub fn load() -> Config {
@@ -31,5 +33,6 @@ pub fn load() -> Config {
         clips_dir,
         prefs_path: appdata.join("Klipp").join("studio.json"),
         cache_dir: local.join("Klipp").join("cache"),
+        log_dir: local.join("Klipp"),
     }
 }

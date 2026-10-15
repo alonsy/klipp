@@ -117,7 +117,13 @@ export async function reload() {
   }
 }
 
+/** Where the library was scrolled to and which clip was opened from it, so
+ * coming back from the editor lands in the same place. Not reactive: the
+ * library reads it once when it's shown again. */
+export const libraryView = { scrollTop: 0, opened: null as string | null };
+
 export function openClip(c: Clip) {
+  libraryView.opened = c.path;
   ui.clip = c;
 }
 
