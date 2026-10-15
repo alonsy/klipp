@@ -1,10 +1,13 @@
-; Klipp's installer: Tauri's NSIS template (tauri-cli 2.12.2) with three changes,
+; Klipp's installer: Tauri's NSIS template (tauri-cli 2.12.2) with four changes,
 ; each marked "Klipp:" below.
 ;   1. Installs to %LOCALAPPDATA%\Programs\Klipp (Tauri's default folder,
 ;      %LOCALAPPDATA%\Klipp, is where Klipp keeps its logs).
 ;   2. Double-clicking it installs right away: no welcome, folder or finish
 ;      pages, just progress (Tauri's passive mode).
 ;   3. Opens Klipp when done, which starts setup on a fresh install.
+;   4. Installing over an existing copy replaces it in place. (Tauri's passive
+;      mode uninstalls a same-version copy first, which would also turn off
+;      Start with Windows; see hooks.nsh.)
 ; Everything else, including updates (/UPDATE) and the uninstaller, is upstream.
 Unicode true
 ManifestDPIAware true
@@ -328,6 +331,11 @@ Function PageLeaveReinstall
 
   ; In update mode, always proceeds without uninstalling
   ${If} $UpdateMode = 1
+    Goto reinst_done
+  ${EndIf}
+
+  ; Klipp: a one-click install over an existing copy replaces it in place.
+  ${If} $OneClick = 1
     Goto reinst_done
   ${EndIf}
 
