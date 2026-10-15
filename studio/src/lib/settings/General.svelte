@@ -1,6 +1,6 @@
 <script lang="ts">
   import * as api from "../api";
-  import { prefs, recorder, refreshRecorder, setPref, toast } from "../state.svelte";
+  import { openPage, prefs, recorder, refreshRecorder, setPref, toast, ui } from "../state.svelte";
   import Field from "../ui/Field.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
@@ -28,6 +28,17 @@
   </Field>
   <Field title="Explain closing the window" hint="Closing this window keeps Klipp recording in the tray. Shows a reminder when you close it.">
     <Toggle checked={prefs.closeNotice} label="Explain closing the window" onchange={(v) => setPref("closeNotice", v)} />
+  </Field>
+</div>
+
+<div class="group">
+  <Field title="Run setup again" hint="Checks your PC again and walks through audio, video and saving.">
+    <button
+      onclick={() => {
+        ui.setupRerun = true;
+        openPage("setup");
+      }}>Run setup</button
+    >
   </Field>
 </div>
 

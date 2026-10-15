@@ -26,7 +26,7 @@ If the Build Tools are somewhere other than the default folder, update `LIBCLANG
 .\scripts\fetch-ffmpeg.ps1
 ```
 
-This downloads the **LGPL** shared build of FFmpeg 8.1 into `vendor/ffmpeg/` and checks its SHA-256. Klipp links against it and ships its DLLs (plus `ffmpeg.exe` for thumbnails and exports) next to the programs. Only LGPL builds are used, so Klipp stays MIT.
+This downloads the FFmpeg build Klipp ships with (8.1.3, **LGPL**, shared libraries) into `vendor/ffmpeg/` and checks it against a fixed SHA-256. It's kept as the [ffmpeg-n8.1.3 release](https://github.com/alonsy/klipp/releases/tag/ffmpeg-n8.1.3) of this repository, which links its source. Klipp links against it and ships its DLLs (plus `ffmpeg.exe` for thumbnails and exports) next to the programs. Only LGPL builds are used, so Klipp stays MIT.
 
 ## 3. Install
 
@@ -37,7 +37,20 @@ This downloads the **LGPL** shared build of FFmpeg 8.1 into `vendor/ffmpeg/` and
 
 It installs to `%LOCALAPPDATA%\Programs\Klipp`, adds Klipp to the Start Menu and starts recording. Run it again to update.
 
-## 4. Working on it
+## 4. The installer
+
+```powershell
+cargo build --release -p klipp-recorder   # the installer packs this in
+cd studio
+$env:TAURI_SIGNING_PRIVATE_KEY = "..."    # the update signing key
+npx tauri build --config src-tauri/tauri.release.conf.json   # target/release/bundle/nsis/Klipp_<version>_x64-setup.exe
+```
+
+[tauri.release.conf.json](../studio/src-tauri/tauri.release.conf.json) adds the recorder and FFmpeg to the installer, and signs it for updates; everyday builds don't need either. The installer is Tauri's NSIS template with a few changes ([studio/src-tauri/windows](../studio/src-tauri/windows)): it installs to `%LOCALAPPDATA%\Programs\Klipp` in one click and opens Klipp when done.
+
+Releases are built by [GitHub Actions](../.github/workflows/release.yml): pushing a tag like `v0.2.0` builds the installer and drafts a release with it and the update manifest (`latest.json`). Release notes come from `docs/releases/<tag>.md`.
+
+## 5. Working on it
 
 ```powershell
 # The window's interface

@@ -10,7 +10,7 @@ hotkey = "Alt+F10"
 
 [video]
 codec = "av1"            # "av1" (smaller files) or "h264" (plays everywhere)
-resolution = "native"    # "native", "1080p" or "720p"
+resolution = "native"    # "native", "1440p", "1080p" or "720p"
 fps = 60                 # 30, 60 or 120
 quality = 30             # 1-51, lower is better quality and bigger files
 max_bitrate_mbps = 40    # ceiling that keeps the buffer's RAM predictable

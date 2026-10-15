@@ -1,0 +1,75 @@
+# Pushing a version tag (v0.2.0) builds the Windows installer and creates a
+# draft release with it, its update signature and the update manifest
+# (latest.json) that installed copies of Klipp check. Publish the draft to
+# release it; "latest" downloads and updates point at it from then on.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      # libclang for FFmpeg's Rust bindings; Windows runners ship LLVM here.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: FFmpeg (the pinned LGPL build)
+        run: ./scripts/fetch-ffmpeg.ps1
+
+      - name: Recorder
+        run: cargo build --release --locked -p klipp-recorder
+
+      - name: Interface packages
+        working-directory: studio
+        run: npm ci
+
+      - name: Klipp and its installer
+        working-directory: studio
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        # The release config adds the recorder and FFmpeg to the installer, and the update signature.
+        run: npx tauri build --config src-tauri/tauri.release.conf.json
+
+      - name: Draft release
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag.TrimStart('v')
+          $dir = 'target/release/bundle/nsis'
+          $setup = "Klipp_${version}_x64-setup.exe"
+          if (-not (Test-Path "$dir/$setup")) { throw "no $setup (does the tag match the version in tauri.conf.json?)" }
+          # A stable name, so "latest/download/Klipp-Setup.exe" always works.
+          Copy-Item "$dir/$setup" "$dir/Klipp-Setup.exe"
+          $notesFile = "docs/releases/$tag.md"
+          $notes = if (Test-Path $notesFile) { Get-Content -Raw $notesFile } else { "Klipp $version" }
+          # What installed copies read to find and verify this update.
+          $platform = @{
+            signature = (Get-Content -Raw "$dir/$setup.sig").Trim()
+            url = "https://github.com/${{ github.repository }}/releases/download/$tag/$setup"
+          }
+          [ordered]@{
+            version = $version
+            notes = $notes
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = [ordered]@{ 'windows-x86_64-nsis' = $platform; 'windows-x86_64' = $platform }
+          } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM latest.json
+          gh release create $tag "$dir/$setup" "$dir/$setup.sig" "$dir/Klipp-Setup.exe" latest.json `
+            --draft --title "Klipp $version" --notes $notes

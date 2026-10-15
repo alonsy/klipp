@@ -18,6 +18,7 @@ mod gpu;
 mod hotkey;
 mod log;
 mod mmcss;
+mod probe;
 mod recorder;
 mod replay;
 mod save;
@@ -59,7 +60,7 @@ struct Args {
 }
 
 const USAGE: &str = "usage: klipp-recorder [--settings FILE]\n       \
-klipp-recorder --list-audio\n\n\
+klipp-recorder --list-audio | --probe | --cleanup\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
 fn parse_args() -> Result<Args> {
@@ -73,6 +74,14 @@ fn parse_args() -> Result<Args> {
                 list_audio()?;
                 std::process::exit(0);
             }
+            "--probe" => {
+                probe::run()?;
+                std::process::exit(0);
+            }
+            "--cleanup" => {
+                cleanup();
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -81,6 +90,13 @@ fn parse_args() -> Result<Args> {
         }
     }
     Ok(a)
+}
+
+/// For the uninstaller: what Klipp set up outside its own folder. Clips and
+/// settings stay.
+fn cleanup() {
+    let _ = autostart::set(false);
+    cs2::remove_cfg();
 }
 
 fn list_audio() -> Result<()> {

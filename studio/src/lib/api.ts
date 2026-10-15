@@ -92,6 +92,23 @@ export interface RecorderStatus {
   autostart: boolean;
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
+
+/** What `klipp-recorder --probe` found, plus free space where clips go. */
+export interface SystemCheck {
+  gpus: { name: string; vendor: "nvidia" | "amd" | "intel" | "other"; vramMb: number }[];
+  monitor: { width: number; height: number; refreshHz: number } | null;
+  recordingGpu: string | null;
+  encoders: { codec: "av1" | "h264"; width: number; height: number; ok: boolean; error: string | null }[];
+  ramMb: number;
+  cs2: boolean;
+  error: string | null;
+  clipsDir: string;
+  freeGb: number | null;
+}
+
+/** A fresh install that still needs setup. */
+export const setupNeeded = () => invoke<boolean>("setup_needed");
+export const systemCheck = () => invoke<SystemCheck>("system_check");
 export const startRecorder = () => invoke<void>("start_recorder");
 export const setAutostart = (enabled: boolean) => invoke<void>("set_autostart", { enabled });
 /** Closes the window (the recorder keeps going). */

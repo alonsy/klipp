@@ -46,26 +46,23 @@ No account, no ads, no telemetry. Your clips stay on your PC.
 
 ## Install
 
-Klipp 0.1 is built from source; ready-made downloads are coming.
+<p>
+  <a href="https://github.com/alonsy/klipp/releases/latest/download/Klipp-Setup.exe"><img alt="Download Klipp for Windows" src="https://img.shields.io/badge/Download_for_Windows-FF5A2E?style=for-the-badge&logoColor=white"></a>
+</p>
 
-**You need:** Windows 11, an NVIDIA graphics card (AMD and Intel are on the [roadmap](ROADMAP.md)), [Rust](https://rustup.rs), [Node.js 22](https://nodejs.org) and the Visual Studio Build Tools. [docs/BUILDING.md](docs/BUILDING.md) has the one-line installs.
+Run **Klipp-Setup.exe**. It installs for your user in a few seconds (no admin needed) and opens Klipp, which checks what your PC can record and asks a few questions: your microphone and audio, the video quality, and your save hotkey. Updates arrive in the app with one click.
 
-```powershell
-git clone https://github.com/alonsy/klipp
-cd klipp
-.\scripts\fetch-ffmpeg.ps1      # FFmpeg (LGPL), checked against its checksum
-.\scripts\install.ps1           # builds Klipp and installs it for your user
-```
+> The installer isn't signed yet, so Windows may say it protected your PC. Click **More info**, then **Run anyway**. Signed builds are on the way.
 
-Klipp starts recording in the tray right away; open it from the Start Menu. Add `-Autostart` to start recording with Windows. To remove it, run `.\scripts\uninstall.ps1` (your clips stay).
+**You need** Windows 11 and an NVIDIA graphics card. Cards from the GeForce RTX 40-series on record AV1 (smaller files); older ones record H.264 automatically. AMD and Intel are on the [roadmap](ROADMAP.md).
 
-> **Graphics cards:** recording uses AV1, which needs a GeForce RTX 40-series or newer. On older NVIDIA cards, switch to H.264 in **Settings → Video**.
-
+To build it yourself, see [docs/BUILDING.md](docs/BUILDING.md).
 ## Good to know
 
-- **CS2 auto-clips** need one restart of CS2 after the first run, so it picks up Klipp's integration file.
-- **The save sound** plays on your default speakers or headset. If that's also what Klipp records, pick another device in **Settings → Sounds** so the sound doesn't end up in your next clip.
+- **CS2 auto-clips** need one restart of CS2 after installing, so it picks up Klipp's integration file.
+- **The save sound** plays on the device you picked in setup. If Klipp also records that device, the sound ends up in your next clip; pick your headset in **Settings → Sounds**.
 - **Clips** go to `Videos\Klipp` by default, one folder per game. Klipp keeps its notes about them (markers, thumbnails, trims) in a hidden `.klipp` folder there.
+- **Uninstalling** (Windows Settings → Apps) removes Klipp and its startup entry. Your clips and settings stay.
 
 <p align="center">
   <img src="assets/readme/settings.gif" width="900" alt="Klipp's settings: recording, video, audio tracks and auto-clips">
@@ -74,6 +71,10 @@ Klipp starts recording in the tray right away; open it from the Start Menu. Add 
 ## Roadmap
 
 More games, AMD and Intel encoders, and optional self-hosted cloud backup are next. See [ROADMAP.md](ROADMAP.md), and our promises: no ads, ever, and always open source.
+
+## Thanks
+
+The save and error sounds are by [@f.inancimen](https://instagram.com/f.inancimen). Thank you!
 
 ## License
 

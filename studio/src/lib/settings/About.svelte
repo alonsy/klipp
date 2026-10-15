@@ -24,6 +24,10 @@
   <button class="ghost link" onclick={() => api.reveal(library.clipsDir)}><Icon name="film" size={17} />Open the clips folder<span>{library.clipsDir}</span></button>
 </div>
 
+<p class="credits">
+  The save and error sounds are by
+  <button class="handle" onclick={() => api.openFile("https://instagram.com/f.inancimen")}>@f.inancimen</button>. Thank you!
+</p>
 <p class="credits">Video is encoded on your graphics card and saved with FFmpeg (LGPL).</p>
 
 <style>
@@ -72,5 +76,19 @@
     margin: 0 4px;
     font-size: 12px;
     color: var(--faint);
+  }
+
+  .handle {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: inherit;
+    color: var(--accent);
+  }
+
+  .handle:hover {
+    background: none;
+    text-decoration: underline;
   }
 </style>

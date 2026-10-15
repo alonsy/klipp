@@ -15,6 +15,7 @@ mod lifecycle;
 mod meta;
 mod prefs;
 mod settings;
+mod setup;
 mod trash;
 
 use std::os::windows::process::CommandExt;
@@ -204,6 +205,19 @@ fn set_pref(app: State<App>, key: String, value: Value) -> CmdResult<()> {
     prefs::set(&app.config.prefs_path, &key, value).map_err(err)
 }
 
+/// A fresh install that still needs the setup screens.
+#[tauri::command]
+fn setup_needed(app: State<App>) -> bool {
+    setup::needed(&app.config.settings_path)
+}
+
+/// What this PC can record, for the setup screens.
+#[tauri::command]
+async fn system_check() -> CmdResult<Value> {
+    let dir = config::load().clips_dir;
+    blocking(move || setup::system_check(&dir)).await
+}
+
 /// Clips on their way (see `arrivals`).
 #[tauri::command]
 fn arriving() -> Value {
@@ -276,10 +290,13 @@ fn show_main(app: &AppHandle) {
 }
 
 fn main() {
-    if let Err(e) = lifecycle::ensure_recorder() {
+    let config = config::load();
+    // On a fresh install, recording starts when setup finishes, with its choices.
+    if !setup::needed(&config.settings_path)
+        && let Err(e) = lifecycle::ensure_recorder()
+    {
         eprintln!("couldn't start the recorder: {e:#}");
     }
-    let config = config::load();
     let trash = Trash::new(&config.clips_dir);
     trash.recover();
     ffmpeg::trim_cache(&config.cache_dir);
@@ -292,6 +309,8 @@ fn main() {
             show_main(app);
             let _ = app.emit("open-request", OpenRequest::from_args(args.into_iter().skip(1)));
         }))
+        // New versions from GitHub releases, signed with Klipp's key (see tauri.conf.json).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(App { config, trash, exports: Exports::default() })
         .setup(move |app| {
             // Let the page load videos and thumbnails from these folders only.
@@ -342,6 +361,8 @@ fn main() {
             get_prefs,
             set_pref,
             recorder_status,
+            setup_needed,
+            system_check,
             arriving,
             start_recorder,
             set_autostart,

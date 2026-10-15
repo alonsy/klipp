@@ -9,12 +9,14 @@ Klipp is young. Here's where it's going, and what won't change on the way.
 - **Your clips are yours.** Klipp works fully offline and needs no account. Nothing leaves your PC unless you send it somewhere.
 - **Light by design.** A recorder that runs all day has to cost nothing while it does. Every release is checked for memory growth.
 
-## Now: 0.1
+## Now: 0.2
 
+- A one-click installer, with a setup that checks what your PC can record and asks for your audio and video choices.
+- Updates inside the app, in one click.
 - Always-on replay buffer with a save hotkey; presses close together become one clip.
 - Counter-Strike 2 auto-clips (headshots, multi-kills, knife and Zeus kills) through Valve's Game State Integration.
 - Separate audio tracks, a session-grouped library, an editor with waveforms, and exports for sharing.
-- NVIDIA graphics cards (NVENC), Windows 11.
+- NVIDIA graphics cards (AV1 or H.264), Windows 11.
 
 ## Next
 
@@ -30,7 +32,7 @@ So we're building a **non-invasive event capturer**: a model that recognizes mom
 
 - AMD (AMF) and Intel (Quick Sync) encoders.
 - Windows 10 support, tested.
-- Ready-made, signed downloads, and installs through winget and Scoop.
+- Signed installers (no more Windows warning), and installs through winget and Scoop.
 
 ### Cloud, your way, free
 

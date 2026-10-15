@@ -95,17 +95,16 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             (converter, out, latest.size_generation)
         };
         let device = HwDevice::from_d3d11(&gpu.device, &gpu.context)?;
-        let encoder = VideoEncoder::new(
-            &device,
-            &VideoEncoderConfig {
-                codec: s.codec,
-                width: w,
-                height: h,
-                fps: s.fps,
-                quality: s.quality,
-                max_bitrate: s.max_mbps * 1_000_000,
-            },
-        )?;
+        let config = |codec| VideoEncoderConfig { codec, width: w, height: h, fps: s.fps, quality: s.quality, max_bitrate: s.max_mbps * 1_000_000 };
+        // Older cards can't encode AV1 (it needs a GeForce RTX 40 or newer); they still record, in H.264.
+        let (encoder, codec) = match VideoEncoder::new(&device, &config(s.codec)) {
+            Ok(e) => (e, s.codec),
+            Err(e) if s.codec == VideoCodec::Av1 => {
+                crate::log::warning!("video: {} can't encode AV1 ({e:#}); recording H.264 instead", gpu.adapter_name);
+                (VideoEncoder::new(&device, &config(VideoCodec::H264))?, VideoCodec::H264)
+            }
+            Err(e) => return Err(e),
+        };
         *shared.video_stream.lock().unwrap() = Some(encoder.stream_info()?);
 
         // Windows sends a first frame right after capture starts.
@@ -116,7 +115,7 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             }
             thread::sleep(Duration::from_millis(5));
         }
-        crate::log::info!("video: {} | encoding {}x{} {:?} @ {} fps", gpu.adapter_name, w, h, s.codec, s.fps);
+        crate::log::info!("video: {} | encoding {}x{} {:?} @ {} fps", gpu.adapter_name, w, h, codec, s.fps);
         Ok((gpu, capture, converter, size_generation, (w, h), device, encoder))
     };
     // `_device` must outlive the encoder.

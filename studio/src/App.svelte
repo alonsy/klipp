@@ -5,6 +5,7 @@
   import CloseNotice from "./lib/CloseNotice.svelte";
   import Editor from "./lib/Editor.svelte";
   import Library from "./lib/Library.svelte";
+  import Setup from "./lib/setup/Setup.svelte";
   import SettingsPage from "./lib/settings/SettingsPage.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import Toasts from "./lib/Toasts.svelte";
@@ -25,6 +26,12 @@
   onMount(() => {
     loadPrefs();
     refreshRecorder();
+    api.setupNeeded().then((needed) => {
+      if (needed) {
+        ui.setupRerun = false;
+        ui.page = "setup";
+      }
+    });
     Promise.all([reload(), api.startupRequest()]).then(([, request]) => handle(request));
     api.arriving().then(setArrivals, () => {});
     const offs = [api.onOpenRequest(handle), api.onCloseRequested(() => (ui.closeNotice = true)), api.onArrivals(setArrivals)];
@@ -43,7 +50,9 @@
   });
 </script>
 
-{#if ui.clip}
+{#if ui.page === "setup"}
+  <Setup rerun={ui.setupRerun} />
+{:else if ui.clip}
   {#key ui.clip.path}
     <Editor clip={ui.clip} />
   {/key}

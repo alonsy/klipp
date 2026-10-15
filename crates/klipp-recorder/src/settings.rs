@@ -135,6 +135,8 @@ pub enum Codec {
 pub enum Resolution {
     #[serde(rename = "native")]
     Native,
+    #[serde(rename = "1440p")]
+    P1440,
     #[serde(rename = "1080p")]
     P1080,
     #[serde(rename = "720p")]
@@ -311,6 +313,7 @@ impl Settings {
             fps: v.fps,
             height: match v.resolution {
                 Resolution::Native => None,
+                Resolution::P1440 => Some(1440),
                 Resolution::P1080 => Some(1080),
                 Resolution::P720 => Some(720),
             },

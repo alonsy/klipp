@@ -402,6 +402,18 @@ impl Tracker {
     }
 }
 
+/// CS2 is installed in one of the Steam libraries.
+pub fn installed() -> bool {
+    find_cfg_dir().is_some()
+}
+
+/// Removes our integration file from CS2 (when Klipp is uninstalled).
+pub fn remove_cfg() {
+    if let Some(dir) = find_cfg_dir() {
+        let _ = fs::remove_file(dir.join(CFG_NAME));
+    }
+}
+
 /// CS2's cfg folder in whichever Steam library has it installed.
 fn find_cfg_dir() -> Option<PathBuf> {
     let steam = steam_path()?;

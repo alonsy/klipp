@@ -4,7 +4,7 @@ import type { Arrival, Clip } from "./api";
 
 export type Kind = "all" | "auto" | "manual" | "favorites";
 export type Sort = "newest" | "oldest" | "longest" | "largest";
-export type Page = "clips" | "settings";
+export type Page = "clips" | "settings" | "setup";
 
 export const library = $state({
   clips: [] as Clip[],
@@ -32,6 +32,8 @@ export const ui = $state({
   /** The clip open in the editor, if any. */
   clip: null as Clip | null,
   closeNotice: false,
+  /** Setup was opened from Settings (it can be cancelled), not on a fresh install. */
+  setupRerun: false,
 });
 
 /** The studio's own preferences, with defaults. */

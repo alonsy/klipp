@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.12.2", features = ["protocol-asset"] }
 tauri-plugin-single-instance = "2.5.4"
+tauri-plugin-updater = "2.14.0"
 toml.workspace = true
 toml_edit = "0.25"
 

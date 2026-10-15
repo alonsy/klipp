@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "../../target/release/klipp-recorder.exe": "klipp-recorder.exe",
+      "../../vendor/ffmpeg/bin/ffmpeg.exe": "ffmpeg.exe",
+      "../../vendor/ffmpeg/bin/ffprobe.exe": "ffprobe.exe",
+      "../../vendor/ffmpeg/bin/avcodec-62.dll": "avcodec-62.dll",
+      "../../vendor/ffmpeg/bin/avdevice-62.dll": "avdevice-62.dll",
+      "../../vendor/ffmpeg/bin/avfilter-11.dll": "avfilter-11.dll",
+      "../../vendor/ffmpeg/bin/avformat-62.dll": "avformat-62.dll",
+      "../../vendor/ffmpeg/bin/avutil-60.dll": "avutil-60.dll",
+      "../../vendor/ffmpeg/bin/swresample-6.dll": "swresample-6.dll",
+      "../../vendor/ffmpeg/bin/swscale-9.dll": "swscale-9.dll",
+      "../../vendor/ffmpeg/LICENSE.txt": "FFMPEG-LICENSE.txt"
+    }
+  }
+}

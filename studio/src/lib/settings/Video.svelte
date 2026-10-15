@@ -23,7 +23,7 @@
     <Segmented
       value={s.video.resolution}
       label="Resolution"
-      options={[["native", "Native"], ["1080p", "1080p"], ["720p", "720p"]]}
+      options={[["native", "Native"], ["1440p", "1440p"], ["1080p", "1080p"], ["720p", "720p"]]}
       onchange={(v) => set(["video", "resolution"], v)}
     />
   </Field>
