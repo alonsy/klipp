@@ -8,6 +8,7 @@ use klipp_media::{HwDevice, Packet, VideoCodec, VideoEncoder, VideoEncoderConfig
 use serde::Serialize;
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
 use crate::gpu::Gpu;
@@ -29,6 +30,8 @@ struct Report {
     encoder: Option<&'static str>,
     encoders: Vec<EncoderCheck>,
     ram_mb: u64,
+    /// A laptop (it has a battery): setup suggests a save key that needs no Fn.
+    laptop: bool,
     /// CS2 is installed (auto-clips can work).
     cs2: bool,
     /// Why encoders couldn't be tested at all, if so.
@@ -82,6 +85,7 @@ pub fn run(monitor: &str, gpu: &str) -> Result<()> {
         encoder: None,
         encoders: Vec::new(),
         ram_mb: ram_mb(),
+        laptop: has_battery(),
         cs2: crate::cs2::installed(),
         error: None,
     };
@@ -156,6 +160,14 @@ fn gpus() -> Vec<GpuInfo> {
         }
     }
     out
+}
+
+/// Windows reports a system battery: a laptop (or a tablet).
+fn has_battery() -> bool {
+    const NO_BATTERY: u8 = 128;
+    const UNKNOWN: u8 = 255;
+    let mut status = SYSTEM_POWER_STATUS::default();
+    unsafe { GetSystemPowerStatus(&mut status) }.is_ok() && !matches!(status.BatteryFlag, NO_BATTERY | UNKNOWN)
 }
 
 fn ram_mb() -> u64 {

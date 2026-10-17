@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use klipp_media::{HwDevice, HwFrame, Packet, VideoCodec, VideoEncoder, VideoEncoderConfig};
 use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
 use crate::capture::{Capture, MonitorCapture};
 use crate::clock;
@@ -17,6 +19,7 @@ use crate::duplication::{self, DuplicationCapture};
 use crate::gpu::{Converter, Gpu};
 use crate::log::{info, warning};
 use crate::replay::{PacketInfo, VIDEO};
+use crate::revive::{Reviver, Why};
 use crate::settings::CaptureMethod;
 use crate::state::Shared;
 
@@ -38,6 +41,8 @@ pub struct VideoSettings {
 /// After a stall longer than this (sleep, hibernate, debugger), skip ahead
 /// instead of encoding a burst of catch-up frames.
 const MAX_CATCH_UP: Duration = Duration::from_secs(1);
+/// How often the video thread checks that the capture is still alive.
+const REVIVE_CHECK_EVERY: Duration = Duration::from_millis(250);
 
 pub struct VideoPipeline {
     stop: Arc<AtomicBool>,
@@ -104,6 +109,21 @@ fn start_capture(gpu: &Gpu, monitor: HMONITOR, s: &VideoSettings) -> Result<Capt
     Ok(Capture::Wgc(MonitorCapture::start(gpu, monitor, s.fps)?))
 }
 
+/// A new capture of the screen the settings name, looked up again: a monitor
+/// that went away and came back is a new monitor to Windows.
+fn restart_capture(gpu: &Gpu, s: &VideoSettings) -> Result<Capture> {
+    let (monitor, _) = crate::monitors::find(&s.monitor);
+    start_capture(gpu, monitor, s)
+}
+
+/// How long ago the last mouse or keyboard input was, anywhere in this session.
+fn input_age() -> Option<Duration> {
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe { GetLastInputInfo(&mut info) }
+        .as_bool()
+        .then(|| Duration::from_millis(unsafe { GetTickCount() }.wrapping_sub(info.dwTime) as u64))
+}
+
 fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<Result<()>>) -> Result<()> {
     let _priority = crate::mmcss::CaptureThread::register();
     let setup = || -> Result<_> {
@@ -151,7 +171,7 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
         Ok((gpu, capture, converter, size_generation, (w, h), device, encoder))
     };
     // `_device` must outlive the encoder.
-    let (gpu, capture, mut converter, mut converter_generation, out_size, _device, mut encoder) = match setup() {
+    let (gpu, mut capture, mut converter, mut converter_generation, out_size, _device, mut encoder) = match setup() {
         Ok(parts) => {
             let _ = ready.send(Ok(()));
             parts
@@ -183,6 +203,16 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
     // the previous frame if the screen didn't change.
     let mut current: Option<HwFrame> = None;
     let mut last_generation = 0;
+    let mut capture_size = {
+        let latest = capture.latest().lock();
+        (latest.width, latest.height)
+    };
+    // A new capture has its own texture, so the converter is made again.
+    let mut fresh_capture = false;
+    let mut reviver = Reviver::new(Instant::now());
+    let mut next_check = Instant::now() + REVIVE_CHECK_EVERY;
+    // Size changes counted by captures that were replaced.
+    let mut resizes_before = 0;
     let mut i: i64 = 0;
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -197,13 +227,48 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             shared.late_frames.fetch_add(1, Ordering::Relaxed);
         }
 
+        // A capture that has stopped for good is started again; until it
+        // sends a picture, the last one repeats.
+        if now >= next_check {
+            next_check = now + REVIVE_CHECK_EVERY;
+            if let Some(why) = reviver.check(now, capture.latest().closed(), input_age()) {
+                let first = reviver.first_try();
+                if first {
+                    match why {
+                        Why::Closed => info!("video: the screen went away; starting the capture again"),
+                        Why::Still => info!("video: the picture stopped changing while the PC is in use; starting the capture again"),
+                    }
+                }
+                match restart_capture(&gpu, s) {
+                    Ok(c) => {
+                        resizes_before += capture.latest().resizes();
+                        capture = c;
+                        last_generation = 0;
+                        fresh_capture = true;
+                        shared.capture_restarts.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) if first => warning!("video: the capture didn't start ({e:#}); trying again"),
+                    Err(_) => {}
+                }
+            }
+            let blind = reviver.blind();
+            if shared.capture_blind.swap(blind, Ordering::Relaxed) != blind && blind {
+                warning!("video: starting the capture again doesn't bring the picture back; clips show a still picture");
+            }
+        }
+
         let generation = capture.latest().generation();
         if current.is_none() || generation != last_generation {
             let latest = capture.latest().lock();
-            if latest.size_generation != converter_generation {
-                info!("video: capture size changed to {}x{}; scaling to {}x{}", latest.width, latest.height, out_size.0, out_size.1);
-                converter = Converter::new(&gpu, &latest.texture, (latest.width, latest.height), out_size, s.fps)?;
+            if fresh_capture || latest.size_generation != converter_generation {
+                let size = (latest.width, latest.height);
+                if size != capture_size {
+                    info!("video: capture size changed to {}x{}; scaling to {}x{}", size.0, size.1, out_size.0, out_size.1);
+                }
+                converter = Converter::new(&gpu, &latest.texture, size, out_size, s.fps)?;
                 converter_generation = latest.size_generation;
+                capture_size = size;
+                fresh_capture = false;
             }
             let frame = encoder.alloc_frame()?;
             let (texture, slice) = frame.texture();
@@ -212,10 +277,13 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             current = Some(frame);
             last_generation = generation;
             shared.new_frames.fetch_add(1, Ordering::Relaxed);
+            if reviver.picture(Instant::now()) {
+                info!("video: the new capture works; the picture is back");
+            }
         }
         encoder.encode(current.as_mut().context("no frame")?, i, &mut sink)?;
         shared.frames.fetch_add(1, Ordering::Relaxed);
-        shared.capture_resizes.store(capture.latest().resizes(), Ordering::Relaxed);
+        shared.capture_resizes.store(resizes_before + capture.latest().resizes(), Ordering::Relaxed);
         i += 1;
     }
     drop(current);

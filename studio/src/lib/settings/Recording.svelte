@@ -1,5 +1,6 @@
 <script lang="ts">
   import HotkeyInput from "../HotkeyInput.svelte";
+  import HotkeyTest from "../HotkeyTest.svelte";
   import Field from "../ui/Field.svelte";
   import Slider from "../ui/Slider.svelte";
   import { set, store } from "./store.svelte";
@@ -9,6 +10,8 @@
 
   const s = $derived(store.s!);
   let length = $state(store.s!.replay.length_secs as number);
+  /** The key test's result, in place of the hint. */
+  let keyNote = $state("");
   let ram = $derived({
     typical: Math.round((length * TYPICAL_MBPS) / 8),
     worst: Math.round(((length + 2) * s.video.max_bitrate_mbps) / 8),
@@ -20,8 +23,9 @@
 </script>
 
 <div class="group">
-  <Field title="Save hotkey" hint="Saves the last moments from anywhere, even in fullscreen games.">
+  <Field title="Save hotkey" hint={keyNote || "Saves the last moments from anywhere, even in fullscreen games."}>
     <HotkeyInput value={s.replay.hotkey} onchange={(h) => set(["replay", "hotkey"], h)} />
+    <HotkeyTest hotkey={s.replay.hotkey} bind:note={keyNote} cue={s.cue?.device ?? ""} volume={Number(s.cue?.volume ?? 0.6)} sound={s.cue?.enabled ?? true} />
   </Field>
   <Field title="Clip length" hint="How much the hotkey saves. Changing it keeps what's already buffered.">
     <Slider min={10} max={300} step={5} value={length} label="Clip length" oninput={(v) => (length = v)} onchange={(v) => set(["replay", "length_secs"], v)} />

@@ -90,10 +90,17 @@ export const setPref = (key: string, value: unknown) => invoke<void>("set_pref",
 export interface RecorderStatus {
   running: boolean;
   autostart: boolean;
-  /** From the recorder's watchdog: video restarting, or can't keep up. */
-  problem: "stopped" | "slow" | null;
+  /** From the recorder's watchdog: video restarting, a still picture it can't fix, or can't keep up. */
+  problem: "stopped" | "blind" | "slow" | null;
+  /** Another app holds the save key. */
+  hotkeyTaken: boolean;
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
+
+/** Setup's key test: a running recorder lends its key first, then up to 10 s for a press. */
+export type HotkeyTest = "works" | "taken" | "nothing" | "invalid";
+export const borrowHotkey = () => invoke<void>("borrow_hotkey");
+export const testHotkey = (key: string) => invoke<HotkeyTest>("test_hotkey", { key });
 
 /** A screen Klipp can record; `id` is what `video.monitor` stores. */
 export interface MonitorInfo {
@@ -130,6 +137,8 @@ export interface SystemCheck {
   encoder: string | null;
   encoders: { codec: "av1" | "h264"; width: number; height: number; ok: boolean; error: string | null }[];
   ramMb: number;
+  /** Has a battery: setup suggests Alt+F8, which needs no Fn on laptop keyboards. */
+  laptop: boolean;
   cs2: boolean;
   error: string | null;
   clipsDir: string;

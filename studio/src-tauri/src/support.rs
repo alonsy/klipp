@@ -31,6 +31,11 @@ pub fn details(version: &str, config: &Config) -> String {
             let _ = writeln!(out, "Settings: can't be read ({e:#})");
         }
     }
+    // What the recorder found when it tried the save key.
+    if let Some(key) = fs::read(config.log_dir.join("hotkey.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+        let state = if key["works"] == true { "works" } else { "taken by another app" };
+        let _ = writeln!(out, "Save key: {} ({state})", key["hotkey"].as_str().unwrap_or("?"));
+    }
 
     let log = fs::read_to_string(config.log_dir.join("recorder.log")).unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();

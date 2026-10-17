@@ -1,6 +1,6 @@
 //! Monitor capture through Windows.Graphics.Capture (no injection into games).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -51,6 +51,8 @@ pub struct LatestFrame {
     latest: Mutex<Latest>,
     generation: AtomicU64,
     resizes: AtomicU64,
+    /// Windows ended the capture (its monitor went away); no more frames will come.
+    closed: AtomicBool,
 }
 
 // SAFETY: D3D11 resources are free-threaded; all GPU commands go through the
@@ -64,7 +66,16 @@ impl LatestFrame {
             latest: Mutex::new(Latest { texture: create_bgra_texture(device, width, height)?, width, height, size_generation: 0 }),
             generation: AtomicU64::new(0),
             resizes: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
         }))
+    }
+
+    pub fn set_closed(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+    }
+
+    pub fn closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
     }
 
     /// A new frame is in the texture.
@@ -108,6 +119,8 @@ unsafe impl Send for CallbackGpu {}
 pub struct MonitorCapture {
     session: GraphicsCaptureSession,
     pool: Direct3D11CaptureFramePool,
+    /// Kept so its Closed event can arrive.
+    _item: GraphicsCaptureItem,
     pub latest: Arc<LatestFrame>,
 }
 
@@ -157,9 +170,16 @@ impl MonitorCapture {
                 frame.Close()
             },
         ))?;
+        // The monitor went away (asleep, switched off, unplugged): the video
+        // thread starts a new capture (see `revive`).
+        let closed = latest.clone();
+        item.Closed(&TypedEventHandler::new(move |_: Ref<GraphicsCaptureItem>, _: Ref<IInspectable>| {
+            closed.set_closed();
+            Ok(())
+        }))?;
         session.StartCapture()?;
 
-        Ok(Self { session, pool, latest })
+        Ok(Self { session, pool, _item: item, latest })
     }
 }
 

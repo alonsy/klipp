@@ -1,7 +1,11 @@
-//! Parsing hotkeys like "Alt+F10" or "Ctrl+Shift+S" for `RegisterHotKey`.
+//! Parsing hotkeys like "F8" or "Ctrl+Shift+S" for `RegisterHotKey`; telling
+//! the Klipp window whether the save key works; testing a key for setup.
+
+use std::sync::Mutex;
 
 use anyhow::{Result, bail};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, KillTimer, MSG, SetTimer, WM_HOTKEY, WM_TIMER};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hotkey {
@@ -50,4 +54,57 @@ fn vk(name: &str) -> Option<u32> {
         _ => return None,
     };
     Some(code as u32)
+}
+
+/// What `hotkey.json` last said, so it's only written when that changes.
+static WRITTEN: Mutex<Option<(String, bool)>> = Mutex::new(None);
+
+/// `hotkey.json` next to the log: whether the save key works or another app
+/// holds it. The Klipp window shows a taken key in its sidebar.
+pub fn write_state(hotkey: &str, works: bool) {
+    // Tests don't touch the real Klipp folder.
+    if cfg!(test) {
+        return;
+    }
+    let mut written = WRITTEN.lock().unwrap();
+    if written.as_ref().is_some_and(|(k, w)| k == hotkey && *w == works) {
+        return;
+    }
+    let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Klipp")) else { return };
+    let path = dir.join("hotkey.json");
+    let part = path.with_extension("json.part");
+    let body = serde_json::json!({ "hotkey": hotkey, "works": works }).to_string();
+    if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&part, body).is_ok() && std::fs::rename(&part, &path).is_ok() {
+        *written = Some((hotkey.to_string(), works));
+    }
+}
+
+/// `--test-hotkey KEY SECONDS` (setup's Test button): holds the key for up to
+/// `seconds` and waits for one press. "works", "taken" (another app holds
+/// it), "nothing" (no press arrived: on many laptops the F keys need Fn) or
+/// "invalid". Nothing is saved.
+pub fn test(text: &str, seconds: u32) -> &'static str {
+    const ID: i32 = 2;
+    let Ok(h) = Hotkey::parse(text) else { return "invalid" };
+    if unsafe { RegisterHotKey(None, ID, h.modifiers | MOD_NOREPEAT, h.vk) }.is_err() {
+        return "taken";
+    }
+    let timer = unsafe { SetTimer(None, 0, seconds * 1000, None) };
+    let mut result = "nothing";
+    let mut msg = MSG::default();
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
+        match msg.message {
+            WM_HOTKEY if msg.wParam.0 == ID as usize => {
+                result = "works";
+                break;
+            }
+            WM_TIMER if msg.wParam.0 == timer => break,
+            _ => {}
+        }
+    }
+    unsafe {
+        let _ = KillTimer(None, timer);
+        let _ = UnregisterHotKey(None, ID);
+    }
+    result
 }

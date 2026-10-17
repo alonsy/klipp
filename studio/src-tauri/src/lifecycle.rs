@@ -12,7 +12,8 @@ use windows::Win32::System::Registry::{
     RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CreateEventW, INFINITE, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE, WaitForSingleObject,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CreateEventW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
+    SetEvent, WaitForSingleObject,
 };
 use windows::core::{PCWSTR, w};
 
@@ -63,6 +64,42 @@ pub fn play_sound(device: &str, volume: f64, error: bool) -> Result<()> {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW.0);
     cmd.spawn().with_context(|| format!("starting {}", exe.display()))?;
     Ok(())
+}
+
+/// Set to make the running recorder let go of its save key for 15 s.
+const LEND_EVENT: PCWSTR = w!("Local\\KlippLendHotkey");
+
+/// Before a key test: a running recorder holds the save key, so it lends it
+/// (it checks once a second). Returns once the key is free to test.
+pub fn borrow_hotkey() {
+    if !recorder_running() {
+        return;
+    }
+    let lent = unsafe { OpenEventW(EVENT_MODIFY_STATE, false, LEND_EVENT) }.is_ok_and(|event| unsafe {
+        let set = SetEvent(event).is_ok();
+        let _ = CloseHandle(event);
+        set
+    });
+    if lent {
+        std::thread::sleep(std::time::Duration::from_millis(1300));
+    }
+}
+
+/// Setup's key test: the recorder holds `key` for 10 s and waits for one
+/// press. "works", "taken" (another app holds it), "nothing" (no press
+/// arrived) or "invalid". Call `borrow_hotkey` first.
+pub fn test_hotkey(key: &str) -> Result<String> {
+    let exe = std::env::current_exe()?.with_file_name("klipp-recorder.exe");
+    let out = Command::new(&exe)
+        .args(["--test-hotkey", key, "10"])
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .output()
+        .with_context(|| format!("starting {}", exe.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().rev().find(|l| l.trim_start().starts_with('{')).context("the key test said nothing")?;
+    let result: serde_json::Value = serde_json::from_str(line)?;
+    result["result"].as_str().map(String::from).context("the key test said nothing")
 }
 
 /// Shows an on-screen indicator once through the recorder (`on`, `saved` or

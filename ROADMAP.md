@@ -13,7 +13,8 @@ Klipp is young. Here's where it's going, and what won't change on the way.
 
 - A one-click installer, with a setup that checks what your PC can record and asks for your audio and video choices.
 - Updates inside the app, in one click, installed quietly in the background.
-- Always-on replay buffer with a save hotkey; presses close together become one clip.
+- Always-on replay buffer with a save hotkey you can test in setup; presses close together become one clip.
+- Recording that looks after itself: when the screen sleeps or the graphics driver resets, it picks the picture up again.
 - Counter-Strike 2 auto-clips (headshots, multi-kills, knife and Zeus kills) through Valve's Game State Integration.
 - Separate audio tracks, a session-grouped library, an editor with waveforms, and exports for sharing.
 - Optional indicators on top of your game ("Auto-clips ON", clip saved), never in your clips.

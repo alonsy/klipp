@@ -42,6 +42,8 @@ pub struct Recorder {
     saver: Option<Saver>,
     cue: CuePlayer,
     hotkey_registered: bool,
+    /// The save key is lent to the Klipp window's key test until then.
+    hotkey_lent_until: Option<Instant>,
     paused: bool,
     pub games: GameTracker,
     cs2: Option<Cs2Integration>,
@@ -95,6 +97,7 @@ impl Recorder {
             autoclip: AutoClipper::new(settings.autoclip_rules()),
             settings,
             hotkey_registered: false,
+            hotkey_lent_until: None,
             paused: false,
             games: GameTracker::default(),
             cs2: None,
@@ -132,13 +135,17 @@ impl Recorder {
     /// if frames stopped; tells the window if it can't keep up.
     pub fn check_health(&mut self) {
         use std::sync::atomic::Ordering::Relaxed;
-        let frames = self.shared.frames.load(Relaxed);
-        let late = self.shared.late_frames.load(Relaxed) + self.shared.skipped_ticks.load(Relaxed);
+        let counts = crate::watchdog::Counts {
+            frames: self.shared.frames.load(Relaxed),
+            late: self.shared.late_frames.load(Relaxed),
+            skipped: self.shared.skipped_ticks.load(Relaxed),
+            blind: self.shared.capture_blind.load(Relaxed),
+        };
         if self.paused {
-            self.watchdog.reset(frames, late);
+            self.watchdog.reset(counts);
             return;
         }
-        if self.watchdog.check(Instant::now(), frames, late, self.video.is_some()) == crate::watchdog::Verdict::RestartVideo {
+        if self.watchdog.check(Instant::now(), counts, self.video.is_some()) == crate::watchdog::Verdict::RestartVideo {
             // A new encoder's packets can't continue the old ones in a clip.
             self.flush_burst();
             self.video = None;
@@ -193,6 +200,7 @@ impl Recorder {
         }
         if hotkey_changed {
             self.unregister_hotkey();
+            self.hotkey_lent_until = None;
             self.register_hotkey();
         }
         self.cue.handle().update(&self.settings.cue);
@@ -429,13 +437,42 @@ impl Recorder {
     }
 
     fn register_hotkey(&mut self) {
-        let text = &self.settings.replay.hotkey;
-        let Ok(h) = Hotkey::parse(text) else { return };
-        if unsafe { RegisterHotKey(None, HOTKEY_SAVE, h.modifiers | MOD_NOREPEAT, h.vk) }.is_ok() {
-            self.hotkey_registered = true;
+        let text = self.settings.replay.hotkey.clone();
+        if self.try_hotkey() {
+            info!("hotkey: {text} saves clips");
         } else {
-            warning!("{text} is already taken by another app (SteelSeries Moments or NVIDIA Instant Replay?)");
+            warning!("hotkey: {text} is already taken by another app (SteelSeries Moments or NVIDIA Instant Replay?); trying again every few seconds");
         }
+    }
+
+    /// Registers the save key; false if another app holds it. Tells the
+    /// Klipp window either way.
+    fn try_hotkey(&mut self) -> bool {
+        let text = &self.settings.replay.hotkey;
+        let Ok(h) = Hotkey::parse(text) else { return false };
+        self.hotkey_registered = unsafe { RegisterHotKey(None, HOTKEY_SAVE, h.modifiers | MOD_NOREPEAT, h.vk) }.is_ok();
+        crate::hotkey::write_state(text, self.hotkey_registered);
+        self.hotkey_registered
+    }
+
+    /// A key another app held may be free now (it closed, or let go of it),
+    /// and a lent key comes back. Call every few seconds.
+    pub fn retry_hotkey(&mut self) {
+        if self.hotkey_registered || self.hotkey_lent_until.is_some_and(|t| Instant::now() < t) {
+            return;
+        }
+        let lent = self.hotkey_lent_until.take().is_some();
+        if self.try_hotkey() && !lent {
+            info!("hotkey: {} is free now and saves clips", self.settings.replay.hotkey);
+        }
+    }
+
+    /// The Klipp window tests the save key (setup's Test button): let go of
+    /// it for a moment; `retry_hotkey` takes it back afterwards.
+    pub fn lend_hotkey(&mut self, time: Duration) {
+        self.unregister_hotkey();
+        self.hotkey_lent_until = Some(Instant::now() + time);
+        info!("hotkey: {} lent to the Klipp window for a key test", self.settings.replay.hotkey);
     }
 
     fn unregister_hotkey(&mut self) {

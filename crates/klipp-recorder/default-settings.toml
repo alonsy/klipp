@@ -5,8 +5,8 @@
 [replay]
 # How many seconds the save hotkey keeps (10-300). Applies instantly.
 length_secs = 60
-# Modifiers (Ctrl, Alt, Shift, Win) plus a key, e.g. "Alt+F10", "Ctrl+Shift+S".
-hotkey = "Alt+F10"
+# A key, with or without modifiers (Ctrl, Alt, Shift, Win), e.g. "F8", "Alt+F8", "Ctrl+Shift+S".
+hotkey = "F8"
 
 [video]
 codec = "av1"            # "av1" (smaller files) or "h264" (plays everywhere)

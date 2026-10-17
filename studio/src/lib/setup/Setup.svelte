@@ -6,6 +6,7 @@
   import * as api from "../api";
   import type { AudioDevice, Drive, SystemCheck } from "../api";
   import HotkeyInput from "../HotkeyInput.svelte";
+  import HotkeyTest from "../HotkeyTest.svelte";
   import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
   import { library, openPage, refreshRecorder, reload, toast } from "../state.svelte";
@@ -37,6 +38,9 @@
   /** Setup run again with a different drive than the current clips folder's. */
   const driveChanged = $derived(rerun && !!drive && !library.clipsDir.toUpperCase().startsWith(drive));
   let finishing = $state(false);
+  /** The save key test's result, shown under the key. */
+  let keyNote = $state("");
+  let keyBad = $state(false);
 
   // Choices, preselected once the check is done.
   let c = $state({
@@ -54,7 +58,7 @@
     codec: "av1" as "av1" | "h264",
     /** "" = the main display. */
     monitor: "",
-    hotkey: "Alt+F10",
+    hotkey: "F8",
     length: 60,
     autostart: true,
     cs2: true,
@@ -154,6 +158,8 @@
     c.codec = encodes("av1", heightOf(c.resolution)) ? "av1" : "h264";
     c.fps = 60;
     c.cs2 = r.cs2;
+    // F8 on desktops; laptops often need Fn for F keys, and Alt+F8 is easy to reach with it.
+    if (!rerun) c.hotkey = r.laptop ? "Alt+F8" : "F8";
     // Little memory: a shorter buffer.
     if (r.ramMb > 0 && r.ramMb < 8000) c.length = 30;
   }
@@ -474,8 +480,12 @@
               </label>
             {/if}
             <div class="row">
-              <span class="what"><b>Save hotkey</b></span>
+              <span class="what">
+                <b>Save hotkey</b>
+                <span class:bad={keyBad}>{keyNote || "Press Test, then the key, to check it reaches Klipp."}</span>
+              </span>
               <HotkeyInput value={c.hotkey} onchange={(h) => (c.hotkey = h)} />
+              <HotkeyTest hotkey={c.hotkey} bind:note={keyNote} bind:bad={keyBad} cue={c.cue} volume={c.volume} sound={c.sound} />
             </div>
             <div class="row">
               <span class="what"><b>Clip length</b><span>Kept in memory: about {ramForBuffer} MB in games</span></span>
@@ -711,6 +721,10 @@
   .what span {
     color: var(--muted);
     font-size: 13px;
+  }
+
+  .what span.bad {
+    color: var(--danger);
   }
 
   .mark {

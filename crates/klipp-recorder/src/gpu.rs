@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1};
+use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::core::Interface;
 
@@ -66,6 +66,13 @@ impl Gpu {
         let mt: ID3D11Multithread = device.cast()?;
         unsafe {
             let _ = mt.SetMultithreadProtected(true);
+        }
+        // A game keeping the card busy would otherwise make the recorder's few
+        // conversions and encodes wait behind its frames (late and skipped
+        // frames). Best effort: recording works without it.
+        let dxgi: IDXGIDevice = device.cast()?;
+        if let Err(e) = unsafe { dxgi.SetGPUThreadPriority(7) } {
+            crate::log::warning!("video: couldn't raise the GPU priority ({e})");
         }
         Ok(Self { device, context, adapter_name, vendor })
     }

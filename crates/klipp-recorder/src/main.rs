@@ -25,6 +25,7 @@ mod probe;
 mod process_loopback;
 mod recorder;
 mod replay;
+mod revive;
 mod save;
 mod selftest;
 mod settings;
@@ -40,13 +41,15 @@ mod wasapi;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, LPARAM, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, LPARAM, WAIT_OBJECT_0, WPARAM,
+};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetStdHandle};
-use windows::Win32::System::Threading::{CreateMutexW, EVENT_MODIFY_STATE, GetCurrentThreadId, OpenEventW, SetEvent};
+use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, GetCurrentThreadId, OpenEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MESSAGEBOX_STYLE, MSG, MessageBoxW, PostThreadMessageW,
@@ -71,6 +74,7 @@ klipp-recorder --list-audio | --list-monitors | --cleanup | --check-update\n    
 klipp-recorder --probe [--monitor ID] [--gpu NAME]\n       \
 klipp-recorder --test-recording SECONDS FILE [--settings FILE]\n       \
 klipp-recorder --show-indicator on|saved|failed\n       \
+klipp-recorder --test-hotkey KEY SECONDS\n       \
 klipp-recorder --play-sound [error] [--device NAME] [--volume 0-1]\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
@@ -130,6 +134,12 @@ fn parse_args() -> Result<Args> {
                 };
                 let settings = Settings::load_or_create(&a.settings.clone().map_or_else(Settings::default_path, Ok)?).unwrap_or_default();
                 overlay::preview(pill, monitors::find(&settings.video.monitor).0)?;
+                std::process::exit(0);
+            }
+            "--test-hotkey" => {
+                let key = it.next().context("--test-hotkey needs KEY SECONDS")?;
+                let seconds: u32 = it.next().context("--test-hotkey needs KEY SECONDS")?.parse()?;
+                println!("{}", serde_json::json!({ "result": hotkey::test(&key, seconds.clamp(1, 60)) }));
                 std::process::exit(0);
             }
             "--list-monitors" => {
@@ -322,6 +332,11 @@ fn open_url(url: &str) {
     unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
 }
 
+/// The Klipp window sets this to test the save key (setup's Test button);
+/// the recorder lets go of the key for `LEND_TIME`.
+const LEND_EVENT: PCWSTR = w!("Local\\KlippLendHotkey");
+const LEND_TIME: Duration = Duration::from_secs(15);
+
 fn tooltip(s: &Settings) -> String {
     format!("Klipp\n{} saves the last {} s", s.replay.hotkey, s.replay.length_secs)
 }
@@ -373,6 +388,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         tray.notify("Hotkey unavailable", &format!("{hk} is used by another app. Close it or pick another hotkey in settings."));
     }
 
+    // Auto-reset: one test, one lend.
+    let lend_event = unsafe { CreateEventW(None, false, false, LEND_EVENT) }.ok();
     let mut watcher = SettingsWatcher::new(settings_path.clone());
     let stats_timer = unsafe { SetTimer(None, 0, 60_000, None) };
     let settings_timer = unsafe { SetTimer(None, 0, 1_000, None) };
@@ -465,6 +482,9 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 prev = (Instant::now(), stats::sample());
             }
             WM_TIMER if msg.wParam.0 == settings_timer => {
+                if lend_event.is_some_and(|e| unsafe { WaitForSingleObject(e, 0) } == WAIT_OBJECT_0) {
+                    recorder.lend_hotkey(LEND_TIME);
+                }
                 if watcher.poll() {
                     match Settings::load_or_create(&settings_path) {
                         Ok(s) if s != *recorder.settings() => {
@@ -487,6 +507,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());
                 recorder.check_health();
+                recorder.retry_hotkey();
+                hotkey_ok |= recorder.hotkey_registered();
             }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {
@@ -536,7 +558,7 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         (b.held_bytes(), b.allocated_bytes(), b.duration() as f64 / clock::SECOND as f64)
     };
     info!(
-        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | capture resizes {}",
+        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | capture resizes {}, restarts {}",
         mb(s.private_working_set),
         mb(s.commit),
         held as f64 / 1048576.0,
@@ -546,5 +568,6 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         shared.late_frames.load(Ordering::Relaxed),
         shared.skipped_ticks.load(Ordering::Relaxed),
         shared.capture_resizes.load(Ordering::Relaxed),
+        shared.capture_restarts.load(Ordering::Relaxed),
     );
 }

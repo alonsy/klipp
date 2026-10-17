@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://klipp.dev">klipp.dev</a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
@@ -29,7 +30,7 @@ No account, no ads, no telemetry. Your clips stay on your PC.
 
 ## Features
 
-- **Replay buffer.** The last 10 seconds to 5 minutes are always ready. **Alt+F10** saves them in a blink, from anywhere, even in fullscreen games. Press it a few times in a row and you get one clip with every press marked.
+- **Replay buffer.** The last 10 seconds to 5 minutes are always ready. **F8** (Alt+F8 on laptops) saves them in a blink, from anywhere, even in fullscreen games. Press it a few times in a row and you get one clip with every press marked.
 - **Auto-clips for Counter-Strike 2.** Headshots, 2K to aces, knife and Zeus kills are saved by themselves, using Valve's official Game State Integration. Nothing touches the game, so it's safe with VAC.
 - **Separate audio tracks.** Game, chat and mic can each be their own track, so a loud teammate can be turned down after the fact.
 - **A library that reads like a history.** Clips are filed per game and grouped into play sessions by time and map, with event icons and filters.

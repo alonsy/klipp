@@ -77,9 +77,12 @@ impl OpenRequest {
 struct RecorderStatus {
     running: bool,
     autostart: bool,
-    /// What the recorder's watchdog reports: "stopped" (video restarting) or
-    /// "slow" (can't keep up with the video settings).
+    /// What the recorder's watchdog reports: "stopped" (video restarting),
+    /// "blind" (the screen shows a still picture) or "slow" (can't keep up
+    /// with the video settings).
     problem: Option<String>,
+    /// Another app holds the save key, so pressing it does nothing.
+    hotkey_taken: bool,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -304,12 +307,34 @@ fn arriving() -> Value {
 #[tauri::command]
 fn recorder_status() -> RecorderStatus {
     let running = lifecycle::recorder_running();
-    let problem = running
-        .then(|| std::fs::read(config::load().log_dir.join("health.json")).ok())
-        .flatten()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| v["problem"].as_str().map(String::from));
-    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem }
+    let log_dir = config::load().log_dir;
+    // The recorder's reports, which only count while it runs.
+    let report = |name: &str| {
+        running
+            .then(|| std::fs::read(log_dir.join(name)).ok())
+            .flatten()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .unwrap_or_default()
+    };
+    let problem = report("health.json")["problem"].as_str().map(String::from);
+    let hotkey_taken = report("hotkey.json")["works"] == false;
+    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken }
+}
+
+/// Setup's Test button, step 1: a running recorder lends its save key.
+#[tauri::command]
+async fn borrow_hotkey() -> CmdResult<()> {
+    blocking(|| {
+        lifecycle::borrow_hotkey();
+        Ok(())
+    })
+    .await
+}
+
+/// Step 2: waits up to 10 s for a press of `key` (see `lifecycle::test_hotkey`).
+#[tauri::command]
+async fn test_hotkey(key: String) -> CmdResult<String> {
+    blocking(move || lifecycle::test_hotkey(&key)).await
 }
 
 #[tauri::command]
@@ -446,6 +471,8 @@ fn main() {
             get_prefs,
             set_pref,
             recorder_status,
+            borrow_hotkey,
+            test_hotkey,
             setup_needed,
             system_check,
             arriving,

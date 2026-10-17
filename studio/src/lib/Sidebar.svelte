@@ -73,20 +73,36 @@
   <footer>
     <UpdateCard />
     <LowSpaceCard />
-    {#if recorder.running && recorder.problem === "slow"}
-      <button class="status warn" onclick={() => openPage("settings", "video")} title="Video settings">
-        <span class="pulse"></span>
-        <span class="status-text">
-          <b>Can't keep up</b>
-          <span>Clips may stutter. Try a lower resolution or frame rate.</span>
-        </span>
-      </button>
-    {:else if recorder.running && recorder.problem === "stopped"}
+    {#if recorder.running && recorder.problem === "stopped"}
       <button class="status warn" onclick={() => openPage("settings", "about")} title="About, logs">
         <span class="pulse"></span>
         <span class="status-text">
           <b>Restarting video…</b>
           <span>The screen changed or the graphics driver reset.</span>
+        </span>
+      </button>
+    {:else if recorder.running && recorder.problem === "blind"}
+      <button class="status warn" onclick={() => openPage("settings", "video")} title="Video settings">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>Can't see the screen</b>
+          <span>Clips show a still picture. If a game is open, set it to borderless.</span>
+        </span>
+      </button>
+    {:else if recorder.running && recorder.hotkeyTaken}
+      <button class="status warn" onclick={() => openPage("settings", "recording")} title="Recording settings">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>{recorder.hotkey} doesn't work</b>
+          <span>Another app uses it. Pick another key.</span>
+        </span>
+      </button>
+    {:else if recorder.running && recorder.problem === "slow"}
+      <button class="status warn" onclick={() => openPage("settings", "video")} title="Video settings">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>Can't keep up</b>
+          <span>Clips may stutter. Cap the game's frame rate, or record at a lower resolution.</span>
         </span>
       </button>
     {:else if recorder.running}

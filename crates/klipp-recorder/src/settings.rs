@@ -131,7 +131,7 @@ pub struct Replay {
 
 impl Default for Replay {
     fn default() -> Self {
-        Self { length_secs: 60, hotkey: "Alt+F10".into() }
+        Self { length_secs: 60, hotkey: "F8".into() }
     }
 }
 
@@ -334,7 +334,7 @@ impl Settings {
             }
         }
         if Hotkey::parse(&self.replay.hotkey).is_err() {
-            w.push(format!("replay.hotkey \"{}\" isn't a valid hotkey; using Alt+F10", self.replay.hotkey));
+            w.push(format!("replay.hotkey \"{}\" isn't a valid hotkey; using F8", self.replay.hotkey));
             self.replay.hotkey = Replay::default().hotkey;
         }
         if ![30, 60, 120].contains(&self.video.fps) {

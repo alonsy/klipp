@@ -325,6 +325,17 @@ fn make_thumbnail(clip: &Path, job: &SaveJob, seconds: f64) -> Result<()> {
     let out = meta_path(job, clip, "thumbs", "jpg")?;
     let part = out.with_extension("part.jpg");
     let at = seconds_into(job, job.thumb_at).clamp(0.0, (seconds - 0.1).max(0.0));
+    // Seeking can find no picture (it happened to an 8 s clip saved right
+    // after a settings change); the clip's first picture is always there.
+    if !thumbnail_at(clip, &part, at)? && (at == 0.0 || !thumbnail_at(clip, &part, 0.0)?) {
+        bail!("ffmpeg made no picture");
+    }
+    fs::rename(&part, &out)?;
+    Ok(())
+}
+
+/// One picture of `clip` at `at` seconds into `part`. False if ffmpeg found none there.
+fn thumbnail_at(clip: &Path, part: &Path, at: f64) -> Result<bool> {
     let mut child = Command::new(ffmpeg_exe())
         .creation_flags(CREATE_NO_WINDOW.0 | BELOW_NORMAL_PRIORITY_CLASS.0)
         .stdin(Stdio::null())
@@ -333,7 +344,7 @@ fn make_thumbnail(clip: &Path, job: &SaveJob, seconds: f64) -> Result<()> {
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "2", "-ss", &format!("{at:.3}"), "-i"])
         .arg(clip)
         .args(["-map", "0:v:0", "-frames:v", "1", "-vf", &format!("scale={THUMB_WIDTH}:-2"), "-q:v", "4", "-y"])
-        .arg(&part)
+        .arg(part)
         .spawn()
         .context("starting ffmpeg.exe")?;
     let started = Instant::now();
@@ -344,17 +355,16 @@ fn make_thumbnail(clip: &Path, job: &SaveJob, seconds: f64) -> Result<()> {
         if started.elapsed() > THUMB_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = fs::remove_file(&part);
+            let _ = fs::remove_file(part);
             bail!("ffmpeg took too long");
         }
         thread::sleep(Duration::from_millis(25));
     };
-    if !status.success() || !part.exists() {
-        let _ = fs::remove_file(&part);
+    if !status.success() {
+        let _ = fs::remove_file(part);
         bail!("ffmpeg exited with {status}");
     }
-    fs::rename(&part, &out)?;
-    Ok(())
+    Ok(part.exists())
 }
 
 /// A folder name Windows accepts; falls back to "Desktop".

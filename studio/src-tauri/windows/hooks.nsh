@@ -36,3 +36,13 @@
     Pop $0
   ${EndIf}
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ; Someone uninstalled Klipp themselves (not an update, not a silent or
+  ; scripted uninstall): open the short "what didn't work?" page.
+  ${If} $UpdateMode <> 1
+  ${AndIf} $PassiveMode <> 1
+  ${AndIfNot} ${Silent}
+    ExecShell "open" "https://klipp.dev/uninstall?v=${VERSION}"
+  ${EndIf}
+!macroend

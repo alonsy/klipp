@@ -70,10 +70,12 @@ export async function setArrivals(list: Arrival[]) {
 export const recorder = $state({
   running: true,
   autostart: false,
-  hotkey: "Alt+F10",
+  hotkey: "F8",
   lengthSecs: 60,
-  /** From the recorder's watchdog: "stopped" (video restarting) or "slow" (can't keep up). */
-  problem: null as "stopped" | "slow" | null,
+  /** From the recorder's watchdog: "stopped" (video restarting), "blind" (a still picture) or "slow" (can't keep up). */
+  problem: null as "stopped" | "blind" | "slow" | null,
+  /** Another app holds the save key. */
+  hotkeyTaken: false,
   /** Restart the recorder if it stops while this window is open (not before setup is done). */
   autoRestart: false,
 });
@@ -116,6 +118,7 @@ export async function refreshRecorder() {
     recorder.running = status.running;
     recorder.autostart = status.autostart;
     recorder.problem = status.problem;
+    recorder.hotkeyTaken = status.hotkeyTaken;
     recorder.hotkey = settings.replay?.hotkey ?? recorder.hotkey;
     recorder.lengthSecs = settings.replay?.length_secs ?? recorder.lengthSecs;
   } catch {

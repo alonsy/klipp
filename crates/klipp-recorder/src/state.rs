@@ -1,7 +1,7 @@
 //! State shared between the video thread, the main thread and the clip saver.
 
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use klipp_media::StreamInfo;
 
@@ -22,6 +22,10 @@ pub struct Shared {
     pub skipped_ticks: AtomicU64,
     /// How often the capture size changed (display mode switches).
     pub capture_resizes: AtomicU64,
+    /// How often the capture was started again (see `revive`).
+    pub capture_restarts: AtomicU64,
+    /// Restarting the capture keeps not bringing the picture back.
+    pub capture_blind: AtomicBool,
 }
 
 impl Shared {
@@ -35,6 +39,8 @@ impl Shared {
             late_frames: AtomicU64::new(0),
             skipped_ticks: AtomicU64::new(0),
             capture_resizes: AtomicU64::new(0),
+            capture_restarts: AtomicU64::new(0),
+            capture_blind: AtomicBool::new(false),
         }
     }
 }
