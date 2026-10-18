@@ -42,6 +42,16 @@ impl Timeline {
         self.next = Some(pos + frames as i64);
     }
 
+    /// Copies frames `[start, start + left.len())` out, leaving them in place.
+    pub fn peek(&self, start: i64, left: &mut [f32], right: &mut [f32]) {
+        let cap = self.left.len() as i64;
+        for i in 0..left.len() {
+            let idx = (start + i as i64).rem_euclid(cap) as usize;
+            left[i] = self.left[idx];
+            right[i] = self.right[idx];
+        }
+    }
+
     /// Copies frames `[start, start + left.len())` out and clears them, so a
     /// source that goes quiet reads as silence rather than stale audio.
     pub fn take(&mut self, start: i64, left: &mut [f32], right: &mut [f32]) {

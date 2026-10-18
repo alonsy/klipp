@@ -13,10 +13,21 @@
     path: string;
     inPoint: number;
     outPoint: number;
+    /** Names of the clip's separate tracks, in the order of `volumes`. */
+    tracks: string[];
     volumes: number[];
     mixVolume: number;
   }
-  let { path, inPoint, outPoint, volumes, mixVolume }: Props = $props();
+  let { path, inPoint, outPoint, tracks, volumes, mixVolume }: Props = $props();
+
+  /** Tracks that carry voices: chat apps and microphones, by the names Klipp and Sonar give them. */
+  const VOICE = /chat|mic|voice|discord|party|team/i;
+  let voiceTracks = $derived(tracks.map((t) => VOICE.test(t)));
+  let voiceNames = $derived(tracks.filter((_, i) => voiceTracks[i]));
+  /** "Chat and Mic" */
+  let voiceList = $derived(voiceNames.length > 1 ? `${voiceNames.slice(0, -1).join(", ")} and ${voiceNames.at(-1)}` : (voiceNames[0] ?? ""));
+  /** Levels for a re-encode: voice tracks muted when asked to. */
+  let outVolumes = $derived(prefs.exportWithoutVoices ? volumes.map((v, i) => (voiceTracks[i] ? 0 : v)) : volumes);
 
   // Remembered between sessions; a per-viewer convenience only.
   const TARGET_KEY = "klipp.shareTargetMb";
@@ -75,7 +86,7 @@
     } catch {
       // Not important.
     }
-    const id = await api.startExport({ path, start: inPoint, end: outPoint, mode, targetMb, volumes, mixVolume });
+    const id = await api.startExport({ path, start: inPoint, end: outPoint, mode, targetMb, volumes: outVolumes, mixVolume });
     busy = { id, mode, fraction: 0 };
   }
 
@@ -146,6 +157,18 @@
       <Icon name="export" size={16} />Export high quality
     </button>
   </div>
+
+  {#if voiceNames.length > 0}
+    <div class="copy">
+      <div class="copy-text">
+        <span class="copy-title">Without voices</span>
+        <span class="copy-hint">
+          {prefs.exportWithoutVoices ? `Leaves ${voiceList} out. A trimmed copy keeps every track.` : `${voiceList} ${voiceNames.length > 1 ? "stay" : "stays"} in.`}
+        </span>
+      </div>
+      <Toggle checked={prefs.exportWithoutVoices} label="Without voices" onchange={(v) => setPref("exportWithoutVoices", v)} />
+    </div>
+  {/if}
 
   <div class="copy">
     <div class="copy-text">

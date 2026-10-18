@@ -97,6 +97,18 @@ export interface RecorderStatus {
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
 
+/** One track's level in the level check. `off`: why it records nothing. */
+export interface TrackLevel {
+  track: string;
+  db: number;
+  off: "mixer" | "no discord" | "no device" | null;
+}
+/** Runs the level check (12 s); reports arrive through `onAudioLevels`. */
+export const audioLevels = () => invoke<void>("audio_levels");
+export function onAudioLevels(handler: (tracks: TrackLevel[]) => void): Promise<UnlistenFn> {
+  return listen<{ tracks: TrackLevel[] }>("audio-levels", (e) => handler(e.payload.tracks));
+}
+
 /** Setup's key test: a running recorder lends its key first, then up to 10 s for a press. */
 export type HotkeyTest = "works" | "taken" | "nothing" | "invalid";
 export const borrowHotkey = () => invoke<void>("borrow_hotkey");

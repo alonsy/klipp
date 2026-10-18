@@ -27,6 +27,12 @@ pub fn init() -> Option<PathBuf> {
     Some(path)
 }
 
+/// Stops writing to the log file, for helpers that run beside the recorder
+/// (the window's level bars) and would only clutter its log.
+pub fn to_console_only() {
+    *LOG.lock().unwrap() = None;
+}
+
 pub fn write(level: &str, args: fmt::Arguments) {
     let t = unsafe { GetLocalTime() };
     let line = format!(

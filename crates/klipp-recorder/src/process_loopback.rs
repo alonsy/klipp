@@ -1,7 +1,7 @@
-//! "Everything this PC plays, except Klipp": Windows' process loopback in
-//! exclude mode (Windows 10 2004 and newer). Recording PC audio this way
-//! leaves out the save sound, which the recorder plays itself, whatever
-//! device it plays on.
+//! Windows' process loopback (Windows 10 2004 and newer): only one program
+//! and what it starts, or everything but one. "Everything this PC plays,
+//! except Klipp" leaves out the save sound, which the recorder plays itself,
+//! whatever device it plays on; "only Discord" is the experimental Chat track.
 //!
 //! It isn't used with audio routers (SteelSeries Sonar, Voicemeeter, virtual
 //! cables): their own process plays the game's sound again on the real
@@ -45,16 +45,25 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
     }
 }
 
-/// An audio client for everything played on this PC except by this process
-/// (and anything it starts). Not yet initialized.
-pub fn activate_excluding_self() -> Result<IAudioClient> {
+/// Which programs a process loopback capture hears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// Only this process and the processes it started.
+    Only(u32),
+    /// Everything played on this PC except by this process and the ones it started.
+    AllBut(u32),
+}
+
+/// An audio client for `target`. Not yet initialized.
+pub fn activate(target: Target) -> Result<IAudioClient> {
+    let (pid, mode) = match target {
+        Target::Only(pid) => (pid, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE),
+        Target::AllBut(pid) => (pid, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE),
+    };
     let params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                TargetProcessId: std::process::id(),
-                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-            },
+            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS { TargetProcessId: pid, ProcessLoopbackMode: mode },
         },
     };
     // Not dropped: dropping a PROPVARIANT frees its blob, and this blob is `params` on the stack.

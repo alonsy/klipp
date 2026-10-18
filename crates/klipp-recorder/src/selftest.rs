@@ -78,6 +78,157 @@ pub fn run_audio(seconds: u32, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `klipp-recorder --test-chat SECONDS FILE.wav [--device NAME]`: records the
+/// Discord split three ways at once (everything but Discord, only Klipp, only
+/// Discord) while this process plays the save sound 1.5 s in, then takes
+/// Klipp's own sound out of the first and reports what's left. Writes the
+/// Game track as Klipp would make it to FILE, the others next to it.
+pub fn run_chat(seconds: u32, out: &Path, device: &str) -> Result<()> {
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+    use crate::process_loopback::Target;
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+    let discord = crate::discord::main_process();
+    let me = std::process::id();
+    let everything_but = Capturer::open_programs(Target::AllBut(discord.unwrap_or(me)), "everything but Discord")?;
+    let klipp = Capturer::open_programs(Target::Only(me), "Klipp")?;
+    let chat = discord.map(|pid| Capturer::open_programs(Target::Only(pid), "Discord")).transpose()?;
+    println!("Discord: {}", discord.map_or("not running".into(), |pid| format!("process {pid}")));
+
+    let device = device.to_string();
+    let chime = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        cue::play_once(Sound::Saved, &device, 1.0)
+    });
+    // Every packet, placed by its capture time on the shared clock.
+    let t0 = clock::now();
+    let frames = (seconds as usize + 1) * 48_000;
+    let place = |into: &mut Vec<f32>, time: i64, data: Option<&[f32]>, n: usize| {
+        let start = ((time - t0) as i128 * 48_000 / clock::SECOND as i128).max(0) as usize;
+        if let Some(d) = data {
+            for (i, s) in d.iter().enumerate().take(n * 2) {
+                if let Some(slot) = into.get_mut(start * 2 + i) {
+                    *slot = *s;
+                }
+            }
+        }
+    };
+    let (mut game, mut own, mut voices) = (vec![0f32; frames * 2], vec![0f32; frames * 2], vec![0f32; frames * 2]);
+    let end = std::time::Instant::now() + Duration::from_secs(seconds as u64);
+    while std::time::Instant::now() < end {
+        everything_but.read(|t, d, n| place(&mut game, t, d, n))?;
+        klipp.read(|t, d, n| place(&mut own, t, d, n))?;
+        if let Some(c) = &chat {
+            c.read(|t, d, n| place(&mut voices, t, d, n))?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    chime.join().map_err(|_| anyhow::anyhow!("the chime thread panicked"))??;
+
+    // Through the recorder's own canceller, frame by frame as the audio thread runs it.
+    let loud: Vec<usize> = own.chunks(2).enumerate().filter(|(_, s)| s[0].abs() + s[1].abs() > 1e-4).map(|(i, _)| i).collect();
+    let (Some(&first), Some(&last)) = (loud.first(), loud.last()) else {
+        anyhow::bail!("Klipp's own sound wasn't captured (is the save sound device muted?)");
+    };
+    let (mut track, mut cancel) = (crate::timeline::Timeline::new(96_000), crate::cancel::Canceller::new(96_000));
+    let (mut clean, mut mixed, mut written) = (Vec::with_capacity(game.len()), 0usize, 0usize);
+    while mixed + 1024 <= frames.saturating_sub(4800) {
+        while written < (mixed + 4800).min(frames) {
+            let k = 480.min(frames - written);
+            track.write(written as i64, Some(&game[written * 2..(written + k) * 2]), k, mixed as i64);
+            cancel.write(written as i64, Some(&own[written * 2..(written + k) * 2]), k, mixed as i64);
+            written += k;
+        }
+        let (mut l, mut r) = (vec![0.0; 1024], vec![0.0; 1024]);
+        track.take(mixed as i64, &mut l, &mut r);
+        cancel.apply(mixed as i64, &mut l, &mut r, &track);
+        clean.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
+        mixed += 1024;
+    }
+    clean.resize(game.len(), 0.0);
+    let energy = |x: &[f32]| x.iter().map(|v| v * v).sum::<f32>();
+    let window = first * 2..(last + 1) * 2;
+    let db = 10.0 * (energy(&clean[window.clone()]).max(1e-12) / energy(&game[window]).max(1e-12)).log10();
+    println!(
+        "Klipp's sound: {:.2} s long at {:.2} s | in everything-but-Discord: match {:.2} | after taking it out: {db:.1} dB left",
+        (last - first) as f32 / 48_000.0,
+        first as f32 / 48_000.0,
+        chime_match(&game),
+    );
+    println!(
+        "{}",
+        if db < -30.0 {
+            "Works: Klipp's own sound was taken out of the Game track."
+        } else if discord.is_none() {
+            "Discord isn't running, so this only tested the usual way of leaving Klipp out."
+        } else {
+            "Doesn't work here: Klipp's own sound is still in the Game track."
+        }
+    );
+    if chat.is_some() {
+        println!("Discord's track: {:.1} s with sound", voices.chunks(2).filter(|s| s[0].abs() + s[1].abs() > 1e-4).count() as f32 / 48_000.0);
+    }
+    write_wav(out, &clean)?;
+    write_wav(&out.with_extension("before.wav"), &game)?;
+    write_wav(&out.with_extension("klipp.wav"), &own)?;
+    write_wav(&out.with_extension("discord.wav"), &voices)?;
+    Ok(())
+}
+
+/// `klipp-recorder --levels SECONDS`: how loud each track of the settings is,
+/// ten times a second, as JSON lines, for the level bars in the Klipp window.
+/// Opens the same sources the recorder would, beside it.
+pub fn run_levels(seconds: u32, settings: &Settings) -> Result<()> {
+    use std::io::Write;
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+    crate::log::to_console_only();
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+    let configs = settings.audio_sources();
+    let follow = configs.iter().any(|c| matches!(c.programs, crate::audio::Programs::AllButDiscord | crate::audio::Programs::Discord));
+    let discord = if follow { crate::discord::main_process() } else { None };
+    let opened: Vec<_> = configs.iter().map(|c| crate::audio::open(c, discord, true).ok().flatten()).collect();
+    let router = crate::wasapi::list_devices()
+        .map(|d| crate::process_loopback::router_present(&d.into_iter().filter(|d| d.kind == crate::wasapi::SourceKind::Loopback).map(|d| d.name).collect::<Vec<_>>()))
+        .unwrap_or(false);
+    // Why a track records nothing, for the window to say.
+    let why = |c: &crate::audio::AudioSourceConfig| match c.programs {
+        crate::audio::Programs::Discord if router => "mixer",
+        crate::audio::Programs::Discord if discord.is_none() => "no discord",
+        _ => "no device",
+    };
+    let mut peaks = vec![0f32; configs.len()];
+    let end = std::time::Instant::now() + Duration::from_secs(seconds as u64);
+    let mut next = std::time::Instant::now() + Duration::from_millis(100);
+    while std::time::Instant::now() < end {
+        for (k, o) in opened.iter().enumerate() {
+            if let Some(o) = o {
+                o.capturer.read(|_, data, _| {
+                    for s in data.unwrap_or_default() {
+                        peaks[k] = peaks[k].max(s.abs());
+                    }
+                })?;
+            }
+        }
+        if std::time::Instant::now() >= next {
+            next += Duration::from_millis(100);
+            let tracks: Vec<serde_json::Value> = configs
+                .iter()
+                .zip(&opened)
+                .zip(&peaks)
+                .map(|((c, o), &p)| {
+                    let db = if p > 0.0 { (20.0 * (p as f64).log10()).max(-90.0) } else { -90.0 };
+                    let off = if o.is_some() { None } else { Some(why(c)) };
+                    serde_json::json!({ "track": c.title, "db": (db * 10.0).round() / 10.0, "off": off })
+                })
+                .collect();
+            println!("{}", serde_json::json!({ "tracks": tracks }));
+            let _ = std::io::stdout().flush();
+            peaks.fill(0.0);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 /// How well the built-in save sound matches anywhere in `recording` (48 kHz
 /// stereo): normalized cross-correlation at 8 kHz mono, 1.0 = exactly there.
 fn chime_match(recording: &[f32]) -> f32 {

@@ -27,6 +27,8 @@ gpu = ""                 # "" encodes on the card that drives the screen
 # the Windows default. kind: "loopback" records what a playback device plays;
 # "capture" records a microphone. With an app that splits audio into devices
 # (like SteelSeries Sonar), add Game, Chat and Mic as separate tracks.
+# kind = "discord" (experimental) records only the Discord app; the first "loopback"
+# track then records everything but Discord. Not with Sonar or Voicemeeter.
 sources = [
   { name = "PC audio", device = "", kind = "loopback" },
 ]

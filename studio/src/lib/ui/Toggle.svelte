@@ -1,8 +1,13 @@
 <script lang="ts">
-  let { checked, label, onchange }: { checked: boolean; label: string; onchange: (v: boolean) => void } = $props();
+  let {
+    checked,
+    label,
+    disabled = false,
+    onchange,
+  }: { checked: boolean; label: string; disabled?: boolean; onchange: (v: boolean) => void } = $props();
 </script>
 
-<button class="toggle" class:on={checked} role="switch" aria-checked={checked} aria-label={label} onclick={() => onchange(!checked)}>
+<button class="toggle" class:on={checked} role="switch" aria-checked={checked} aria-label={label} {disabled} onclick={() => onchange(!checked)}>
   <span class="knob"></span>
 </button>
 
@@ -19,8 +24,13 @@
     transition: background 0.18s;
   }
 
-  .toggle:hover {
+  .toggle:hover:not(:disabled) {
     background: #484846;
+  }
+
+  .toggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   .toggle.on {

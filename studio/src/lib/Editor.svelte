@@ -567,7 +567,7 @@
       <span class="time mono total">{timecode(length)}</span>
     </div>
     <div class="t-right">
-      <ExportMenu path={clip.path} {inPoint} {outPoint} volumes={exportVolumes} mixVolume={masterLevel} />
+      <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} volumes={exportVolumes} mixVolume={masterLevel} />
       <span class="t-spacer"></span>
       <div class="preview" title="Preview volume: only how loud you hear it here, not the clip's levels (M mutes)">
         <button class="ghost icon" onclick={() => (previewMuted = !previewMuted)} aria-label="Mute preview"><Icon name={volumeIcon} size={18} /></button>

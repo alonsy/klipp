@@ -108,6 +108,9 @@ fn describe_settings(out: &mut String, s: &Value) {
         .into_iter()
         .flatten()
         .map(|src| {
+            if src["kind"] == "discord" {
+                return format!("{} (the Discord app, experimental)", text(&src["name"]));
+            }
             let device = src["device"].as_str().filter(|d| !d.is_empty()).unwrap_or("Windows default");
             format!("{} ({}: {device})", text(&src["name"]), text(&src["kind"]))
         })

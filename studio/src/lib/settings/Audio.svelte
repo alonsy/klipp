@@ -1,12 +1,16 @@
 <script lang="ts">
+  import { DISCORD, routerInstalled } from "../discordTrack";
   import Icon from "../Icon.svelte";
+  import LevelCheck from "../LevelCheck.svelte";
+  import Field from "../ui/Field.svelte";
   import Segmented from "../ui/Segmented.svelte";
+  import Toggle from "../ui/Toggle.svelte";
   import { deviceOptions, devicesOf, matchDevice, set, store } from "./store.svelte";
 
   interface Source {
     name: string;
     device: string;
-    kind: "loopback" | "capture";
+    kind: "loopback" | "capture" | "discord";
   }
 
   // The saved tracks, and a new one being set up. A new track is only saved
@@ -32,6 +36,30 @@
     save();
   }
 
+  const hasDiscord = $derived(sources.some((s) => s.kind === DISCORD));
+  /** An audio router replays Discord from its own program; then Game can't leave it out. */
+  const router = $derived(routerInstalled(devicesOf("loopback")));
+
+  /** Discord on its own track: a Chat track of only Discord after the first
+   * track of what the PC plays, which then records everything else. */
+  function setDiscord(on: boolean) {
+    if (on) {
+      let i = sources.findIndex((s) => s.kind === "loopback");
+      if (i < 0) {
+        sources.unshift({ name: "Game", device: "", kind: "loopback" });
+        i = 0;
+      } else if (sources[i].name === "PC audio") {
+        sources[i].name = "Game";
+      }
+      sources.splice(i + 1, 0, { name: "Chat", device: "", kind: DISCORD });
+    } else {
+      sources = sources.filter((s) => s.kind !== DISCORD);
+      const i = sources.findIndex((s) => s.kind === "loopback");
+      if (i >= 0 && sources[i].name === "Game") sources[i].name = "PC audio";
+    }
+    save();
+  }
+
   const kinds = [
     ["loopback", "What it plays"],
     ["capture", "Microphone"],
@@ -49,6 +77,9 @@
     <div class="track">
       <span class="num mono">{i + 1}</span>
       <input class="name" value={src.name} aria-label="Track name" onchange={(e) => ((src.name = e.currentTarget.value.trim() || src.name), save())} />
+      {#if src.kind === DISCORD}
+        <span class="fixed">Only the Discord app <span class="exp">Experimental</span></span>
+      {:else}
       <Segmented value={src.kind} label="Source type" options={kinds} onchange={(v) => ((src.kind = v), (src.device = devicesOf(v)[0] ?? src.device), save())} />
       <select
         class="device"
@@ -59,6 +90,7 @@
         <option value="">Windows default</option>
         {#each deviceOptions(src.kind, src.device) as name (name)}<option value={name}>{name}</option>{/each}
       </select>
+      {/if}
       <button
         class="ghost icon"
         aria-label="Remove track"
@@ -94,6 +126,21 @@
 {#if !draft}
   <button class="add" onclick={addDraft}><Icon name="mic" size={16} />Add track</button>
 {/if}
+
+<div class="group">
+  <Field
+    title="Discord on its own track"
+    badge="Experimental"
+    hint={router && !hasDiscord
+      ? "Not while an audio mixer like Sonar or Voicemeeter is installed: it plays Discord again through its own program. Sonar's Chat track already does this."
+      : "Discord voice chat on a Chat track and everything else on Game, so you can turn voices down in the editor or leave them out when you share. The Discord app only, not Discord in a browser."}
+  >
+    <Toggle checked={hasDiscord} label="Discord on its own track" disabled={router && !hasDiscord} onchange={setDiscord} />
+  </Field>
+  {#if hasDiscord}
+    <LevelCheck hint="Play something in Discord, like its voice check (User Settings → Voice & Video → Let's Check), and watch Chat move while Game stays still." />
+  {/if}
+</div>
 
 <style>
   .intro {
@@ -138,6 +185,25 @@
   .name,
   .device {
     min-width: 0;
+  }
+
+  .fixed {
+    grid-column: span 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .exp {
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font: 600 10px/1.4 var(--font-mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   .draft-hint,

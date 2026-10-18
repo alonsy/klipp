@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "klipp"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "serde",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-media"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-next",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-recorder"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "embed-resource",

@@ -32,7 +32,7 @@ No account, no ads, no telemetry. Your clips stay on your PC.
 
 - **Replay buffer.** The last 10 seconds to 5 minutes are always ready. **F8** (Alt+F8 on laptops) saves them in a blink, from anywhere, even in fullscreen games. Press it a few times in a row and you get one clip with every press marked.
 - **Auto-clips for Counter-Strike 2.** Headshots, 2K to aces, knife and Zeus kills are saved by themselves, using Valve's official Game State Integration. Nothing touches the game, so it's safe with VAC.
-- **Separate audio tracks.** Game, chat and mic can each be their own track, so a loud teammate can be turned down after the fact.
+- **Separate audio tracks.** Game, chat and mic can each be their own track, so a loud teammate can be turned down after the fact, or left out when you share. Without an audio mixer, Discord can get its own Chat track (experimental).
 - **A library that reads like a history.** Clips are filed per game and grouped into play sessions by time and map, with event icons and filters.
 - **An editor that stays out of the way.** Waveforms for every track, event markers, trim handles that snap, and trims and levels that are remembered per clip.
 - **Share in a click.** Export under 10, 50 or 500 MB for chat apps, a high quality copy, or a lossless trim. It can go straight to your clipboard.

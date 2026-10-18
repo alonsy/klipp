@@ -11,12 +11,28 @@ use anyhow::{Result, anyhow};
 use klipp_media::{AudioEncoder, Packet, SAMPLE_RATE};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
+use crate::cancel::Canceller;
 use crate::clock;
 use crate::log::{info, warning};
+use crate::process_loopback::Target;
 use crate::replay::PacketInfo;
 use crate::state::Shared;
 use crate::timeline::Timeline;
 use crate::wasapi::{Capturer, SourceKind};
+
+/// Which programs a track hears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Programs {
+    /// The device itself: everything it plays, or what the microphone hears.
+    Device,
+    /// Everything but Klipp's own sounds: the save sound plays on this device.
+    AllButKlipp,
+    /// Everything but the Discord app, which has its own track, and with
+    /// Klipp's own sounds taken out (see `cancel`).
+    AllButDiscord,
+    /// Only the Discord app (experimental).
+    Discord,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioSourceConfig {
@@ -25,9 +41,7 @@ pub struct AudioSourceConfig {
     /// Part of the device's name, e.g. "Sonar - Gaming".
     pub device: String,
     pub kind: SourceKind,
-    /// The save sound plays on this same device: record everything but Klipp
-    /// instead (`process_loopback`), unless an audio router is installed.
-    pub skip_klipp: bool,
+    pub programs: Programs,
 }
 
 /// Buffer stream id of the premixed track; sources follow from 2.
@@ -42,10 +56,111 @@ const TIMELINE_FRAMES: usize = SAMPLE_RATE as usize * 2;
 const POLL_EVERY: Duration = Duration::from_millis(10);
 /// How often to look for a device that's missing (e.g. Sonar not running yet).
 const RETRY_EVERY: Duration = Duration::from_secs(5);
+/// How often to look for Discord starting, quitting or restarting itself.
+const DISCORD_EVERY: Duration = Duration::from_secs(2);
+
+/// What a source records from, once opened.
+pub struct Opened {
+    pub capturer: Capturer,
+    /// Klipp's own sound, to take back out (`Programs::AllButDiscord` while Discord runs).
+    pub own: Option<Capturer>,
+}
+
+/// An audio router replays other programs' sound from its own process, so
+/// leaving programs out of a capture doesn't work while one is installed.
+fn router_installed() -> bool {
+    let devices = crate::wasapi::list_devices().unwrap_or_default();
+    let playback: Vec<String> = devices.into_iter().filter(|d| d.kind == SourceKind::Loopback).map(|d| d.name).collect();
+    crate::process_loopback::router_present(&playback)
+}
+
+/// Opens what `cfg` records, with `discord` the Discord app's main process if
+/// it runs. `Ok(None)`: nothing to record from now (no such device, or
+/// Discord isn't running). Logs what it picked unless `quiet`.
+pub fn open(cfg: &AudioSourceConfig, discord: Option<u32>, quiet: bool) -> Result<Option<Opened>> {
+    let title = &cfg.title;
+    let opened = |capturer: Capturer| Ok(Some(Opened { capturer, own: None }));
+    match cfg.programs {
+        Programs::Device => {}
+        Programs::AllButKlipp => {
+            if router_installed() {
+                if !quiet {
+                    info!("audio: {title}: an audio router is installed, so the save sound should play on another device");
+                }
+            } else {
+                match Capturer::open_excluding_klipp() {
+                    Ok(c) => {
+                        info!("audio: {title} <- everything this PC plays, except Klipp's own sounds");
+                        return opened(c);
+                    }
+                    Err(e) => warning!("audio: can't leave Klipp's sounds out ({e:#}); recording the device as is"),
+                }
+            }
+        }
+        Programs::AllButDiscord => {
+            if router_installed() {
+                if !quiet {
+                    warning!("audio: {title}: Discord can't have its own track while an audio mixer (Sonar, Voicemeeter…) is installed; recording the device, Discord included");
+                }
+            } else {
+                let me = std::process::id();
+                let both = discord.map(|pid| -> Result<Opened> {
+                    let capturer = Capturer::open_programs(Target::AllBut(pid), "everything but Discord")?;
+                    let own = Capturer::open_programs(Target::Only(me), "Klipp")?;
+                    Ok(Opened { capturer, own: Some(own) })
+                });
+                match both {
+                    Some(Ok(o)) => {
+                        info!("audio: {title} <- everything this PC plays, except Discord and Klipp's own sounds");
+                        return Ok(Some(o));
+                    }
+                    Some(Err(e)) => warning!("audio: can't leave Discord out ({e:#}); recording the device, Discord included"),
+                    None => match Capturer::open_excluding_klipp() {
+                        Ok(c) => {
+                            info!("audio: {title} <- everything this PC plays, except Klipp's own sounds (Discord isn't running)");
+                            return opened(c);
+                        }
+                        Err(e) => warning!("audio: can't leave Klipp's sounds out ({e:#}); recording the device as is"),
+                    },
+                }
+            }
+        }
+        Programs::Discord => {
+            // Never a device: without Discord (or with a router), the track stays silent.
+            if router_installed() {
+                if !quiet {
+                    warning!("audio: {title}: Discord can't have its own track while an audio mixer (Sonar, Voicemeeter…) is installed; this track stays silent");
+                }
+                return Ok(None);
+            }
+            let Some(pid) = discord else {
+                if !quiet {
+                    info!("audio: {title}: Discord isn't running; silent until it starts");
+                }
+                return Ok(None);
+            };
+            let c = Capturer::open_programs(Target::Only(pid), "Discord")?;
+            info!("audio: {title} <- Discord");
+            return opened(c);
+        }
+    }
+    let Some(c) = Capturer::open(&cfg.device, cfg.kind)? else {
+        if !quiet {
+            warning!("audio: no device matching \"{}\" for {title}; will keep looking", cfg.device);
+        }
+        return Ok(None);
+    };
+    info!("audio: {title} <- {}", c.device_name);
+    opened(c)
+}
 
 struct Source {
     cfg: AudioSourceConfig,
     capturer: Option<Capturer>,
+    /// Klipp's own sound and what takes it back out (see `cancel`).
+    own: Option<(Capturer, Canceller)>,
+    /// The Discord process the capture was opened for.
+    discord: Option<u32>,
     next_retry: Instant,
     timeline: Timeline,
     encoder: AudioEncoder,
@@ -54,33 +169,20 @@ struct Source {
 }
 
 impl Source {
-    fn try_open(&mut self, quiet: bool) {
-        if self.cfg.skip_klipp {
-            let devices = crate::wasapi::list_devices().unwrap_or_default();
-            let playback: Vec<String> = devices.into_iter().filter(|d| d.kind == SourceKind::Loopback).map(|d| d.name).collect();
-            if crate::process_loopback::router_present(&playback) {
-                if !quiet {
-                    info!("audio: {}: an audio router is installed, so the save sound should play on another device", self.cfg.title);
-                }
-            } else {
-                match Capturer::open_excluding_klipp() {
-                    Ok(c) => {
-                        info!("audio: {} <- everything this PC plays, except Klipp's own sounds", self.cfg.title);
-                        self.capturer = Some(c);
-                        return;
-                    }
-                    Err(e) => warning!("audio: can't leave Klipp's sounds out ({e:#}); recording the device as is"),
-                }
+    fn follows_discord(&self) -> bool {
+        matches!(self.cfg.programs, Programs::AllButDiscord | Programs::Discord)
+    }
+
+    fn try_open(&mut self, quiet: bool, discord: Option<u32>) {
+        (self.capturer, self.own, self.discord) = (None, None, discord);
+        match open(&self.cfg, discord, quiet) {
+            Ok(Some(o)) => {
+                self.capturer = Some(o.capturer);
+                self.own = o.own.map(|c| (c, Canceller::new(TIMELINE_FRAMES)));
             }
-        }
-        match Capturer::open(&self.cfg.device, self.cfg.kind) {
-            Ok(Some(c)) => {
-                info!("audio: {} <- {}", self.cfg.title, c.device_name);
-                self.capturer = Some(c);
-            }
-            Ok(None) if !quiet => warning!("audio: no device matching \"{}\" for {}; will keep looking", self.cfg.device, self.cfg.title),
-            Err(e) if !quiet => warning!("audio: opening \"{}\" failed: {e:#}; will retry", self.cfg.device),
-            _ => {}
+            Ok(None) => {}
+            Err(e) if !quiet => warning!("audio: opening {} failed: {e:#}; will retry", self.cfg.title),
+            Err(_) => {}
         }
         self.next_retry = Instant::now() + RETRY_EVERY;
     }
@@ -122,6 +224,8 @@ impl Drop for AudioPipeline {
 
 fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, ready: SyncSender<Result<()>>) -> Result<()> {
     let _priority = crate::mmcss::CaptureThread::register();
+    let follow_discord = configs.iter().any(|c| matches!(c.programs, Programs::AllButDiscord | Programs::Discord));
+    let mut discord = if follow_discord { crate::discord::main_process() } else { None };
     let setup = || -> Result<_> {
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
         let mix = AudioEncoder::new(MIX_BITRATE)?;
@@ -132,6 +236,8 @@ fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, read
             sources.push(Source {
                 cfg,
                 capturer: None,
+                own: None,
+                discord: None,
                 next_retry: Instant::now(),
                 timeline: Timeline::new(TIMELINE_FRAMES),
                 encoder,
@@ -145,7 +251,7 @@ fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, read
         }
         *shared.audio_streams.lock().unwrap() = streams;
         for s in &mut sources {
-            s.try_open(false);
+            s.try_open(false, discord);
         }
         Ok((mix, sources))
     };
@@ -180,20 +286,39 @@ fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, read
     };
 
     let mut mixed: i64 = 0;
+    let mut next_discord_check = Instant::now() + DISCORD_EVERY;
     while !stop.load(Ordering::Relaxed) {
         thread::sleep(POLL_EVERY);
 
+        // Discord started, quit or restarted itself (it does for updates).
+        if follow_discord && Instant::now() >= next_discord_check {
+            next_discord_check = Instant::now() + DISCORD_EVERY;
+            let now = crate::discord::main_process();
+            if now != discord {
+                discord = now;
+                for s in sources.iter_mut().filter(|s| s.follows_discord()) {
+                    s.try_open(false, discord);
+                }
+            }
+        }
+
         for s in &mut sources {
             if s.capturer.is_none() && Instant::now() >= s.next_retry {
-                s.try_open(true);
+                s.try_open(true, discord);
             }
-            let Source { capturer, timeline, cfg, next_retry, .. } = s;
+            let Source { capturer, own, timeline, cfg, next_retry, .. } = s;
             if let Some(c) = capturer {
                 let result = c.read(|time, samples, frames| timeline.write(to_frame(time), samples, frames, mixed));
                 if let Err(e) = result {
                     warning!("audio: lost {} ({e:#}); will retry", cfg.title);
-                    *capturer = None;
+                    (*capturer, *own) = (None, None);
                     *next_retry = Instant::now() + RETRY_EVERY;
+                }
+            }
+            if let Some((c, cancel)) = own {
+                if let Err(e) = c.read(|time, samples, frames| cancel.write(to_frame(time), samples, frames, mixed)) {
+                    warning!("audio: lost Klipp's own sound for {} ({e:#}); the save sound can be heard in it until it's opened again", cfg.title);
+                    *own = None;
                 }
             }
         }
@@ -204,10 +329,14 @@ fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, read
             mix_l.fill(0.0);
             mix_r.fill(0.0);
             for s in &mut sources {
-                s.timeline.take(mixed, &mut s.left, &mut s.right);
+                let Source { timeline, own, left, right, .. } = s;
+                timeline.take(mixed, left, right);
+                if let Some((_, cancel)) = own {
+                    cancel.apply(mixed, left, right, timeline);
+                }
                 for i in 0..frame {
-                    mix_l[i] += s.left[i];
-                    mix_r[i] += s.right[i];
+                    mix_l[i] += left[i];
+                    mix_r[i] += right[i];
                 }
             }
             for x in mix_l.iter_mut().chain(mix_r.iter_mut()) {

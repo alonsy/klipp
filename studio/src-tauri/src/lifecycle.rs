@@ -102,6 +102,31 @@ pub fn test_hotkey(key: &str) -> Result<String> {
     result["result"].as_str().map(String::from).context("the key test said nothing")
 }
 
+/// The level bars: runs `klipp-recorder --levels SECONDS` beside the running
+/// recorder (it opens the same sources) and hands each report, ten a second,
+/// to `on_report`.
+pub fn audio_levels(seconds: u32, mut on_report: impl FnMut(serde_json::Value)) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+    let exe = std::env::current_exe()?.with_file_name("klipp-recorder.exe");
+    let mut child = Command::new(&exe)
+        .args(["--levels", &seconds.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .spawn()
+        .with_context(|| format!("starting {}", exe.display()))?;
+    let out = child.stdout.take().context("the recorder gave no output")?;
+    for line in BufReader::new(out).lines() {
+        let line = line?;
+        if let Ok(report) = serde_json::from_str(line.trim_start()) {
+            on_report(report);
+        }
+    }
+    child.wait()?;
+    Ok(())
+}
+
 /// Shows an on-screen indicator once through the recorder (`on`, `saved` or
 /// `failed`), on the screen Klipp records.
 pub fn preview_indicator(kind: &str) -> Result<()> {

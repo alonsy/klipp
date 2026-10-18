@@ -47,6 +47,8 @@ export const prefs = $state({
   previewVolume: 1,
   /** Put exported files on the clipboard when they're done. */
   copyAfterExport: true,
+  /** Leave the voice tracks (chat, microphone) out of exports. */
+  exportWithoutVoices: false,
 });
 
 /** Clips on their way, and clips that just landed (briefly highlighted). */

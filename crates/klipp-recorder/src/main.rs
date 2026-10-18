@@ -8,10 +8,12 @@ mod arrivals;
 mod audio;
 mod autoclip;
 mod autostart;
+mod cancel;
 mod capture;
 mod clock;
 mod cs2;
 mod cue;
+mod discord;
 mod duplication;
 mod events;
 mod games;
@@ -75,6 +77,8 @@ klipp-recorder --probe [--monitor ID] [--gpu NAME]\n       \
 klipp-recorder --test-recording SECONDS FILE [--settings FILE]\n       \
 klipp-recorder --show-indicator on|saved|failed\n       \
 klipp-recorder --test-hotkey KEY SECONDS\n       \
+klipp-recorder --test-chat SECONDS FILE.wav [--device NAME]\n       \
+klipp-recorder [--settings FILE] --levels SECONDS\n       \
 klipp-recorder --play-sound [error] [--device NAME] [--volume 0-1]\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
@@ -134,6 +138,23 @@ fn parse_args() -> Result<Args> {
                 };
                 let settings = Settings::load_or_create(&a.settings.clone().map_or_else(Settings::default_path, Ok)?).unwrap_or_default();
                 overlay::preview(pill, monitors::find(&settings.video.monitor).0)?;
+                std::process::exit(0);
+            }
+            "--test-chat" => {
+                let seconds: u32 = it.next().context("--test-chat needs SECONDS FILE")?.parse()?;
+                let out = PathBuf::from(it.next().context("--test-chat needs SECONDS FILE")?);
+                let device = match it.next().as_deref() {
+                    Some("--device") => it.next().context("--device needs a value")?,
+                    Some(other) => bail!("unknown argument {other}\n{USAGE}"),
+                    None => String::new(),
+                };
+                selftest::run_chat(seconds.clamp(3, 60), &out, &device)?;
+                std::process::exit(0);
+            }
+            "--levels" => {
+                let seconds: u32 = it.next().context("--levels needs SECONDS")?.parse()?;
+                let path = a.settings.clone().map_or_else(Settings::default_path, Ok)?;
+                selftest::run_levels(seconds.clamp(1, 60), &Settings::load_or_create(&path).unwrap_or_default())?;
                 std::process::exit(0);
             }
             "--test-hotkey" => {

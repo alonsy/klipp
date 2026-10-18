@@ -7,6 +7,7 @@
   import type { AudioDevice, Drive, SystemCheck } from "../api";
   import HotkeyInput from "../HotkeyInput.svelte";
   import HotkeyTest from "../HotkeyTest.svelte";
+  import { DISCORD, routerInstalled } from "../discordTrack";
   import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
   import { library, openPage, refreshRecorder, reload, toast } from "../state.svelte";
@@ -48,6 +49,8 @@
     output: "",
     chat: false,
     chatDevice: "",
+    /** Discord on its own track (experimental). */
+    discord: false,
     mic: true,
     micDevice: "",
     sound: true,
@@ -66,6 +69,8 @@
 
   const playback = $derived(devices.filter((d) => d.kind === "playback").map((d) => d.name));
   const recording = $derived(devices.filter((d) => d.kind === "recording").map((d) => d.name));
+  /** An audio router replays other apps, so Discord can't be left out of Game. */
+  const router = $derived(routerInstalled(playback));
   const sonarFound = $derived(
     playback.some((n) => n.includes("Sonar - Gaming")) && playback.some((n) => n.includes("Sonar - Chat")),
   );
@@ -194,8 +199,9 @@
       ];
     }
     return [
-      { name: c.chat ? "Game" : "PC audio", device: c.output, kind: "loopback" },
-      ...(c.chat ? [{ name: "Chat", device: c.chatDevice, kind: "loopback" }] : []),
+      { name: c.chat || c.discord ? "Game" : "PC audio", device: c.output, kind: "loopback" },
+      ...(c.discord && !router ? [{ name: "Chat", device: "", kind: DISCORD }] : []),
+      ...(c.chat && !c.discord ? [{ name: "Chat", device: c.chatDevice, kind: "loopback" }] : []),
       ...(c.mic ? [{ name: "Mic", device: c.micDevice, kind: "capture" }] : []),
     ];
   }
@@ -367,11 +373,23 @@
                   {#each playback as name (name)}<option value={name}>{name}</option>{/each}
                 </select>
               </label>
+              {#if !router}
+                <div class="row">
+                  <span class="what"
+                    ><b>Discord on its own track <span class="exp">Experimental</span></b><span
+                      >Voice chat apart from the game, to turn it down later or leave it out when you share</span
+                    ></span
+                  >
+                  <Toggle checked={c.discord} label="Discord on its own track" onchange={(v) => ((c.discord = v), v && (c.chat = false))} />
+                </div>
+              {/if}
+              {#if !c.discord}
               <div class="row">
                 <span class="what"><b>Separate chat track</b><span>If voice chat plays on its own device</span></span>
                 <Toggle checked={c.chat} label="Separate chat track" onchange={(v) => (c.chat = v)} />
               </div>
-              {#if c.chat}
+              {/if}
+              {#if c.chat && !c.discord}
                 <label class="row sub">
                   <span class="what"><span>Chat device</span></span>
                   <select bind:value={c.chatDevice}>
@@ -725,6 +743,18 @@
 
   .what span.bad {
     color: var(--danger);
+  }
+
+  .what b .exp {
+    margin-left: 6px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font: 600 10px/1.4 var(--font-mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: 1px;
   }
 
   .mark {

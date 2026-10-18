@@ -125,7 +125,12 @@ impl Capturer {
 
     /// Everything this PC plays except Klipp's own sounds (see `process_loopback`).
     pub fn open_excluding_klipp() -> Result<Self> {
-        let client = crate::process_loopback::activate_excluding_self()?;
+        Self::open_programs(crate::process_loopback::Target::AllBut(std::process::id()), "everything but Klipp")
+    }
+
+    /// Only some programs' sound, or everything but some (see `process_loopback`).
+    pub fn open_programs(target: crate::process_loopback::Target, name: &str) -> Result<Self> {
+        let client = crate::process_loopback::activate(target)?;
         unsafe {
             let format = WAVEFORMATEX {
                 wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
@@ -141,7 +146,7 @@ impl Capturer {
             client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &format, None)?;
             let capture: IAudioCaptureClient = client.GetService()?;
             client.Start()?;
-            Ok(Self { client, capture, device_name: "everything but Klipp".into() })
+            Ok(Self { client, capture, device_name: name.into() })
         }
     }
 

@@ -331,6 +331,18 @@ async fn borrow_hotkey() -> CmdResult<()> {
     .await
 }
 
+/// Settings → Audio's level check: every track's level for 12 s, as
+/// "audio-levels" events, the way the recorder hears them.
+#[tauri::command]
+async fn audio_levels(handle: AppHandle) -> CmdResult<()> {
+    blocking(move || {
+        lifecycle::audio_levels(12, |report| {
+            let _ = handle.emit("audio-levels", report);
+        })
+    })
+    .await
+}
+
 /// Step 2: waits up to 10 s for a press of `key` (see `lifecycle::test_hotkey`).
 #[tauri::command]
 async fn test_hotkey(key: String) -> CmdResult<String> {
@@ -473,6 +485,7 @@ fn main() {
             recorder_status,
             borrow_hotkey,
             test_hotkey,
+            audio_levels,
             setup_needed,
             system_check,
             arriving,

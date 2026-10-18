@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use klipp_media::VideoCodec;
 use serde::Deserialize;
 
-use crate::audio::AudioSourceConfig;
+use crate::audio::{AudioSourceConfig, Programs};
 use crate::autoclip::Rules;
 use crate::clock;
 use crate::hotkey::Hotkey;
@@ -203,6 +203,8 @@ impl Default for Video {
 pub enum Kind {
     Loopback,
     Capture,
+    /// Only the Discord app (experimental); the first loopback track then leaves Discord out.
+    Discord,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -385,18 +387,24 @@ impl Settings {
     }
 
     pub fn audio_sources(&self) -> Vec<AudioSourceConfig> {
+        // With a Discord track, the first track of what the PC plays leaves Discord out.
+        let discord = self.audio.sources.iter().any(|s| s.kind == Kind::Discord);
+        let first_loopback = self.audio.sources.iter().position(|s| s.kind == Kind::Loopback);
         self.audio
             .sources
             .iter()
-            .map(|s| AudioSourceConfig {
+            .enumerate()
+            .map(|(i, s)| AudioSourceConfig {
                 title: s.name.clone(),
                 device: s.device.clone(),
-                kind: match s.kind {
-                    Kind::Loopback => SourceKind::Loopback,
-                    Kind::Capture => SourceKind::Capture,
+                kind: if s.kind == Kind::Capture { SourceKind::Capture } else { SourceKind::Loopback },
+                programs: match s.kind {
+                    Kind::Discord => Programs::Discord,
+                    Kind::Loopback if discord && Some(i) == first_loopback => Programs::AllButDiscord,
+                    // The save sound plays on this device: the same name ("" is the Windows default for both).
+                    Kind::Loopback if self.cue.enabled && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()) => Programs::AllButKlipp,
+                    _ => Programs::Device,
                 },
-                // The same device by name ("" is the Windows default for both).
-                skip_klipp: s.kind == Kind::Loopback && self.cue.enabled && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()),
             })
             .collect()
     }
