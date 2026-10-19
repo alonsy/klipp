@@ -17,8 +17,18 @@ body:
       render: text
     validations:
       required: true
+  - type: dropdown
+    id: often
+    attributes:
+      label: How often?
+      options:
+        - Every time
+        - Sometimes
+        - Once so far
+    validations:
+      required: true
   - type: textarea
     id: more
     attributes:
       label: Anything else?
-      description: Screenshots, the game you were playing, whether it happens every time.
+      description: Screenshots, the game you were playing, what was running next to it. If Klipp stopped recording, `%LOCALAPPDATA%\Klipp\recorder.log` helps (drag the file in here).

@@ -74,6 +74,10 @@ To build it yourself, see [docs/BUILDING.md](docs/BUILDING.md).
 
 More games, recording on the NVIDIA GPU of gaming laptops, and optional self-hosted cloud backup are next. See [ROADMAP.md](ROADMAP.md), and our promises: no ads, ever, and always open source.
 
+## Help out
+
+Found a bug, or want auto-clips for your game? [Open an issue](https://github.com/alonsy/klipp/issues/new/choose); the forms ask for what we need. No GitHub account? Use [klipp.dev/feedback](https://klipp.dev/feedback). Pull requests are welcome too: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Thanks
 
 The save and error sounds are by [@f.inancimen](https://instagram.com/f.inancimen). Thank you!

@@ -1,0 +1,45 @@
+name: Auto-clips for a game
+description: Ask for automatic clips (kills, wins, goals) in a game Klipp doesn't cover yet.
+labels: [auto-clips]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Klipp only uses what a game shares officially, like Counter-Strike 2's Game State Integration, or what's already on your screen. It never reads a game's memory or injects into it, so it stays on the right side of every anti-cheat. Check the [roadmap](https://github.com/alonsy/klipp/blob/main/ROADMAP.md) and the open requests first: one issue per game, and a 👍 on an existing one counts.
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      placeholder: e.g. Valorant, Rocket League
+    validations:
+      required: true
+  - type: dropdown
+    id: launcher
+    attributes:
+      label: Where you play it
+      options:
+        - Steam
+        - Epic Games
+        - Riot Client
+        - Battle.net
+        - EA app
+        - Ubisoft Connect
+        - Xbox app or Microsoft Store
+        - Something else
+    validations:
+      required: true
+  - type: checkboxes
+    id: moments
+    attributes:
+      label: Which moments should become clips?
+      options:
+        - label: Kills and multi-kills
+        - label: Rounds or matches won
+        - label: Goals or scores
+        - label: Deaths (the funny ones)
+        - label: Boss kills or objectives
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything that helps
+      description: Does the game have an official API, a log file or replays? A screenshot of what's on screen when you get a kill or win helps too.

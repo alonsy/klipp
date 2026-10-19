@@ -1,5 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
+  - name: Quick feedback, no GitHub account needed
+    url: https://klipp.dev/feedback
+    about: A short form on klipp.dev. Leave an email if you'd like an answer.
+  - name: Report a security problem
+    url: https://github.com/alonsy/klipp/security/advisories/new
+    about: Privately, so it can be fixed before anyone else hears about it.
   - name: Roadmap
     url: https://github.com/alonsy/klipp/blob/main/ROADMAP.md
     about: What's planned, and what Klipp promises.
