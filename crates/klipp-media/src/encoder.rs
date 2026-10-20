@@ -245,9 +245,11 @@ impl VideoEncoder {
                     set_opt(c.priv_data, "rc", "vbr")?;
                     set_opt(c.priv_data, "cq", &cfg.quality.to_string())?;
                     // Each NVENC surface holds an output buffer in system RAM (~9.5 MB at
-                    // 1440p). FFmpeg defaults to 4; we feed one frame at a time and drain
-                    // immediately, so 2 keeps up at 60 fps and saves ~19 MB.
-                    set_opt(c.priv_data, "surfaces", "2")?;
+                    // 1440p). With 2, every frame waited for the one before it to finish
+                    // encoding, so a card busy with a game set the recorder's pace, down to
+                    // a few frames a second (FIX-17). FFmpeg's default of 4 keeps three
+                    // in flight, and a slow frame makes the next ones late, not lost.
+                    set_opt(c.priv_data, "surfaces", "4")?;
                 }
                 Vendor::Amd => {
                     // Quality-defined variable bitrate (AMD's constant quality), peaking at the ceiling.

@@ -578,8 +578,9 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         let b = shared.buffer.lock().unwrap();
         (b.held_bytes(), b.allocated_bytes(), b.duration() as f64 / clock::SECOND as f64)
     };
+    let steps = shared.steps.take();
     info!(
-        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | capture resizes {}, restarts {}",
+        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | capture resizes {}, restarts {} | ms avg/max: frame {:.1}/{:.0}, convert {:.1}/{:.0}, encode {:.1}/{:.0} | VRAM {} of {} MB",
         mb(s.private_working_set),
         mb(s.commit),
         held as f64 / 1048576.0,
@@ -590,5 +591,13 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         shared.skipped_ticks.load(Ordering::Relaxed),
         shared.capture_resizes.load(Ordering::Relaxed),
         shared.capture_restarts.load(Ordering::Relaxed),
+        steps.wait.0,
+        steps.wait.1,
+        steps.convert.0,
+        steps.convert.1,
+        steps.encode.0,
+        steps.encode.1,
+        shared.vram_used_mb.load(Ordering::Relaxed),
+        shared.vram_budget_mb.load(Ordering::Relaxed),
     );
 }

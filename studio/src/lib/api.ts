@@ -94,6 +94,8 @@ export interface RecorderStatus {
   problem: "stopped" | "blind" | "slow" | null;
   /** Another app holds the save key. */
   hotkeyTaken: boolean;
+  /** Recording at a lower frame rate than set, because the graphics card couldn't keep up. */
+  reduced: { to: number; from: number } | null;
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
 

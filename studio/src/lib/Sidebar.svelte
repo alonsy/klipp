@@ -105,6 +105,14 @@
           <span>Clips may stutter. Cap the game's frame rate, or record at a lower resolution.</span>
         </span>
       </button>
+    {:else if recorder.running && recorder.reduced}
+      <button class="status warn" onclick={() => openPage("settings", "video")} title="Video settings">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>Recording at {recorder.reduced.to} fps</b>
+          <span>The game kept the graphics card too busy for {recorder.reduced.from}. Cap its frame rate; Klipp tries {recorder.reduced.from} again next start.</span>
+        </span>
+      </button>
     {:else if recorder.running}
       <button class="status" onclick={() => openPage("settings", "recording")} title="Recording settings">
         <span class="pulse"></span>

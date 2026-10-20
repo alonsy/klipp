@@ -72,7 +72,11 @@ pub struct Watchdog {
     window: Counts,
     /// Slow windows in a row.
     slow_windows: u32,
+    /// The last window had more than half of its frames late or skipped.
+    severe: bool,
     problem: Option<Problem>,
+    /// Recording at a lower frame rate than set: (now, set). For the window.
+    reduced: Option<(u32, u32)>,
 }
 
 impl Default for Watchdog {
@@ -84,7 +88,9 @@ impl Default for Watchdog {
             window_start: Instant::now(),
             window: Counts::default(),
             slow_windows: 0,
+            severe: false,
             problem: None,
+            reduced: None,
         }
     }
 }
@@ -103,6 +109,8 @@ impl Watchdog {
                 self.stalled_since = None;
                 self.set(Some(Problem::Stopped));
                 verdict = Verdict::RestartVideo;
+                // The new video is judged on its own: a stall isn't "can't keep up".
+                (self.window_start, self.window, self.slow_windows, self.severe) = (now, counts, 0, false);
             }
         } else {
             self.stalled_since = None;
@@ -128,6 +136,7 @@ impl Watchdog {
             } else {
                 self.slow_windows = 0;
             }
+            self.severe = due > 0 && behind * 2 > due;
             (self.window_start, self.window) = (now, counts);
         }
 
@@ -149,14 +158,29 @@ impl Watchdog {
     pub fn reset(&mut self, counts: Counts) {
         let now = Instant::now();
         (self.last_frames, self.stalled_since) = (counts.frames, None);
-        (self.window_start, self.window, self.slow_windows) = (now, counts, 0);
+        (self.window_start, self.window, self.slow_windows, self.severe) = (now, counts, 0, false);
         self.set(None);
+    }
+
+    /// Too slow to go on like this: two slow windows in a row, or one where
+    /// more than half the frames were late or skipped (clips play like a
+    /// slideshow; no startup hiccup lasts that long).
+    pub fn overloaded(&self) -> bool {
+        self.slow_windows >= SLOW_WINDOWS || self.severe
+    }
+
+    /// Recording at `now` fps instead of the `set` rate, for the window to say.
+    pub fn set_reduced(&mut self, reduced: Option<(u32, u32)>) {
+        if reduced != self.reduced {
+            self.reduced = reduced;
+            write_health(self.problem, reduced);
+        }
     }
 
     fn set(&mut self, problem: Option<Problem>) {
         if problem != self.problem {
             self.problem = problem;
-            write_health(problem);
+            write_health(problem, self.reduced);
         }
     }
 }
@@ -165,14 +189,15 @@ fn health_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Klipp").join("health.json"))
 }
 
-fn write_health(problem: Option<Problem>) {
+fn write_health(problem: Option<Problem>, reduced: Option<(u32, u32)>) {
     // Tests don't touch the real Klipp folder.
     if cfg!(test) {
         return;
     }
     let Some(path) = health_path() else { return };
     let since = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let body = json!({ "problem": problem.map(Problem::key), "since": since });
+    let reduced = reduced.map(|(to, from)| json!({ "to": to, "from": from }));
+    let body = json!({ "problem": problem.map(Problem::key), "since": since, "reduced": reduced });
     let part = path.with_extension("json.part");
     if std::fs::write(&part, body.to_string()).is_ok() {
         let _ = std::fs::rename(&part, &path);
@@ -181,5 +206,5 @@ fn write_health(problem: Option<Problem>) {
 
 /// A recorder starting up has no problems yet.
 pub fn clear_health() {
-    write_health(None);
+    write_health(None, None);
 }

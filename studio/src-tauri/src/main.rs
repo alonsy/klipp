@@ -83,6 +83,9 @@ struct RecorderStatus {
     problem: Option<String>,
     /// Another app holds the save key, so pressing it does nothing.
     hotkey_taken: bool,
+    /// Recording at a lower frame rate than set ({ to, from }), because the
+    /// graphics card couldn't keep up; until the recorder restarts.
+    reduced: Option<Value>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -316,9 +319,11 @@ fn recorder_status() -> RecorderStatus {
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             .unwrap_or_default()
     };
-    let problem = report("health.json")["problem"].as_str().map(String::from);
+    let health = report("health.json");
+    let problem = health["problem"].as_str().map(String::from);
+    let reduced = health["reduced"].is_object().then(|| health["reduced"].clone());
     let hotkey_taken = report("hotkey.json")["works"] == false;
-    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken }
+    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken, reduced }
 }
 
 /// Setup's Test button, step 1: a running recorder lends its save key.

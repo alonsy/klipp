@@ -78,6 +78,8 @@ export const recorder = $state({
   problem: null as "stopped" | "blind" | "slow" | null,
   /** Another app holds the save key. */
   hotkeyTaken: false,
+  /** Recording at a lower frame rate than set until the recorder restarts (the card couldn't keep up). */
+  reduced: null as { to: number; from: number } | null,
   /** Restart the recorder if it stops while this window is open (not before setup is done). */
   autoRestart: false,
 });
@@ -121,6 +123,7 @@ export async function refreshRecorder() {
     recorder.autostart = status.autostart;
     recorder.problem = status.problem;
     recorder.hotkeyTaken = status.hotkeyTaken;
+    recorder.reduced = status.reduced;
     recorder.hotkey = settings.replay?.hotkey ?? recorder.hotkey;
     recorder.lengthSecs = settings.replay?.length_secs ?? recorder.lengthSecs;
   } catch {

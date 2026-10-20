@@ -43,6 +43,15 @@ pub struct VideoSettings {
 const MAX_CATCH_UP: Duration = Duration::from_secs(1);
 /// How often the video thread checks that the capture is still alive.
 const REVIVE_CHECK_EVERY: Duration = Duration::from_millis(250);
+/// A still picture this soon after skipping ticks means the GPU is too busy
+/// to deliver frames, not that the capture stopped (FIX-17).
+const BEHIND_GRACE: Duration = Duration::from_secs(10);
+/// Longest wait for the video thread to start, or to stop. A thread stuck in
+/// the graphics driver is left behind instead of freezing the caller (FIX-20).
+const START_TIMEOUT: Duration = Duration::from_secs(15);
+const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+/// How often the graphics memory use and allowance are read, for the stats line.
+const MEMORY_CHECK_EVERY: Duration = Duration::from_secs(5);
 
 pub struct VideoPipeline {
     stop: Arc<AtomicBool>,
@@ -63,10 +72,15 @@ impl VideoPipeline {
                 }
             }
         })?;
-        match ready_rx.recv() {
+        match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(Self { stop, thread: Some(thread) }),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(anyhow!("video thread exited during setup")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Stuck in the driver: it stops on its own if it ever gets going.
+                stop.store(true, Ordering::Relaxed);
+                Err(anyhow!("the video didn't start within {} s", START_TIMEOUT.as_secs()))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(anyhow!("video thread exited during setup")),
         }
     }
 }
@@ -74,9 +88,19 @@ impl VideoPipeline {
 impl Drop for VideoPipeline {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
+        let Some(t) = self.thread.take() else { return };
+        // The caller is the main thread (tray, save key, watchdog): a video
+        // thread stuck in the graphics driver must not take it down too. Left
+        // behind, it writes nothing more and ends if it ever wakes up.
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        while !t.is_finished() {
+            if Instant::now() >= deadline {
+                warning!("video: the old video thread is stuck (in the graphics driver?); leaving it behind");
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
         }
+        let _ = t.join();
     }
 }
 
@@ -186,6 +210,11 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
     let t0 = clock::now();
     let start = Instant::now();
     let mut sink = |p: &mut Packet| -> Result<()> {
+        // A thread that was left behind (stuck, then woke up) must not mix its
+        // packets into the new video's buffer.
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let info = PacketInfo {
             stream: VIDEO,
             time: t0 + p.pts() * clock::SECOND / fps,
@@ -213,6 +242,9 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
     let mut next_check = Instant::now() + REVIVE_CHECK_EVERY;
     // Size changes counted by captures that were replaced.
     let mut resizes_before = 0;
+    // When ticks were last skipped (the GPU too busy to keep up).
+    let mut last_skip: Option<Instant> = None;
+    let mut next_memory = Instant::now();
     let mut i: i64 = 0;
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -223,15 +255,18 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             let behind = ((now - start).as_nanos() * fps as u128 / 1_000_000_000) as i64 - i;
             shared.skipped_ticks.fetch_add(behind as u64, Ordering::Relaxed);
             i += behind;
+            last_skip = Some(now);
         } else if now - deadline > Duration::from_nanos(1_000_000_000 / fps as u64) {
             shared.late_frames.fetch_add(1, Ordering::Relaxed);
         }
 
         // A capture that has stopped for good is started again; until it
-        // sends a picture, the last one repeats.
+        // sends a picture, the last one repeats. While ticks are being
+        // skipped, a still picture is the busy GPU, and a new capture can't help.
         if now >= next_check {
             next_check = now + REVIVE_CHECK_EVERY;
-            if let Some(why) = reviver.check(now, capture.latest().closed(), input_age()) {
+            let behind = last_skip.is_some_and(|t| now.duration_since(t) < BEHIND_GRACE);
+            if let Some(why) = reviver.check(now, capture.latest().closed(), if behind { None } else { input_age() }) {
                 let first = reviver.first_try();
                 if first {
                     match why {
@@ -257,9 +292,19 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             }
         }
 
+        if now >= next_memory {
+            next_memory = now + MEMORY_CHECK_EVERY;
+            if let Some((used, budget)) = gpu.memory() {
+                shared.vram_used_mb.store(used, Ordering::Relaxed);
+                shared.vram_budget_mb.store(budget, Ordering::Relaxed);
+            }
+        }
+
         let generation = capture.latest().generation();
         if current.is_none() || generation != last_generation {
+            let waiting = Instant::now();
             let latest = capture.latest().lock();
+            let wait = waiting.elapsed();
             if fresh_capture || latest.size_generation != converter_generation {
                 let size = (latest.width, latest.height);
                 if size != capture_size {
@@ -272,7 +317,10 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             }
             let frame = encoder.alloc_frame()?;
             let (texture, slice) = frame.texture();
+            crate::gpu::keep_resident(texture);
+            let converting = Instant::now();
             converter.convert(texture, slice)?;
+            shared.steps.converted(wait, converting.elapsed());
             drop(latest);
             current = Some(frame);
             last_generation = generation;
@@ -281,7 +329,9 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
                 info!("video: the new capture works; the picture is back");
             }
         }
+        let encoding = Instant::now();
         encoder.encode(current.as_mut().context("no frame")?, i, &mut sink)?;
+        shared.steps.encoded(encoding.elapsed());
         shared.frames.fetch_add(1, Ordering::Relaxed);
         shared.capture_resizes.store(resizes_before + capture.latest().resizes(), Ordering::Relaxed);
         i += 1;

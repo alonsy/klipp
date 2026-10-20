@@ -29,6 +29,10 @@ use crate::video::VideoPipeline;
 /// `RegisterHotKey` id of the save hotkey.
 pub const HOTKEY_SAVE: i32 = 1;
 
+/// The frame rate Klipp drops to when the graphics card can't keep up with a
+/// higher one (FIX-17): half of 120, the same as the default.
+const REDUCED_FPS: u32 = 60;
+
 /// Audio is mixed ~100 ms behind real time and AAC adds a little delay. A clip
 /// is only cut once this much time has passed after its end, so every audio
 /// track has reached that moment.
@@ -57,6 +61,9 @@ pub struct Recorder {
     /// Auto-clip chains shown as arriving, by their first event time.
     auto_arrivals: BTreeMap<i64, u64>,
     watchdog: crate::watchdog::Watchdog,
+    /// Recording at this frame rate instead of the set one, for the rest of
+    /// the session, because the card couldn't keep up (FIX-17).
+    fps_cap: Option<u32>,
 }
 
 /// A clip saved with the hotkey that more presses can still extend. Each
@@ -105,9 +112,10 @@ impl Recorder {
             events_rx,
             burst: None,
             watchdog: crate::watchdog::Watchdog::default(),
+            fps_cap: None,
         };
         crate::watchdog::clear_health();
-        r.video = Some(VideoPipeline::start(r.settings.video_settings(), r.shared.clone())?);
+        r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
         r.start_audio();
         r.register_hotkey();
         r.start_integrations();
@@ -146,14 +154,40 @@ impl Recorder {
             return;
         }
         if self.watchdog.check(Instant::now(), counts, self.video.is_some()) == crate::watchdog::Verdict::RestartVideo {
-            // A new encoder's packets can't continue the old ones in a clip.
-            self.flush_burst();
-            self.video = None;
-            self.shared.buffer.lock().unwrap().clear();
-            match VideoPipeline::start(self.settings.video_settings(), self.shared.clone()) {
-                Ok(v) => self.video = Some(v),
-                Err(e) => warning!("watchdog: the video didn't restart ({e:#}); trying again later"),
-            }
+            self.restart_video();
+        }
+        // A game keeping the card too busy for this frame rate leaves clips
+        // stuttering or as a slideshow (FIX-17). Half the rate halves Klipp's
+        // work on the card; it lasts until Klipp restarts or the video
+        // settings change, and the window says so.
+        let fps = self.settings.video.fps;
+        if self.fps_cap.is_none() && fps > REDUCED_FPS && self.video.is_some() && self.watchdog.overloaded() {
+            warning!("video: the graphics card can't keep up at {fps} fps; recording at {REDUCED_FPS} fps until Klipp restarts");
+            self.fps_cap = Some(REDUCED_FPS);
+            self.restart_video();
+            self.watchdog.reset(counts);
+            self.watchdog.set_reduced(Some((REDUCED_FPS, fps)));
+        }
+    }
+
+    /// The video settings in effect: the user's, with the frame rate capped
+    /// if the card couldn't keep up.
+    fn video_settings(&self) -> crate::video::VideoSettings {
+        let mut v = self.settings.video_settings();
+        if let Some(cap) = self.fps_cap {
+            v.fps = v.fps.min(cap);
+        }
+        v
+    }
+
+    fn restart_video(&mut self) {
+        // A new encoder's packets can't continue the old ones in a clip.
+        self.flush_burst();
+        self.video = None;
+        self.shared.buffer.lock().unwrap().clear();
+        match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
+            Ok(v) => self.video = Some(v),
+            Err(e) => warning!("watchdog: the video didn't restart ({e:#}); trying again later"),
         }
     }
 
@@ -171,7 +205,7 @@ impl Recorder {
             self.shared.buffer.lock().unwrap().clear();
             info!("recording paused; buffer cleared");
         } else {
-            match VideoPipeline::start(self.settings.video_settings(), self.shared.clone()) {
+            match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                 Ok(v) => self.video = Some(v),
                 Err(e) => warning!("video failed to resume: {e:#}"),
             }
@@ -222,7 +256,10 @@ impl Recorder {
             // Buffered packets don't match the new streams, so the buffer starts over.
             self.shared.buffer.lock().unwrap().clear();
             if video_changed {
-                match VideoPipeline::start(self.settings.video_settings(), self.shared.clone()) {
+                // New video settings get a fresh try at their own frame rate.
+                self.fps_cap = None;
+                self.watchdog.set_reduced(None);
+                match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                     Ok(v) => self.video = Some(v),
                     Err(e) => warning!("video failed to restart with the new settings: {e:#}"),
                 }

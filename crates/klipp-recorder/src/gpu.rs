@@ -2,15 +2,20 @@
 
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::sync::Once;
 
 use anyhow::{Context, Result, bail};
 use klipp_media::Vendor;
-use windows::Win32::Foundation::{HMODULE, RECT};
+use windows::Win32::Foundation::{HANDLE, HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, DXGI_RESOURCE_PRIORITY_MAXIMUM, IDXGIAdapter1, IDXGIAdapter3,
+    IDXGIDevice, IDXGIFactory1,
+};
 use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::core::Interface;
 
 pub struct Gpu {
@@ -19,6 +24,8 @@ pub struct Gpu {
     pub adapter_name: String,
     /// Whose encoder it has; `None` for cards Klipp can't encode on.
     pub vendor: Option<Vendor>,
+    /// For how much graphics memory Klipp uses and is allowed (`memory`).
+    adapter: Option<IDXGIAdapter3>,
 }
 
 impl Gpu {
@@ -74,8 +81,50 @@ impl Gpu {
         if let Err(e) = unsafe { dxgi.SetGPUThreadPriority(7) } {
             crate::log::warning!("video: couldn't raise the GPU priority ({e})");
         }
-        Ok(Self { device, context, adapter_name, vendor })
+        raise_scheduling_class();
+        Ok(Self { device, context, adapter_name, vendor, adapter: adapter.cast().ok() })
     }
+
+    /// Graphics memory this process uses, and what Windows lets it use right
+    /// now, in MB. The allowance shrinks when a game fills the card.
+    pub fn memory(&self) -> Option<(u64, u64)> {
+        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        unsafe { self.adapter.as_ref()?.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info) }.ok()?;
+        Some((info.CurrentUsage >> 20, info.Budget >> 20))
+    }
+}
+
+/// When a game fills the card's memory, Windows moves other processes'
+/// textures out to system memory and back again as they're used: every
+/// frame then waits on that, down to a few frames a second (FIX-17). Klipp's
+/// few textures are marked to go last.
+pub fn keep_resident(texture: &ID3D11Texture2D) {
+    unsafe { texture.SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM.0) };
+}
+
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn D3DKMTSetProcessSchedulingPriorityClass(process: HANDLE, class: i32) -> i32;
+}
+
+/// `D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH`. Realtime (5) needs admin rights; high doesn't.
+const SCHEDULING_CLASS_HIGH: i32 = 4;
+
+/// The thread priority above only orders our own work. A game keeping the
+/// card at 100 % still made every conversion and encode wait behind its
+/// frames, down to a few frames a second (FIX-17). The process-wide GPU
+/// scheduling class puts all of Klipp's GPU work, the capture's copies too,
+/// ahead of normal processes. Once per process; best effort.
+fn raise_scheduling_class() {
+    static DONE: Once = Once::new();
+    DONE.call_once(|| {
+        let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(), SCHEDULING_CLASS_HIGH) };
+        if status == 0 {
+            crate::log::info!("video: GPU scheduling class set to high");
+        } else {
+            crate::log::warning!("video: couldn't raise the GPU scheduling class (NTSTATUS {status:#010x})");
+        }
+    });
 }
 
 fn adapter_name(adapter: &IDXGIAdapter1) -> Result<String> {
@@ -100,7 +149,9 @@ pub fn create_bgra_texture(device: &ID3D11Device, width: u32, height: u32) -> Re
     };
     let mut texture = None;
     unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
-    texture.context("CreateTexture2D returned no texture")
+    let texture = texture.context("CreateTexture2D returned no texture")?;
+    keep_resident(&texture);
+    Ok(texture)
 }
 
 fn adapter_for_monitor(monitor: HMONITOR) -> Result<IDXGIAdapter1> {
