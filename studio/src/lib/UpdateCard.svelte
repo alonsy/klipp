@@ -6,7 +6,9 @@
   // card shows the download and then "Installing…", Klipp closes, and it
   // opens again on the new version. Updating restarts the recorder, which
   // clears the replay buffer, so the card says so, and warns while CS2 is running.
-  import { check, type Update } from "@tauri-apps/plugin-updater";
+  // On the test channel (Settings → About) test builds come here too, and
+  // leaving it offers the latest normal release.
+  import type { Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
@@ -23,9 +25,10 @@
     // Development builds aren't released, so there's nothing to compare against.
     if (!import.meta.env.PROD) return;
     const look = () =>
-      check().then(
+      api.checkUpdate().then(
         (u) => {
-          if (u) update = u;
+          // A channel switch can take back an offer that hasn't started downloading.
+          if (progress == null) update = u;
         },
         () => {},
       );
@@ -46,6 +49,10 @@
     const timer = setInterval(poll, 15000);
     return () => clearInterval(timer);
   });
+
+  const isTest = (v: string) => v.includes("-test");
+  // From a test build to a normal release (often a lower number).
+  const leavingTests = $derived(update != null && isTest(update.currentVersion) && !isTest(update.version));
 
   async function install() {
     if (!update) return;
@@ -75,8 +82,11 @@
   <div class="update">
     <div class="head">
       <Icon name="bolt" size={16} />
-      <b>Klipp {update.version} is ready</b>
+      <b>{isTest(update.version) ? `Test build ${update.version}` : `Klipp ${update.version}`} is ready</b>
     </div>
+    {#if leavingTests && progress == null}
+      <span>Back to normal releases, instead of test build {update.currentVersion}.</span>
+    {/if}
     {#if progress == null}
       {#if inGame}
         <span class="warn">CS2 is running. Updating restarts recording and clears the last {recorder.lengthSecs} seconds, so it's best after your match.</span>

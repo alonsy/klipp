@@ -10,6 +10,7 @@ mod autoclip;
 mod autostart;
 mod cancel;
 mod capture;
+mod channel;
 mod clock;
 mod cs2;
 mod cue;
@@ -20,6 +21,7 @@ mod games;
 mod gpu;
 mod hotkey;
 mod log;
+mod logsend;
 mod mmcss;
 mod monitors;
 mod overlay;
@@ -403,6 +405,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut recorder = Recorder::start(settings)?;
     let mut tray = Tray::create(&tooltip(recorder.settings()))?;
     update::start();
+    logsend::start(log_path.clone());
     let mut hotkey_ok = recorder.hotkey_registered();
     if !hotkey_ok {
         let hk = &recorder.settings().replay.hotkey;
@@ -580,7 +583,7 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
     };
     let steps = shared.steps.take();
     info!(
-        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | capture resizes {}, restarts {} | ms avg/max: frame {:.1}/{:.0}, convert {:.1}/{:.0}, encode {:.1}/{:.0} | VRAM {} of {} MB",
+        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | captured {} | capture resizes {}, restarts {} | ms avg/max: frame {:.1}/{:.0}, convert {:.1}/{:.0}, encode {:.1}/{:.0} (send {:.1}/{:.0}, receive {:.1}/{:.0}) | encoder queue max {}, dropped {} | VRAM {} of {} MB",
         mb(s.private_working_set),
         mb(s.commit),
         held as f64 / 1048576.0,
@@ -589,6 +592,7 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         shared.new_frames.load(Ordering::Relaxed),
         shared.late_frames.load(Ordering::Relaxed),
         shared.skipped_ticks.load(Ordering::Relaxed),
+        shared.captured.load(Ordering::Relaxed),
         shared.capture_resizes.load(Ordering::Relaxed),
         shared.capture_restarts.load(Ordering::Relaxed),
         steps.wait.0,
@@ -597,6 +601,12 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         steps.convert.1,
         steps.encode.0,
         steps.encode.1,
+        steps.send.0,
+        steps.send.1,
+        steps.receive.0,
+        steps.receive.1,
+        steps.queue_max,
+        steps.dropped,
         shared.vram_used_mb.load(Ordering::Relaxed),
         shared.vram_budget_mb.load(Ordering::Relaxed),
     );

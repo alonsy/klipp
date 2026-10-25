@@ -281,9 +281,25 @@ impl VideoEncoder {
         HwFrame::alloc(self.frames)
     }
 
+    /// The texture pool, for a thread other than the encoder's to take frames from.
+    pub fn frame_pool(&self) -> Result<FramePool> {
+        let r = unsafe { ff::av_buffer_ref(self.frames) };
+        if r.is_null() {
+            bail!("out of memory while sharing the texture pool");
+        }
+        Ok(FramePool(r))
+    }
+
     /// Encodes `frame` as frame number `pts` and passes every finished packet to `sink`.
     /// The same frame may be sent again with a later `pts` to repeat it.
     pub fn encode(&mut self, frame: &mut HwFrame, pts: i64, sink: &mut dyn FnMut(&mut Packet) -> Result<()>) -> Result<()> {
+        self.send(frame, pts)?;
+        self.drain(sink)
+    }
+
+    /// The first half of `encode`: hands the frame to the encoder. With a GPU
+    /// encoder this is where the wait for the card to finish drawing it shows.
+    pub fn send(&mut self, frame: &mut HwFrame, pts: i64) -> Result<()> {
         unsafe {
             let f = frame.as_ptr();
             (*f).pts = pts;
@@ -300,7 +316,7 @@ impl VideoEncoder {
                 }
             }
         }
-        self.drain(sink)
+        Ok(())
     }
 
     /// Flushes the encoder; call once after the last frame.
@@ -314,7 +330,8 @@ impl VideoEncoder {
         StreamInfo::from_codec(self.ctx)
     }
 
-    fn drain(&mut self, sink: &mut dyn FnMut(&mut Packet) -> Result<()>) -> Result<()> {
+    /// The second half of `encode`: passes every finished packet to `sink`.
+    pub fn drain(&mut self, sink: &mut dyn FnMut(&mut Packet) -> Result<()>) -> Result<()> {
         loop {
             let ret = unsafe { ff::avcodec_receive_packet(self.ctx, self.pkt) };
             if ret == AVERROR_EAGAIN || ret == ff::AVERROR_EOF {
@@ -325,6 +342,25 @@ impl VideoEncoder {
             unsafe { ff::av_packet_unref(self.pkt) };
             result?;
         }
+    }
+}
+
+/// The encoder's texture pool, held by another thread: frames are taken here
+/// and handed to the encoder (FFmpeg's pools are thread-safe).
+pub struct FramePool(*mut ff::AVBufferRef);
+
+// SAFETY: a reference to an FFmpeg frames context; taking buffers from it is locked inside FFmpeg.
+unsafe impl Send for FramePool {}
+
+impl FramePool {
+    pub fn alloc(&self) -> Result<HwFrame> {
+        HwFrame::alloc(self.0)
+    }
+}
+
+impl Drop for FramePool {
+    fn drop(&mut self) {
+        unsafe { ff::av_buffer_unref(&mut self.0) };
     }
 }
 

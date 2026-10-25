@@ -92,7 +92,50 @@ impl Gpu {
         unsafe { self.adapter.as_ref()?.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info) }.ok()?;
         Some((info.CurrentUsage >> 20, info.Budget >> 20))
     }
+
+    /// Whether Windows lets this card schedule its own work ("hardware-accelerated
+    /// GPU scheduling"): (supported, on). It changes how the GPU priority above
+    /// plays out against a game, so the log says which it is (FIX-17).
+    pub fn hardware_scheduling(&self) -> Option<(bool, bool)> {
+        let luid = unsafe { self.adapter.as_ref()?.GetDesc1() }.ok()?.AdapterLuid;
+        let mut open = OpenAdapterFromLuid { luid, adapter: 0 };
+        if unsafe { D3DKMTOpenAdapterFromLuid(&mut open) } != 0 {
+            return None;
+        }
+        let mut caps: u32 = 0;
+        let query = QueryAdapterInfo {
+            adapter: open.adapter,
+            kind: KMTQAITYPE_WDDM_2_7_CAPS,
+            data: &mut caps as *mut u32 as *mut std::ffi::c_void,
+            size: std::mem::size_of::<u32>() as u32,
+        };
+        let status = unsafe { D3DKMTQueryAdapterInfo(&query) };
+        unsafe { D3DKMTCloseAdapter(&CloseAdapter { adapter: open.adapter }) };
+        // D3DKMT_WDDM_2_7_CAPS: bit 0 HwSchSupported, bit 1 HwSchEnabled.
+        (status == 0).then_some((caps & 1 != 0, caps & 2 != 0))
+    }
 }
+
+#[repr(C)]
+struct OpenAdapterFromLuid {
+    luid: windows::Win32::Foundation::LUID,
+    adapter: u32,
+}
+
+#[repr(C)]
+struct QueryAdapterInfo {
+    adapter: u32,
+    kind: u32,
+    data: *mut std::ffi::c_void,
+    size: u32,
+}
+
+#[repr(C)]
+struct CloseAdapter {
+    adapter: u32,
+}
+
+const KMTQAITYPE_WDDM_2_7_CAPS: u32 = 70;
 
 /// When a game fills the card's memory, Windows moves other processes'
 /// textures out to system memory and back again as they're used: every
@@ -105,6 +148,9 @@ pub fn keep_resident(texture: &ID3D11Texture2D) {
 #[link(name = "gdi32")]
 unsafe extern "system" {
     fn D3DKMTSetProcessSchedulingPriorityClass(process: HANDLE, class: i32) -> i32;
+    fn D3DKMTOpenAdapterFromLuid(open: *mut OpenAdapterFromLuid) -> i32;
+    fn D3DKMTQueryAdapterInfo(query: *const QueryAdapterInfo) -> i32;
+    fn D3DKMTCloseAdapter(close: *const CloseAdapter) -> i32;
 }
 
 /// `D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH`. Realtime (5) needs admin rights; high doesn't.

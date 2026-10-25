@@ -6,25 +6,68 @@
   import Logo from "../Logo.svelte";
   import { renderMarkdown } from "../markdown";
   import { library, toast } from "../state.svelte";
+  import Field from "../ui/Field.svelte";
+  import Segmented from "../ui/Segmented.svelte";
+  import Toggle from "../ui/Toggle.svelte";
 
   let version = $state("");
+  let updates = $state<api.UpdateChannel | null>(null);
+  // What switching found: the update card (in the sidebar) offers it.
+  let channelNote = $state("");
   onMount(() => {
     getVersion().then((v) => (version = v), () => {});
+    api.updateChannel().then((u) => (updates = u), () => {});
   });
+
+  const channels = [
+    ["production", "Normal releases"],
+    ["test", "Test builds"],
+  ] as const;
+
+  async function setChannel(channel: api.UpdateChannel["channel"]) {
+    if (!updates) return;
+    try {
+      await api.setUpdateChannel(channel, updates.sendLogs);
+      updates = { ...updates, channel };
+      channelNote = "Checking…";
+      const found = await api.checkUpdate();
+      channelNote = found
+        ? `${found.version.includes("-test") ? "Test build" : "Klipp"} ${found.version} is ready: install it from the card on the left.`
+        : "You have the newest one.";
+      // The sidebar's update card checks again and offers it.
+      window.dispatchEvent(new Event("klipp:check-update"));
+    } catch (e) {
+      channelNote = `Couldn't check for updates: ${e}`;
+    }
+  }
+
+  async function setSendLogs(sendLogs: boolean) {
+    if (!updates) return;
+    try {
+      await api.setUpdateChannel(updates.channel, sendLogs);
+      updates = { ...updates, sendLogs };
+    } catch (e) {
+      toast(`Couldn't save that: ${e}`);
+    }
+  }
 
   // Release notes ship with the app (releases/vX.Y.Z.md, the same text as the
   // GitHub release), so they read offline. They're here for the curious;
   // Klipp never opens them by itself.
   const files = import.meta.glob("../../../../releases/v*.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-  const parts = (v: string) => v.split(".").map(Number);
+  // Newest first; a test build ("0.3.5-test.2") comes before its release ("0.3.5") and after the one before.
+  const parts = (v: string) => {
+    const [core, pre] = v.split("-");
+    return { n: core.split(".").map(Number), pre: pre ? Number(pre.split(".")[1] ?? 0) : Infinity };
+  };
   const newer = (a: string, b: string) => {
     const [x, y] = [parts(a), parts(b)];
-    for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0);
-    return 0;
+    for (let i = 0; i < 3; i++) if ((x.n[i] ?? 0) !== (y.n[i] ?? 0)) return (y.n[i] ?? 0) - (x.n[i] ?? 0);
+    return y.pre === x.pre ? 0 : y.pre > x.pre ? 1 : -1;
   };
   const releases = Object.entries(files)
     .map(([path, text]) => {
-      const version = /v(\d+\.\d+\.\d+)\.md$/.exec(path)?.[1] ?? "";
+      const version = /v(\d+\.\d+\.\d+(?:-test\.\d+)?)\.md$/.exec(path)?.[1] ?? "";
       // From the first heading on: what came before is for the GitHub page (download link).
       const from = text.search(/^#{1,4}\s/m);
       return { version, html: renderMarkdown(from >= 0 ? text.slice(from) : text) };
@@ -60,6 +103,29 @@
   <p>Your moments, kept. A replay buffer that stays light: no leaks, a few MB of RAM besides the buffer.</p>
   {#if version}<span class="label">Version {version}</span>{/if}
 </div>
+
+{#if updates}
+  <span class="label group-title">Updates</span>
+  <div class="group">
+    <Field
+      title="Get"
+      hint={updates.channel === "test"
+        ? "Test builds come first, with fixes that still need checking on more PCs, and may have new problems. Normal releases come here too once they're newer."
+        : "Updates that are ready for everyone."}
+    >
+      <Segmented value={updates.channel} label="Updates" options={channels} onchange={setChannel} />
+    </Field>
+    {#if channelNote}<p class="channel-note">{channelNote}</p>{/if}
+    {#if updates.channel === "test"}
+      <Field
+        title="Send the log to the developer"
+        hint="Every 15 minutes, the new part of recorder.log goes to klipp.dev, so problems can be looked into without asking you for it. Your Windows user name is left out. No clips, pictures or settings are sent."
+      >
+        <Toggle checked={updates.sendLogs} label="Send the log to the developer" onchange={setSendLogs} />
+      </Field>
+    {/if}
+  </div>
+{/if}
 
 <div class="group links">
   <button class="ghost link" onclick={() => api.reveal(library.logDir)}><Icon name="folder" size={17} />Open the log folder<span>recorder.log, cs2.log</span></button>
@@ -221,6 +287,13 @@
   .md :global(code) {
     font-family: var(--font-mono);
     font-size: 12px;
+  }
+
+  .channel-note {
+    margin: 0;
+    padding: 0 18px 14px;
+    font-size: 12px;
+    color: var(--muted);
   }
 
   .credits {

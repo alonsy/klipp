@@ -1,6 +1,7 @@
 // Calls into Klipp's Rust side.
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Update } from "@tauri-apps/plugin-updater";
 
 export interface ClipEvent {
   kind: string;
@@ -161,6 +162,24 @@ export interface SystemCheck {
 
 /** "Copy details": the PC, setup's last check, key settings and the end of the log. */
 export const supportDetails = () => invoke<string>("support_details");
+
+/** Normal releases ("production"), or test builds too ("test"); updates.json. */
+export interface UpdateChannel {
+  channel: "production" | "test";
+  /** Test channel: the recorder sends its log to the developer. */
+  sendLogs: boolean;
+  /** This copy is a test build ("0.3.5-test.1"). */
+  testBuild: boolean;
+}
+export const updateChannel = () => invoke<UpdateChannel>("update_channel");
+export const setUpdateChannel = (channel: UpdateChannel["channel"], sendLogs: boolean) => invoke<void>("set_update_channel", { channel, sendLogs });
+
+/** The update the chosen channel offers, ready to download and install. */
+export async function checkUpdate(): Promise<Update | null> {
+  const { channel } = await updateChannel();
+  const metadata = await invoke<ConstructorParameters<typeof Update>[0] | null>("check_update", { channel });
+  return metadata ? new Update(metadata) : null;
+}
 
 /** Plays the save sound (or the error sound) once, as a real save would. */
 export const playSound = (device: string, volume: number, error = false) => invoke<void>("play_sound", { device, volume, error });

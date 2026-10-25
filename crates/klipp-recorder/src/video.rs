@@ -1,7 +1,7 @@
 //! The video thread: capture → GPU convert → encode → replay buffer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -67,7 +67,7 @@ impl VideoPipeline {
         let thread = thread::Builder::new().name("video".into()).spawn({
             let stop = stop.clone();
             move || {
-                if let Err(e) = run(&settings, &shared, &stop, ready_tx) {
+                if let Err(e) = run(&settings, shared, stop, ready_tx) {
                     crate::log::warning!("video pipeline stopped: {e:#}");
                 }
             }
@@ -148,7 +148,7 @@ fn input_age() -> Option<Duration> {
         .then(|| Duration::from_millis(unsafe { GetTickCount() }.wrapping_sub(info.dwTime) as u64))
 }
 
-fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<Result<()>>) -> Result<()> {
+fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: SyncSender<Result<()>>) -> Result<()> {
     let _priority = crate::mmcss::CaptureThread::register();
     let setup = || -> Result<_> {
         unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
@@ -191,11 +191,25 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
             Capture::Duplication(_) => "Desktop Duplication",
         };
         let screen = chosen.map_or("the main display".to_string(), |m| m.name);
-        info!("video: {} ({}) | {screen} via {method} | encoding {}x{} {:?} @ {} fps", gpu.adapter_name, vendor.encoder(), w, h, codec, s.fps);
+        let scheduling = match gpu.hardware_scheduling() {
+            Some((_, true)) => "hardware GPU scheduling on",
+            Some((true, false)) => "hardware GPU scheduling off",
+            Some((false, _)) => "no hardware GPU scheduling",
+            None => "GPU scheduling unknown",
+        };
+        info!(
+            "video: {} ({}, {scheduling}) | {screen} via {method} | encoding {}x{} {:?} @ {} fps",
+            gpu.adapter_name,
+            vendor.encoder(),
+            w,
+            h,
+            codec,
+            s.fps
+        );
         Ok((gpu, capture, converter, size_generation, (w, h), device, encoder))
     };
-    // `_device` must outlive the encoder.
-    let (gpu, mut capture, mut converter, mut converter_generation, out_size, _device, mut encoder) = match setup() {
+    // The encoder and its device go to the encoder's thread.
+    let (gpu, mut capture, mut converter, mut converter_generation, out_size, device, encoder) = match setup() {
         Ok(parts) => {
             let _ = ready.send(Ok(()));
             parts
@@ -209,29 +223,41 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
     let fps = s.fps as i64;
     let t0 = clock::now();
     let start = Instant::now();
-    let mut sink = |p: &mut Packet| -> Result<()> {
-        // A thread that was left behind (stuck, then woke up) must not mix its
-        // packets into the new video's buffer.
-        if stop.load(Ordering::Relaxed) {
-            return Ok(());
+    let pool = encoder.frame_pool()?;
+    let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
+    let encoding = thread::Builder::new().name("video-encode".into()).spawn({
+        let (shared, stop) = (shared.clone(), stop.clone());
+        move || {
+            let buffer = shared.clone();
+            let sink = move |p: &mut Packet| -> Result<()> {
+                // A thread that was left behind (stuck, then woke up) must not mix its
+                // packets into the new video's buffer.
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let info = PacketInfo {
+                    stream: VIDEO,
+                    time: t0 + p.pts() * clock::SECOND / fps,
+                    pts: p.pts(),
+                    dts: p.dts(),
+                    duration: 1,
+                    key: p.is_key(),
+                };
+                buffer.buffer.lock().unwrap().push(info, p.data());
+                Ok(())
+            };
+            if let Err(e) = encode_frames(encoder, device, queue, &shared, sink) {
+                warning!("video: the encoder stopped: {e:#}");
+            }
         }
-        let info = PacketInfo {
-            stream: VIDEO,
-            time: t0 + p.pts() * clock::SECOND / fps,
-            pts: p.pts(),
-            dts: p.dts(),
-            duration: 1,
-            key: p.is_key(),
-        };
-        shared.buffer.lock().unwrap().push(info, p.data());
-        Ok(())
-    };
+    })?;
     let tick = |i: i64| start + Duration::from_nanos((i as u128 * 1_000_000_000 / fps as u128) as u64);
 
     // Constant frame rate: every tick encodes the newest capture, or repeats
     // the previous frame if the screen didn't change.
-    let mut current: Option<HwFrame> = None;
     let mut last_generation = 0;
+    // The capture's picture count, for the stats line's "captured".
+    let mut seen_generation = 0;
     let mut capture_size = {
         let latest = capture.latest().lock();
         (latest.width, latest.height)
@@ -279,6 +305,7 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
                         resizes_before += capture.latest().resizes();
                         capture = c;
                         last_generation = 0;
+                        seen_generation = 0;
                         fresh_capture = true;
                         shared.capture_restarts.fetch_add(1, Ordering::Relaxed);
                     }
@@ -301,7 +328,11 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
         }
 
         let generation = capture.latest().generation();
-        if current.is_none() || generation != last_generation {
+        if generation > seen_generation {
+            shared.captured.fetch_add(generation - seen_generation, Ordering::Relaxed);
+            seen_generation = generation;
+        }
+        let job = if generation != last_generation {
             let waiting = Instant::now();
             let latest = capture.latest().lock();
             let wait = waiting.elapsed();
@@ -315,27 +346,102 @@ fn run(s: &VideoSettings, shared: &Shared, stop: &AtomicBool, ready: SyncSender<
                 capture_size = size;
                 fresh_capture = false;
             }
-            let frame = encoder.alloc_frame()?;
+            let frame = pool.alloc()?;
             let (texture, slice) = frame.texture();
             crate::gpu::keep_resident(texture);
             let converting = Instant::now();
             converter.convert(texture, slice)?;
             shared.steps.converted(wait, converting.elapsed());
             drop(latest);
-            current = Some(frame);
             last_generation = generation;
             shared.new_frames.fetch_add(1, Ordering::Relaxed);
             if reviver.picture(Instant::now()) {
                 info!("video: the new capture works; the picture is back");
             }
+            Job::New(frame, i)
+        } else {
+            Job::Repeat(i)
+        };
+        let new = matches!(job, Job::New(..));
+        shared.steps.queued();
+        match jobs.try_send(job) {
+            Ok(()) => {}
+            // The encoder is that far behind: this frame is left out (the
+            // clip shows the one before a little longer), and it counts as
+            // skipped, so the watchdog sees the card can't keep up.
+            Err(TrySendError::Full(_)) => {
+                shared.steps.dequeued();
+                shared.steps.dropped();
+                shared.skipped_ticks.fetch_add(1, Ordering::Relaxed);
+                if new {
+                    // Converted again next tick rather than repeating an older picture.
+                    last_generation = 0;
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => bail!("the encoder stopped"),
         }
-        let encoding = Instant::now();
-        encoder.encode(current.as_mut().context("no frame")?, i, &mut sink)?;
-        shared.steps.encoded(encoding.elapsed());
-        shared.frames.fetch_add(1, Ordering::Relaxed);
         shared.capture_resizes.store(resizes_before + capture.latest().resizes(), Ordering::Relaxed);
         i += 1;
     }
-    drop(current);
-    encoder.finish(&mut sink)
+    // The encoder finishes what's queued and stops; one stuck in the driver is left behind.
+    drop(jobs);
+    let deadline = Instant::now() + STOP_TIMEOUT;
+    while !encoding.is_finished() {
+        if Instant::now() >= deadline {
+            warning!("video: the encoder is stuck (in the graphics driver?); leaving it behind");
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = encoding.join();
+    Ok(())
+}
+
+/// Frames waiting for the encoder. The encoder takes a texture only once the
+/// card has drawn it, and a game keeping the card busy makes that a wait of
+/// about one of its frames; queued, it holds up only the encoder, not the
+/// frame clock or the capture (FIX-17).
+const QUEUE: usize = 8;
+
+enum Job {
+    /// A new picture, as frame number `pts`.
+    New(HwFrame, i64),
+    /// The screen didn't change: the last picture again, as frame `pts`.
+    Repeat(i64),
+}
+
+/// The encoder's thread: encodes queued frames in order until the video loop stops.
+fn encode_frames(
+    mut encoder: VideoEncoder,
+    device: HwDevice,
+    queue: mpsc::Receiver<Job>,
+    shared: &Shared,
+    mut sink: impl FnMut(&mut Packet) -> Result<()>,
+) -> Result<()> {
+    let _priority = crate::mmcss::CaptureThread::register();
+    let mut last: Option<HwFrame> = None;
+    for job in queue {
+        shared.steps.dequeued();
+        let pts = match job {
+            Job::New(frame, pts) => {
+                last = Some(frame);
+                pts
+            }
+            Job::Repeat(pts) => pts,
+        };
+        let Some(frame) = last.as_mut() else { continue };
+        let sending = Instant::now();
+        encoder.send(frame, pts)?;
+        let sent = sending.elapsed();
+        let receiving = Instant::now();
+        encoder.drain(&mut sink)?;
+        shared.steps.encoded(sent, receiving.elapsed());
+        shared.frames.fetch_add(1, Ordering::Relaxed);
+    }
+    drop(last);
+    encoder.finish(&mut sink)?;
+    // The encoder goes before the device it was made on.
+    drop(encoder);
+    drop(device);
+    Ok(())
 }

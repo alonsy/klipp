@@ -100,6 +100,10 @@ pub struct HwFrame {
     slice: u32,
 }
 
+// SAFETY: one thread at a time owns a frame (the video thread fills it, then
+// hands it to the encoder's); D3D11 textures are free-threaded.
+unsafe impl Send for HwFrame {}
+
 impl HwFrame {
     pub(crate) fn alloc(frames: *mut ff::AVBufferRef) -> Result<Self> {
         unsafe {

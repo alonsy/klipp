@@ -6,6 +6,7 @@
 //! and closing this leaves it recording.
 
 mod arrivals;
+mod channel;
 mod clipboard;
 mod config;
 mod export;
@@ -355,6 +356,22 @@ async fn test_hotkey(key: String) -> CmdResult<String> {
 }
 
 #[tauri::command]
+fn update_channel(handle: AppHandle, app: State<App>) -> channel::Updates {
+    channel::read(&app.config.settings_dir(), &handle.package_info().version.to_string())
+}
+
+#[tauri::command]
+fn set_update_channel(app: State<App>, channel: String, send_logs: bool) -> CmdResult<()> {
+    channel::write(&app.config.settings_dir(), &channel, send_logs).map_err(err)
+}
+
+/// The update the channel offers (see `channel`), for the window's update card.
+#[tauri::command]
+async fn check_update(webview: tauri::Webview, channel: String) -> CmdResult<Option<channel::Metadata>> {
+    channel::check(&webview, &channel).await.map_err(err)
+}
+
+#[tauri::command]
 fn start_recorder() -> CmdResult<()> {
     lifecycle::ensure_recorder().map_err(err)
 }
@@ -466,6 +483,9 @@ fn main() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            update_channel,
+            set_update_channel,
+            check_update,
             paths,
             startup_request,
             list_clips,

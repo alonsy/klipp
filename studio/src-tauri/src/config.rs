@@ -36,3 +36,10 @@ pub fn load() -> Config {
         log_dir: local.join("Klipp"),
     }
 }
+
+impl Config {
+    /// %APPDATA%\Klipp: settings.toml, studio.json, updates.json.
+    pub fn settings_dir(&self) -> PathBuf {
+        self.settings_path.parent().map(PathBuf::from).unwrap_or_default()
+    }
+}
