@@ -96,7 +96,10 @@ export interface RecorderStatus {
   /** Another app holds the save key. */
   hotkeyTaken: boolean;
   /** Recording at a lower frame rate than set, because the graphics card couldn't keep up. */
-  reduced: { to: number; from: number } | null;
+  /** `learned`: earlier sessions made it the rate to start at (see the recorder's tuning). */
+  reduced: { to: number; from: number; learned?: boolean } | null;
+  /** The check after an update lowered the video settings ("1440p at 120 fps" → "1080p at 60 fps"). */
+  adjusted: { from: string; to: string; version: string } | null;
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
 
@@ -155,6 +158,13 @@ export interface SystemCheck {
   /** Has a battery: setup suggests Alt+F8, which needs no Fn on laptop keyboards. */
   laptop: boolean;
   cs2: boolean;
+  /** The recording path measured at each candidate, best first (older recorders leave it out). */
+  performance?: { height: number; fps: number; codec: string; busy: number; smooth: boolean }[];
+  /** The best candidate that runs smoothly with room left for a game. */
+  recommended?: { height: number; fps: number } | null;
+  /** League of Legends is installed; Rocket League has run on this PC. */
+  league?: boolean;
+  rocketLeague?: boolean;
   error: string | null;
   clipsDir: string;
   freeGb: number | null;
@@ -168,15 +178,18 @@ export interface UpdateChannel {
   channel: "production" | "test";
   /** Test channel: the recorder sends its log to the developer. */
   sendLogs: boolean;
+  /** Look for updates by itself (klipp.dev, with the version and a random install number). */
+  checks: boolean;
   /** This copy is a test build ("0.3.5-test.1"). */
   testBuild: boolean;
 }
 export const updateChannel = () => invoke<UpdateChannel>("update_channel");
-export const setUpdateChannel = (channel: UpdateChannel["channel"], sendLogs: boolean) => invoke<void>("set_update_channel", { channel, sendLogs });
+export const setUpdateChannel = (u: Pick<UpdateChannel, "channel" | "sendLogs" | "checks">) => invoke<void>("set_update_channel", u);
 
-/** The update the chosen channel offers, ready to download and install. */
-export async function checkUpdate(): Promise<Update | null> {
-  const { channel } = await updateChannel();
+/** The update the chosen channel offers, ready to download and install. `whenOff`: check even with checks off (asked for). */
+export async function checkUpdate(whenOff = false): Promise<Update | null> {
+  const { channel, checks } = await updateChannel();
+  if (!checks && !whenOff) return null;
   const metadata = await invoke<ConstructorParameters<typeof Update>[0] | null>("check_update", { channel });
   return metadata ? new Update(metadata) : null;
 }

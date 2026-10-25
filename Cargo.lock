@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "klipp"
-version = "0.3.5-test.1"
+version = "0.3.5-test.2"
 dependencies = [
  "anyhow",
  "semver",
@@ -2066,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-media"
-version = "0.3.5-test.1"
+version = "0.3.5-test.2"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-next",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-recorder"
-version = "0.3.5-test.1"
+version = "0.3.5-test.2"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -2083,6 +2083,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
  "windows",
  "windows-core",
 ]

@@ -25,4 +25,4 @@ export function mergeMarkers(events: ClipEvent[]): Marker[] {
   return out;
 }
 
-export const isHot = (kind: string) => /^\d+k$|^ace$/.test(kind);
+export const isHot = (kind: string) => /^\d+k$|^ace$|^penta$/.test(kind);

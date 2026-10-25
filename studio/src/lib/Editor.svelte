@@ -485,7 +485,7 @@
                 title="{timecode(m.at)} · {m.all.join(', ')}"
                 onclick={() => seek(Math.max(0, m.at - 1))}
               >
-                <Icon event={m.kind} size={18} />{#if isHot(m.kind)}<span class="mono">{eventName(m.kind)}</span>{/if}
+                <Icon event={m.kind} size={18} />{#if isHot(m.kind)}<span class="mono">{eventName(m.kind, clip.game)}</span>{/if}
               </button>
             {/each}
           </div>
@@ -536,7 +536,7 @@
             <li>
               <button class="ghost moment" onclick={() => seek(Math.max(0, e.atSecs - 1))}>
                 <Icon event={e.kind} size={18} />
-                <span class="m-name">{eventName(e.kind)}{#if e.detail}<span class="m-detail"> · {weaponName(e.detail)}</span>{/if}</span>
+                <span class="m-name">{eventName(e.kind, clip.game)}{#if e.detail}<span class="m-detail"> · {weaponName(e.detail)}</span>{/if}</span>
                 <span class="m-time mono">{timecode(e.atSecs)}</span>
               </button>
             </li>

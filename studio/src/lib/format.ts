@@ -13,26 +13,68 @@ const EVENT_NAMES: Record<string, string> = {
   defuse: "Bomb defused",
   manual: "Manual clip",
   capture: "Saved here",
+  // League of Legends.
+  penta: "Pentakill",
+  teamace: "Team ace",
+  firstblood: "First blood",
+  steal: "Steal",
+  objective: "Objective",
+  assist: "Assist",
+  win: "Victory",
+  loss: "Defeat",
+  // Rocket League.
+  goal: "Goal",
+  save: "Save",
+  epicsave: "Epic save",
+  demolition: "Demolition",
+  // Fortnite.
+  knock: "Knock",
 };
 
-/** "2k" → "2K", "headshot" → "Headshot". */
-export function eventName(kind: string): string {
+/** "2k" → "2K", "headshot" → "Headshot". A win is a round in CS2, the match in Fortnite. */
+export function eventName(kind: string, game?: string): string {
+  if (kind === "victory" && game === "Fortnite") return "Victory Royale";
   return EVENT_NAMES[kind] ?? (/^\d+k$/.test(kind) ? kind.toUpperCase() : kind);
 }
 
 /** Order for filters, badges and shared markers, most notable first. */
 export function eventRank(kind: string): number {
-  if (kind === "ace") return 105;
+  if (kind === "ace" || kind === "penta") return 105;
   const k = /^(\d+)k$/.exec(kind);
   if (k) return 100 + Number(k[1]);
-  return { knife: 50, zeus: 49, headshot: 40, mvp: 30, kill: 20, death: 10, defuse: 5, victory: 4, defeat: 3, capture: 1 }[kind] ?? 0;
+  return (
+    {
+      goal: 90,
+      epicsave: 80,
+      teamace: 70,
+      steal: 60,
+      demolition: 55,
+      knife: 50,
+      zeus: 49,
+      firstblood: 45,
+      headshot: 40,
+      save: 35,
+      mvp: 30,
+      kill: 20,
+      knock: 15,
+      assist: 15,
+      death: 10,
+      objective: 8,
+      defuse: 5,
+      victory: 4,
+      win: 4,
+      defeat: 3,
+      loss: 3,
+      capture: 1,
+    }[kind] ?? 0
+  );
 }
 
-export const isMultiKill = (kind: string | null | undefined) => !!kind && (/^\d+k$/.test(kind) || kind === "ace");
+export const isMultiKill = (kind: string | null | undefined) => !!kind && (/^\d+k$/.test(kind) || kind === "ace" || kind === "penta");
 
 /** What a clip is called in the library: its reason, or "Manual clip". */
 export function clipTitle(c: Clip): string {
-  return c.label ? eventName(c.label) : c.kind === "auto" ? "Auto-clip" : "Manual clip";
+  return c.label ? eventName(c.label, c.game) : c.kind === "auto" ? "Auto-clip" : "Manual clip";
 }
 
 const MAPS: Record<string, string> = {
@@ -47,6 +89,12 @@ const MAPS: Record<string, string> = {
   de_train: "Train",
   cs_office: "Office",
   cs_italy: "Italy",
+  // League of Legends reports map numbers (Riot's maps.json).
+  Map11: "Summoner's Rift",
+  Map12: "Howling Abyss",
+  Map21: "Nexus Blitz",
+  Map30: "Rings of Wrath",
+  Map35: "The Bandlewood",
 };
 
 /** "de_mirage" → "Mirage"; unknown maps lose their prefix and get capitals. */
@@ -67,6 +115,18 @@ const MODES: Record<string, string> = {
   gungametrbomb: "Demolition",
   survival: "Danger Zone",
   custom: "Custom",
+  // League of Legends (Riot's gameModes.json).
+  CLASSIC: "Classic",
+  ARAM: "ARAM",
+  URF: "URF",
+  ARURF: "ARURF",
+  ONEFORALL: "One for All",
+  CHERRY: "Arena",
+  SWIFTPLAY: "Swiftplay",
+  NEXUSBLITZ: "Nexus Blitz",
+  ULTBOOK: "Ultimate Spellbook",
+  PRACTICETOOL: "Practice Tool",
+  TUTORIAL: "Tutorial",
 };
 
 export function modeName(mode: string): string {
@@ -115,8 +175,37 @@ const WEAPONS: Record<string, string> = {
   inferno: "Fire",
 };
 
+/** What other games' markers say: League's objectives, Rocket League's goals. */
+const DETAILS: Record<string, string> = {
+  baron: "Baron Nashor",
+  herald: "Rift Herald",
+  dragon: "Dragon",
+  dragon_elder: "Elder Dragon",
+  dragon_fire: "Infernal Drake",
+  dragon_earth: "Mountain Drake",
+  dragon_water: "Ocean Drake",
+  dragon_air: "Cloud Drake",
+  dragon_hextech: "Hextech Drake",
+  dragon_chemtech: "Chemtech Drake",
+  turret: "Turret",
+  inhibitor: "Inhibitor",
+  overtime: "Overtime",
+  bicycle: "Bicycle",
+  aerial: "Aerial",
+  backwards: "Backwards",
+  long: "Long range",
+  turtle: "Turtle",
+  pool: "Pool shot",
+  swish: "Swish",
+  extermination: "Extermination",
+};
+
+/** A marker's detail: a CS2 weapon ("AK-47"), a League champion or objective, a Rocket League goal. */
 export function weaponName(w: string): string {
   if (!w) return "";
+  if (DETAILS[w]) return DETAILS[w];
+  // Champion names come written for people already ("Miss Fortune").
+  if (/[A-Z ]/.test(w)) return w;
   if (w.startsWith("knife") || w === "bayonet" || w.startsWith("knife_")) return "Knife";
   return WEAPONS[w] ?? w.toUpperCase();
 }

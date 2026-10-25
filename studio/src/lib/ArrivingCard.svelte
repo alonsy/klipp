@@ -9,7 +9,7 @@
 
   let detail = $derived(
     arrival.kind === "auto" && arrival.label
-      ? `${eventName(arrival.label)} · ${arrival.game}`
+      ? `${eventName(arrival.label, arrival.game)} · ${arrival.game}`
       : arrival.presses > 1
         ? `Saved ${arrival.presses} times so far`
         : arrival.game,

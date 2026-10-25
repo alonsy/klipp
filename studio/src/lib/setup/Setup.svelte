@@ -160,8 +160,15 @@
     // 4K and up records at 1440p by default: sharp, at a third of the memory.
     // Built-in graphics record 1080p, which they can keep up with at 60 fps.
     c.resolution = builtIn && h > 1080 ? "1080p" : h > 1440 ? "1440p" : "native";
-    c.codec = encodes("av1", heightOf(c.resolution)) ? "av1" : "h264";
     c.fps = 60;
+    // The probe recorded a few seconds at each candidate: its pick runs
+    // smoothly with most of the card left for a game. 120 fps needs about
+    // twice the memory for the buffer, so not on PCs with little of it.
+    if (r.recommended) {
+      c.resolution = r.recommended.height === h ? "native" : (`${r.recommended.height}p` as typeof c.resolution);
+      c.fps = r.recommended.fps === 120 && r.ramMb >= 12000 ? 120 : 60;
+    }
+    c.codec = encodes("av1", heightOf(c.resolution)) ? "av1" : "h264";
     c.cs2 = r.cs2;
     // F8 on desktops; laptops often need Fn for F keys, and Alt+F8 is easy to reach with it.
     if (!rerun) c.hotkey = r.laptop ? "Alt+F8" : "F8";
@@ -346,6 +353,18 @@
                   <li class="ok">
                     <span class="mark"><Icon name="check" size={16} /></span>
                     <div><b>Counter-Strike 2</b><span>Found: headshots and multi-kills can be saved automatically</span></div>
+                  </li>
+                {/if}
+                {#if check.league}
+                  <li class="ok">
+                    <span class="mark"><Icon name="check" size={16} /></span>
+                    <div><b>League of Legends</b><span>Found: multi-kills, first bloods and steals can be saved automatically</span></div>
+                  </li>
+                {/if}
+                {#if check.rocketLeague}
+                  <li class="ok">
+                    <span class="mark"><Icon name="check" size={16} /></span>
+                    <div><b>Rocket League</b><span>Found: goals, epic saves and demolitions can be saved automatically</span></div>
                   </li>
                 {/if}
               </ul>

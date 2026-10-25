@@ -1,10 +1,12 @@
-//! Which game is in the foreground, for naming clip folders.
+//! Which game is in the foreground, for naming clip folders, and which
+//! programs are running.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 use windows::core::PWSTR;
@@ -78,6 +80,28 @@ fn foreground_exe() -> Option<PathBuf> {
         let _ = CloseHandle(process);
         ok.then(|| PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
     }
+}
+
+/// (process id, parent id, lowercase file name) of every running process.
+/// A snapshot of the process list: nothing is opened, so it's cheap and no
+/// anti-cheat minds it.
+pub fn processes() -> Vec<(u32, u32, String)> {
+    let mut out = Vec::new();
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else { return out };
+    let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while more {
+        let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+        out.push((entry.th32ProcessID, entry.th32ParentProcessID, String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase()));
+        more = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    let _ = unsafe { CloseHandle(snapshot) };
+    out
+}
+
+/// A program with this (lowercase) file name is running.
+pub fn running(exe: &str) -> bool {
+    processes().iter().any(|(_, _, name)| name == exe)
 }
 
 /// The game an exe belongs to, or `None` if it doesn't look like a game.

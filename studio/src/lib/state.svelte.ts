@@ -49,6 +49,8 @@ export const prefs = $state({
   copyAfterExport: true,
   /** Leave the voice tracks (chat, microphone) out of exports. */
   exportWithoutVoices: false,
+  /** The version whose settings change (the check after an update) was already told. */
+  adjustToldFor: "",
 });
 
 /** Clips on their way, and clips that just landed (briefly highlighted). */
@@ -79,13 +81,14 @@ export const recorder = $state({
   /** Another app holds the save key. */
   hotkeyTaken: false,
   /** Recording at a lower frame rate than set until the recorder restarts (the card couldn't keep up). */
-  reduced: null as { to: number; from: number } | null,
+  reduced: null as { to: number; from: number; learned?: boolean } | null,
   /** Restart the recorder if it stops while this window is open (not before setup is done). */
   autoRestart: false,
 });
 
 let wasRunning = false;
 let lastRestart = 0;
+let adjustTold = false;
 
 export async function loadPrefs() {
   try {
@@ -124,11 +127,24 @@ export async function refreshRecorder() {
     recorder.problem = status.problem;
     recorder.hotkeyTaken = status.hotkeyTaken;
     recorder.reduced = status.reduced;
+    tellAdjusted(status.adjusted);
     recorder.hotkey = settings.replay?.hotkey ?? recorder.hotkey;
     recorder.lengthSecs = settings.replay?.length_secs ?? recorder.lengthSecs;
   } catch {
     // Keep what we had.
   }
+}
+
+/** Once per version: the recorder's check after the update lowered the video settings. */
+function tellAdjusted(a: api.RecorderStatus["adjusted"]) {
+  if (!a || adjustTold || prefs.adjustToldFor === a.version) return;
+  adjustTold = true;
+  setPref("adjustToldFor", a.version);
+  toast(
+    `After the update, Klipp tested your graphics card: ${a.from} wasn't smooth, so it records ${a.to} now.`,
+    { label: "Video settings", run: () => openPage("settings", "video") },
+    12000,
+  );
 }
 
 export async function reload() {

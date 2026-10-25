@@ -53,7 +53,7 @@
   let flat = $derived(sessions.flatMap((s) => s.clips));
 
   // Event chips: what's in the current folder/kind/search, most notable first.
-  const CHIP_EVENTS = /^(\d+k|ace|headshot|knife|zeus|mvp|death)$/;
+  const CHIP_EVENTS = /^(\d+k|ace|penta|headshot|knife|zeus|mvp|death|teamace|firstblood|steal|goal|epicsave|save|demolition)$/;
   let chips = $derived.by(() => {
     const m = new Map<string, number>();
     for (const c of library.clips) {
@@ -392,7 +392,7 @@
         {:else if library.clips.length === 0}
           <Icon event="manual" size={44} />
           <h2>No clips yet</h2>
-          <p class="muted">Press <kbd>{recorder.hotkey}</kbd> in a game to save the last {recorder.lengthSecs} seconds.<br />Headshots and multi-kills in CS2 are saved on their own.</p>
+          <p class="muted">Press <kbd>{recorder.hotkey}</kbd> in a game to save the last {recorder.lengthSecs} seconds.<br />Highlights in CS2, League of Legends and Rocket League are saved on their own.</p>
         {:else}
           <Icon name="search" size={28} />
           <p class="muted">No clips match these filters.</p>

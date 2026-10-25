@@ -77,6 +77,7 @@ pub struct Watchdog {
     problem: Option<Problem>,
     /// Recording at a lower frame rate than set: (now, set). For the window.
     reduced: Option<(u32, u32)>,
+    learned: bool,
 }
 
 impl Default for Watchdog {
@@ -91,6 +92,7 @@ impl Default for Watchdog {
             severe: false,
             problem: None,
             reduced: None,
+            learned: false,
         }
     }
 }
@@ -169,18 +171,20 @@ impl Watchdog {
         self.slow_windows >= SLOW_WINDOWS || self.severe
     }
 
-    /// Recording at `now` fps instead of the `set` rate, for the window to say.
-    pub fn set_reduced(&mut self, reduced: Option<(u32, u32)>) {
-        if reduced != self.reduced {
+    /// Recording at `now` fps instead of the `set` rate, for the window to
+    /// say; `learned` when earlier sessions made it the rate to start at (`tuning`).
+    pub fn set_reduced(&mut self, reduced: Option<(u32, u32)>, learned: bool) {
+        if reduced != self.reduced || learned != self.learned {
             self.reduced = reduced;
-            write_health(self.problem, reduced);
+            self.learned = learned;
+            write_health(self.problem, reduced, learned);
         }
     }
 
     fn set(&mut self, problem: Option<Problem>) {
         if problem != self.problem {
             self.problem = problem;
-            write_health(problem, self.reduced);
+            write_health(problem, self.reduced, self.learned);
         }
     }
 }
@@ -189,14 +193,14 @@ fn health_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Klipp").join("health.json"))
 }
 
-fn write_health(problem: Option<Problem>, reduced: Option<(u32, u32)>) {
+fn write_health(problem: Option<Problem>, reduced: Option<(u32, u32)>, learned: bool) {
     // Tests don't touch the real Klipp folder.
     if cfg!(test) {
         return;
     }
     let Some(path) = health_path() else { return };
     let since = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let reduced = reduced.map(|(to, from)| json!({ "to": to, "from": from }));
+    let reduced = reduced.map(|(to, from)| json!({ "to": to, "from": from, "learned": learned }));
     let body = json!({ "problem": problem.map(Problem::key), "since": since, "reduced": reduced });
     let part = path.with_extension("json.part");
     if std::fs::write(&part, body.to_string()).is_ok() {
@@ -206,5 +210,5 @@ fn write_health(problem: Option<Problem>, reduced: Option<(u32, u32)>) {
 
 /// A recorder starting up has no problems yet.
 pub fn clear_health() {
-    write_health(None, None);
+    write_health(None, None, false);
 }

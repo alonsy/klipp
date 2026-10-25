@@ -139,7 +139,12 @@ impl MonitorCapture {
         let session = pool.CreateCaptureSession(&item)?;
         // Both are newer Windows 11 features; capture still works without them.
         let _ = session.SetIsBorderRequired(false);
-        let _ = session.SetMinUpdateInterval(TimeSpan::from(Duration::from_secs_f64(1.0 / max_fps as f64)));
+        // Pictures up to twice the recording rate. At exactly the rate, a
+        // screen's refresh steps (6.06 ms at 165 Hz) push most game frames
+        // just short of the interval, so every other one was skipped: 34 new
+        // pictures a second at 60 fps on a tester's PC in CS2 (FIX-17). The
+        // video loop takes the newest at each tick.
+        let _ = session.SetMinUpdateInterval(TimeSpan::from(Duration::from_secs_f64(1.0 / (2 * max_fps) as f64)));
         session.SetIsCursorCaptureEnabled(true)?;
 
         let cb = CallbackGpu { device: gpu.device.clone(), context: gpu.context.clone(), winrt_device };

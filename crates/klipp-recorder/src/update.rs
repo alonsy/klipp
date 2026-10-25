@@ -5,6 +5,11 @@
 //!
 //! On the test channel (see `channel`) the newest of the test builds and the
 //! normal releases counts.
+//!
+//! The check asks klipp.dev first, which answers with the same manifest and
+//! counts active installs from the random install number it's sent (D43);
+//! GitHub directly if klipp.dev can't be reached. "Check for updates" off in
+//! Settings → About stops it altogether.
 
 use std::cmp::Ordering;
 use std::ffi::c_void;
@@ -40,6 +45,10 @@ pub fn start() {
     let spawned = thread::Builder::new().name("update-check".into()).spawn(|| {
         thread::sleep(FIRST_CHECK);
         loop {
+            if !channel::read().checks {
+                thread::sleep(EVERY);
+                continue;
+            }
             match latest_version() {
                 Ok(latest) if is_newer(&latest, env!("CARGO_PKG_VERSION")) => {
                     let mut found = AVAILABLE.lock().unwrap();
@@ -61,8 +70,12 @@ pub fn start() {
 
 /// The newest version this copy's channel offers.
 pub fn latest_version() -> Result<String> {
+    let channel = channel::read().channel;
+    if let Ok(v) = from_klipp_dev(channel) {
+        return Ok(v);
+    }
     let release = manifest_version(PATH);
-    if channel::read().channel == Channel::Production {
+    if channel == Channel::Production {
         return release;
     }
     match (release, manifest_version(TEST_PATH)) {
@@ -70,6 +83,18 @@ pub fn latest_version() -> Result<String> {
         (Ok(v), Err(_)) | (Err(_), Ok(v)) => Ok(v),
         (Err(e), Err(_)) => Err(e),
     }
+}
+
+/// klipp.dev's answer for the channel (the newer of test and release on test).
+fn from_klipp_dev(channel: Channel) -> Result<String> {
+    let path = HSTRING::from(format!("/api/update?channel={}&version={}&from=recorder", channel.key(), env!("CARGO_PKG_VERSION")));
+    let header = channel::install_id().map(|id| format!("Klipp-Install: {id}\r\n")).unwrap_or_default();
+    let (status, body) = request_with(w!("klipp.dev"), PCWSTR(path.as_ptr()), None, &header)?;
+    if status != 200 {
+        bail!("klipp.dev answered {status}");
+    }
+    let json: Value = serde_json::from_slice(&body).context("klipp.dev's answer isn't JSON")?;
+    json["version"].as_str().map(str::to_string).context("klipp.dev's answer has no version")
 }
 
 fn manifest_version(path: PCWSTR) -> Result<String> {
@@ -144,6 +169,11 @@ impl Drop for Handle {
 /// An HTTPS GET, or a POST of JSON when there's a body; redirects (GitHub's
 /// download links have one) are followed. The status and the answer.
 pub fn request(host: PCWSTR, path: PCWSTR, json: Option<&[u8]>) -> Result<(u32, Vec<u8>)> {
+    request_with(host, path, json, "")
+}
+
+/// `request` with extra headers ("Name: value\r\n" each).
+fn request_with(host: PCWSTR, path: PCWSTR, json: Option<&[u8]>, headers: &str) -> Result<(u32, Vec<u8>)> {
     unsafe {
         let agent = HSTRING::from(format!("Klipp/{}", env!("CARGO_PKG_VERSION")));
         let session = Handle::new(WinHttpOpen(&agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0), "opening WinHTTP")?;
@@ -154,12 +184,12 @@ pub fn request(host: PCWSTR, path: PCWSTR, json: Option<&[u8]>) -> Result<(u32, 
             WinHttpOpenRequest(connect.0, verb, path, PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE),
             "opening the request",
         )?;
+        let content_type = if json.is_some() { "Content-Type: application/json\r\n" } else { "" };
+        let all: Vec<u16> = format!("{content_type}{headers}").encode_utf16().collect();
+        let all = (!all.is_empty()).then_some(all.as_slice());
         match json {
-            Some(body) => {
-                let headers: Vec<u16> = "Content-Type: application/json\r\n".encode_utf16().collect();
-                WinHttpSendRequest(request.0, Some(&headers), Some(body.as_ptr() as *const c_void), body.len() as u32, body.len() as u32, 0)
-            }
-            None => WinHttpSendRequest(request.0, None, None, 0, 0, 0),
+            Some(body) => WinHttpSendRequest(request.0, all, Some(body.as_ptr() as *const c_void), body.len() as u32, body.len() as u32, 0),
+            None => WinHttpSendRequest(request.0, all, None, 0, 0, 0),
         }
         .context("sending the request")?;
         WinHttpReceiveResponse(request.0, std::ptr::null_mut()).context("waiting for the answer")?;

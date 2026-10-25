@@ -2,7 +2,8 @@
 // a 100 grid, round caps, white strokes and one accent element. The stroke
 // gets heavier at small sizes (9 → 10 at 24 px → 11 at 20 px and below).
 // Kill, headshot, death, victory, defeat, defuse and manual are the
-// designer's; multi-kill, ace, MVP, knife and Zeus are composed in the same style.
+// designer's; multi-kill, ace, MVP, knife and Zeus are composed in the same
+// style, and so are League's and Rocket League's (team ace to demolition).
 
 const A = "var(--accent)";
 
@@ -20,17 +21,40 @@ const EVENTS: Record<string, string> = {
   // The whole team: a crown with an accent jewel.
   ace: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M16 74 L12 30 L34 50 L50 22 L66 50 L88 30 L84 74 Z"/><path d="M20 89 H80"/></g><circle cx="50" cy="60" r="8" fill="${A}"/>`,
   mvp: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 12 L60.6 37.4 L88 39.6 L67.1 57.6 L73.5 84.4 L50 70 L26.5 84.4 L32.9 57.6 L12 39.6 L39.4 37.4 Z"/></g><circle cx="50" cy="52" r="8" fill="${A}"/>`,
+  // Fortnite's knock: the crosshair, and an accent chevron for someone going down.
+  knock: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round"><circle cx="50" cy="42" r="26"/><path d="M50 4 V16 M10 42 H22 M78 42 H90"/></g><path d="M34 76 L50 92 L66 76" fill="none" stroke="${A}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"/>`,
   // Blade and handle in white, the guard in accent.
   knife: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M42 58 L86 14 C84 36 70 54 52 68 Z"/><path d="M16 84 L32 68"/></g><path d="M26 56 L44 74" stroke="${A}" stroke-width="{w}" stroke-linecap="round"/>`,
   // A bolt in accent between two white charge arcs.
   zeus: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M20 30 C12 42 12 58 20 70 M80 30 C88 42 88 58 80 70"/></g><path d="M58 10 L32 54 H52 L42 90 L70 44 H50 Z" fill="none" stroke="${A}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // Three of the team, the middle one carrying the accent.
+  teamace: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><circle cx="50" cy="34" r="14"/><path d="M24 88 C24 70 35 62 50 62 C65 62 76 70 76 88"/><circle cx="18" cy="44" r="9"/><circle cx="82" cy="44" r="9"/><path d="M6 82 C6 72 10 66 18 66 M94 82 C94 72 90 66 82 66"/></g><circle cx="50" cy="34" r="6" fill="${A}"/>`,
+  // A drop, with an accent shine.
+  firstblood: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 10 C38 28 22 46 22 62 C22 78 35 90 50 90 C65 90 78 78 78 62 C78 46 62 28 50 10 Z"/></g><circle cx="50" cy="64" r="9" fill="${A}"/>`,
+  // A gem, taken away along the accent arrow.
+  steal: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M42 12 L68 38 L42 70 L16 38 Z"/><path d="M16 38 H68"/></g><path d="M56 84 H88 M78 74 L88 84 L78 94" fill="none" stroke="${A}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // A tower, its window in accent.
+  objective: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M34 88 L38 40 H62 L66 88 Z"/><path d="M30 40 V22 H40 V30 H50 V22 H60 V30 H70 V22 V40"/></g><circle cx="50" cy="60" r="7" fill="${A}"/>`,
+  // A pass along an arc, from the accent.
+  assist: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M24 70 C34 30 66 30 82 62"/><path d="M68 60 L82 62 L84 48"/></g><circle cx="20" cy="80" r="9" fill="${A}"/>`,
+  // The ball (accent) in the goal.
+  goal: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M12 84 V26 H88 V84"/></g><circle cx="50" cy="62" r="13" fill="${A}"/>`,
+  save: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 10 L82 22 V46 C82 66 68 82 50 90 C32 82 18 66 18 46 V22 Z"/></g><circle cx="50" cy="48" r="9" fill="${A}"/>`,
+  // The save's shield with an accent star.
+  epicsave: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 10 L82 22 V46 C82 66 68 82 50 90 C32 82 18 66 18 46 V22 Z"/></g><path d="M50 32 L54.1 42.3 L65.2 43.1 L56.7 50.2 L59.4 60.9 L50 55 L40.6 60.9 L43.3 50.2 L34.8 43.1 L45.9 42.3 Z" fill="${A}"/>`,
+  // A burst around an accent core.
+  demolition: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 10 L58.4 29.7 L78.3 21.7 L70.3 41.6 L90 50 L70.3 58.4 L78.3 78.3 L58.4 70.3 L50 90 L41.6 70.3 L21.7 78.3 L29.7 58.4 L10 50 L29.7 41.6 L21.7 21.7 L41.6 29.7 Z"/></g><circle cx="50" cy="50" r="9" fill="${A}"/>`,
 };
+
+/** Labels drawn with another label's icon: League's pentakill is five kills like an ace. */
+const SAME_ICON: Record<string, string> = { penta: "ace", win: "victory", loss: "defeat" };
 
 /** The icon for an event name from clip info ("2k", "headshot", "victory"…). */
 export function eventIconId(kind: string): string {
   if (/^\d+k$/.test(kind)) return "multikill";
   // A hotkey press: the record mark.
   if (kind === "capture") return "manual";
+  if (SAME_ICON[kind]) return SAME_ICON[kind];
   return kind in EVENTS ? kind : "kill";
 }
 

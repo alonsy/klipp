@@ -20,23 +20,29 @@ mod events;
 mod games;
 mod gpu;
 mod hotkey;
+mod gpuload;
+mod league;
 mod log;
 mod logsend;
 mod mmcss;
 mod monitors;
 mod overlay;
+mod perfcheck;
 mod probe;
 mod process_loopback;
 mod recorder;
 mod replay;
 mod revive;
+mod rocketleague;
 mod save;
 mod selftest;
 mod settings;
 mod state;
 mod stats;
+mod sysinfo;
 mod timeline;
 mod tray;
+mod tuning;
 mod update;
 mod video;
 mod watchdog;
@@ -338,11 +344,14 @@ fn open_path(path: &Path) {
 }
 
 /// Shows an indicator if the settings want this one: "Auto-clips ON" needs
-/// CS2 auto-clips on; auto-clip saves follow "also for auto-clips".
+/// auto-clips on for a game (only those report matches starting); auto-clip
+/// saves follow "also for auto-clips".
 fn indicate(indicators: &mut overlay::Indicators, s: &Settings, what: overlay::Indicator) {
     use overlay::{Indicator, Pill};
+    let a = &s.auto_clip;
+    let any_game = a.cs2.enabled || a.league.enabled || a.rocket_league.enabled;
     let pill = match what {
-        Indicator::MatchStarted if s.indicators.autoclips_on && s.auto_clip.enabled && s.auto_clip.cs2.enabled => Pill::AutoClipsOn,
+        Indicator::MatchStarted if s.indicators.autoclips_on && a.enabled && any_game => Pill::AutoClipsOn,
         Indicator::Saved if s.indicators.saves => Pill::Saved,
         Indicator::AutoSaved if s.indicators.saves && s.cue.auto_clips => Pill::Saved,
         Indicator::Failed if s.indicators.saves => Pill::Failed,
@@ -394,6 +403,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         warning!("settings: {e:#}; using defaults until the file is fixed");
         Settings::default()
     });
+    // A new version checks the video settings before it records.
+    let settings = perfcheck::run(&settings_path, settings);
     MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
     overlay::set_main_thread();
     let mut indicators = overlay::Indicators::default();
@@ -427,8 +438,10 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         settings_path.display(),
         log_path.as_deref().map_or("(none)".into(), |p| p.display().to_string())
     );
+    sysinfo::log_summary(recorder.settings());
 
     let mut prev = (Instant::now(), stats::sample());
+    let mut gpu_load = gpuload::GpuLoad::start();
     let mut pending_save = None;
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
@@ -504,6 +517,10 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             WM_TIMER if msg.wParam.0 == stats_timer => {
                 log_stats(&recorder.shared, prev);
                 prev = (Instant::now(), stats::sample());
+                // What was in front and how busy the graphics card was: what clips are judged against.
+                let game = recorder.games.current(Duration::from_secs(60));
+                let gpu = gpu_load.as_mut().map_or("not measured".into(), |g| gpuload::describe(&g.sample()));
+                info!("activity: {game} | graphics card {gpu}");
             }
             WM_TIMER if msg.wParam.0 == settings_timer => {
                 if lend_event.is_some_and(|e| unsafe { WaitForSingleObject(e, 0) } == WAIT_OBJECT_0) {

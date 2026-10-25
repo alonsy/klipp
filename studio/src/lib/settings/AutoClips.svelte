@@ -9,6 +9,8 @@
   const s = $derived(store.s!);
   const a = $derived(s.auto_clip);
   const cs2 = $derived(s.auto_clip.cs2);
+  const lol = $derived(s.auto_clip.league);
+  const rl = $derived(s.auto_clip.rocket_league);
   let pre = $state(Number(store.s!.auto_clip.pre_roll_secs));
   let post = $state(Number(store.s!.auto_clip.post_roll_secs));
   let gap = $state(Number(store.s!.auto_clip.merge_gap_secs));
@@ -19,6 +21,23 @@
     ["knife_or_zeus_kill", "knife", "Knife and Zeus kills", "The humiliating ones."],
     ["death", "death", "Deaths", "See what got you."],
     ["mvp", "mvp", "Round MVP", "When you're the round's MVP."],
+  ] as const;
+
+  const leagueEvents = [
+    ["first_blood", "firstblood", "First blood", "When the game's first kill is yours."],
+    ["steal", "steal", "Steals", "A Baron, Dragon or Herald you take from the other team."],
+    ["ace", "teamace", "Aces", "Your team takes down all five, with you in the fight."],
+    ["objective", "objective", "Objectives", "Every dragon, Baron, Herald, turret and inhibitor you take part in."],
+    ["any_kill", "kill", "Every kill", "Lots of clips; good for practice."],
+    ["death", "death", "Deaths", "See what got you."],
+  ] as const;
+
+  const rocketEvents = [
+    ["goal", "goal", "Goals", "Every goal you score; aerials and overtime winners are named."],
+    ["epic_save", "epicsave", "Epic saves", "The saves the game calls epic."],
+    ["demolition", "demolition", "Demolitions", "Every car you demolish."],
+    ["save", "save", "Every save", "Not just the epic ones."],
+    ["assist", "assist", "Assists", "Goals you set up."],
   ] as const;
 </script>
 
@@ -82,6 +101,50 @@
 </div>
 
 <p class="note">Round wins, losses and defuses are marked on the timeline of every clip, but never saved on their own.</p>
+
+<div class="game-head">
+  <Icon event="objective" size={22} />
+  <span class="game">League of Legends</span>
+  <Toggle checked={lol.enabled} label="League of Legends auto-clips" onchange={(v) => set(["auto_clip", "league", "enabled"], v)} />
+</div>
+<p class="note">Uses Riot's Live Client Data API, which League runs on this PC during a game. Nothing to install.</p>
+
+<div class="group" class:disabled={!a.enabled || !lol.enabled}>
+  <Field title="Multi-kills" hint="Clip kills the game counts as a multi-kill, starting from this one.">
+    <Segmented
+      value={lol.multi_kill_min}
+      label="League multi-kills"
+      options={[[0, "Off"], [2, "Double"], [3, "Triple"], [4, "Quadra"], [5, "Penta"]]}
+      onchange={(v) => set(["auto_clip", "league", "multi_kill_min"], v)}
+    />
+  </Field>
+  {#each leagueEvents as [key, icon, title, hint] (key)}
+    <Field {title} {hint}>
+      <span class="ev"><Icon event={icon} size={20} /></span>
+      <Toggle checked={lol[key]} label={title} onchange={(v) => set(["auto_clip", "league", key], v)} />
+    </Field>
+  {/each}
+</div>
+
+<p class="note">Assists, objectives and the result are marked on the timeline of every clip.</p>
+
+<div class="game-head">
+  <Icon event="goal" size={22} />
+  <span class="game">Rocket League</span>
+  <Toggle checked={rl.enabled} label="Rocket League auto-clips" onchange={(v) => set(["auto_clip", "rocket_league", "enabled"], v)} />
+</div>
+<p class="note">Uses Psyonix's Stats API, which Klipp turns on in Rocket League's settings file. Restart Rocket League once after turning it on.</p>
+
+<div class="group" class:disabled={!a.enabled || !rl.enabled}>
+  {#each rocketEvents as [key, icon, title, hint] (key)}
+    <Field {title} {hint}>
+      <span class="ev"><Icon event={icon} size={20} /></span>
+      <Toggle checked={rl[key]} label={title} onchange={(v) => set(["auto_clip", "rocket_league", key], v)} />
+    </Field>
+  {/each}
+</div>
+
+<p class="note">Assists, saves and the result are marked on the timeline of every clip.</p>
 
 <span class="label group-title">Advanced</span>
 <div class="group">

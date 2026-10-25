@@ -110,7 +110,11 @@
         <span class="pulse"></span>
         <span class="status-text">
           <b>Recording at {recorder.reduced.to} fps</b>
-          <span>The game kept the graphics card too busy for {recorder.reduced.from}. Cap its frame rate; Klipp tries {recorder.reduced.from} again next start.</span>
+          {#if recorder.reduced.learned}
+            <span>Games kept the graphics card too busy for {recorder.reduced.from} in two sessions, so Klipp starts here now. It tries {recorder.reduced.from} again after its next update, or when you change the video settings.</span>
+          {:else}
+            <span>The game kept the graphics card too busy for {recorder.reduced.from}. Cap its frame rate; Klipp tries {recorder.reduced.from} again next start.</span>
+          {/if}
         </span>
       </button>
     {:else if recorder.running}

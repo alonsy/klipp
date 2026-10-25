@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
-use windows::core::{HSTRING, w};
+use windows::core::w;
 
 use crate::channel::{self, Channel};
 use crate::log::{info, warning};
@@ -68,7 +67,7 @@ fn send_new(log: &Path) -> Result<u64> {
         offset = 0;
     }
     let install = channel::install_id().context("no install id")?;
-    let windows = windows_version();
+    let windows = crate::sysinfo::windows_version();
     let mut sent = 0;
     for _ in 0..PIECES_PER_ROUND {
         if offset >= len {
@@ -130,34 +129,4 @@ fn replace_ignore_case(text: &str, needle: &str, with: &str) -> String {
     }
     out.push_str(&text[rest..]);
     out
-}
-
-/// "Windows 11 24H2 (build 26200)".
-fn windows_version() -> String {
-    let read = |name: &str| -> Option<String> {
-        let mut buf = [0u16; 64];
-        let mut len = (buf.len() * 2) as u32;
-        unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
-                &HSTRING::from(name),
-                RRF_RT_REG_SZ,
-                None,
-                Some(buf.as_mut_ptr() as *mut _),
-                Some(&mut len),
-            )
-        }
-        .ok()
-        .ok()?;
-        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(String::from_utf16_lossy(&buf[..n]))
-    };
-    let build = read("CurrentBuildNumber").unwrap_or_default();
-    // Windows 11 still calls itself "Windows 10" in ProductName; the build tells them apart.
-    let name = if build.parse::<u32>().is_ok_and(|b| b >= 22000) { "Windows 11" } else { "Windows 10" };
-    match read("DisplayVersion") {
-        Some(v) => format!("{name} {v} (build {build})"),
-        None => format!("{name} (build {build})"),
-    }
 }

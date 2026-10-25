@@ -259,8 +259,11 @@ impl VideoEncoder {
                     set_opt(c.priv_data, "rc", "qvbr")?;
                     set_opt(c.priv_data, "qvbr_quality_level", &amf_quality_level(cfg.quality).to_string())?;
                     set_opt(c.priv_data, "bf", "0")?;
-                    // Frames in flight; each holds GPU and system memory. We drain every frame.
-                    set_opt(c.priv_data, "async_depth", "2")?;
+                    // Frames in flight; each holds GPU and system memory. With 2, handing
+                    // over a frame waited for the one before it to finish: 12.9 ms of
+                    // each 16.7 on an RX 6650 XT at 1080p60 on the desktop, and late
+                    // frames in games (a tester's log, 2026-10-25). 4, as NVENC (FIX-17).
+                    set_opt(c.priv_data, "async_depth", "4")?;
                 }
                 Vendor::Intel => {
                     // Plain variable bitrate: the mode every Quick Sync generation and

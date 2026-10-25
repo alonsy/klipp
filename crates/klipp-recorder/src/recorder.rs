@@ -19,8 +19,10 @@ use crate::cue::{CuePlayer, Sound};
 use crate::events::{EventKind, GameEvent};
 use crate::games::GameTracker;
 use crate::hotkey::Hotkey;
+use crate::league::{self, LeagueIntegration};
 use crate::log::{info, warning};
 use crate::replay::{Clip, ReplayBuffer};
+use crate::rocketleague::{self, RocketLeagueIntegration};
 use crate::save::{ClipKind, SaveJob, Saver};
 use crate::settings::Settings;
 use crate::state::Shared;
@@ -51,8 +53,11 @@ pub struct Recorder {
     paused: bool,
     pub games: GameTracker,
     cs2: Option<Cs2Integration>,
-    events_tx: Sender<GameEvent>,
-    events_rx: Receiver<GameEvent>,
+    league: Option<LeagueIntegration>,
+    rocket_league: Option<RocketLeagueIntegration>,
+    /// Events from every game integration, with the game's name.
+    events_tx: Sender<(String, GameEvent)>,
+    events_rx: Receiver<(String, GameEvent)>,
     autoclip: AutoClipper,
     /// Hotkey presses close together, collected into one clip.
     burst: Option<Burst>,
@@ -64,6 +69,10 @@ pub struct Recorder {
     /// Recording at this frame rate instead of the set one, for the rest of
     /// the session, because the card couldn't keep up (FIX-17).
     fps_cap: Option<u32>,
+    /// What earlier sessions learned about this PC (see `tuning`).
+    tuning: crate::tuning::Tuning,
+    /// When this session started, to count sessions that couldn't keep up.
+    session: String,
 }
 
 /// A clip saved with the hotkey that more presses can still extend. Each
@@ -77,6 +86,15 @@ struct Burst {
     presses: Vec<i64>,
     requested_at: Instant,
     arrival: u64,
+}
+
+/// The game's name in log lines: "cs2", "league", "rocket league".
+fn log_tag(game: &str) -> String {
+    match game {
+        cs2::GAME_NAME => "cs2".into(),
+        league::GAME_NAME => "league".into(),
+        _ => game.to_lowercase(),
+    }
 }
 
 /// Buffer window and byte cap for the current settings: the worst case at the
@@ -108,13 +126,24 @@ impl Recorder {
             paused: false,
             games: GameTracker::default(),
             cs2: None,
+            league: None,
+            rocket_league: None,
             events_tx,
             events_rx,
             burst: None,
             watchdog: crate::watchdog::Watchdog::default(),
             fps_cap: None,
+            tuning: crate::tuning::Tuning::load(),
+            session: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string(),
         };
+        r.set_game_rules();
         crate::watchdog::clear_health();
+        let fps = r.settings.video.fps;
+        if let Some(cap) = r.tuning.fps_cap.filter(|&cap| cap < fps) {
+            info!("video: games kept this graphics card too busy for {fps} fps in earlier sessions; recording at {cap} fps (Klipp tries {fps} again after its next update, or with new video settings)");
+            r.fps_cap = Some(cap);
+            r.watchdog.set_reduced(Some((cap, fps)), true);
+        }
         r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
         r.start_audio();
         r.register_hotkey();
@@ -166,7 +195,11 @@ impl Recorder {
             self.fps_cap = Some(REDUCED_FPS);
             self.restart_video();
             self.watchdog.reset(counts);
-            self.watchdog.set_reduced(Some((REDUCED_FPS, fps)));
+            let learned = self.tuning.overloaded(&self.session, REDUCED_FPS);
+            if learned {
+                info!("video: the second session this graphics card couldn't keep up at {fps} fps; Klipp starts at {REDUCED_FPS} fps from now on");
+            }
+            self.watchdog.set_reduced(Some((REDUCED_FPS, fps)), learned);
         }
     }
 
@@ -223,10 +256,11 @@ impl Recorder {
         let video_changed = old.video != self.settings.video;
         // Also when moving the save sound changes whether a track leaves it out.
         let audio_changed = old.audio != self.settings.audio || old.audio_sources() != self.settings.audio_sources();
-        let integrations_changed = old.auto_clip.enabled != self.settings.auto_clip.enabled
-            || old.auto_clip.cs2.enabled != self.settings.auto_clip.cs2.enabled
-            || old.auto_clip.cs2.port != self.settings.auto_clip.cs2.port
-            || old.auto_clip.cs2.debug_log != self.settings.auto_clip.cs2.debug_log;
+        let (was, is) = (&old.auto_clip, &self.settings.auto_clip);
+        let all_changed = was.enabled != is.enabled;
+        let cs2_changed = all_changed || was.cs2.enabled != is.cs2.enabled || was.cs2.port != is.cs2.port || was.cs2.debug_log != is.cs2.debug_log;
+        let league_changed = all_changed || was.league.enabled != is.league.enabled;
+        let rocket_league_changed = all_changed || was.rocket_league.enabled != is.rocket_league.enabled;
 
         if limits_changed {
             let (window, max_bytes) = buffer_limits(&self.settings);
@@ -239,9 +273,19 @@ impl Recorder {
         }
         self.cue.handle().update(&self.settings.cue);
         self.autoclip.set_rules(self.settings.autoclip_rules());
-        if integrations_changed {
+        self.set_game_rules();
+        // Each restarts on its own, so a CS2 change doesn't interrupt a League game.
+        if cs2_changed {
             self.cs2 = None;
-            self.start_integrations();
+            self.start_cs2();
+        }
+        if league_changed {
+            self.league = None;
+            self.start_league();
+        }
+        if rocket_league_changed {
+            self.rocket_league = None;
+            self.start_rocket_league();
         }
         // While paused nothing is running; resuming uses the new settings.
         if (video_changed || audio_changed) && !self.paused {
@@ -258,7 +302,8 @@ impl Recorder {
             if video_changed {
                 // New video settings get a fresh try at their own frame rate.
                 self.fps_cap = None;
-                self.watchdog.set_reduced(None);
+                self.tuning.forget();
+                self.watchdog.set_reduced(None, false);
                 match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                     Ok(v) => self.video = Some(v),
                     Err(e) => warning!("video failed to restart with the new settings: {e:#}"),
@@ -330,11 +375,11 @@ impl Recorder {
     /// and hotkey clips once the presses have stopped.
     /// Call regularly (a few times a second) from the message loop.
     pub fn tick_autoclip(&mut self) {
-        while let Ok(e) = self.events_rx.try_recv() {
+        while let Ok((game, e)) = self.events_rx.try_recv() {
             let detail = if e.detail.is_empty() { String::new() } else { format!(" ({})", e.detail) };
-            info!("cs2: {}{detail}", e.kind.label());
+            info!("{}: {}{detail}", log_tag(&game), e.kind.label_in(&game));
             // Always recorded (for markers in manual clips); clips only when enabled.
-            self.autoclip.on_event(cs2::GAME_NAME, e);
+            self.autoclip.on_event(&game, e);
         }
         let now = clock::now() - AUDIO_CATCH_UP;
         let gap = self.settings.autoclip_rules().merge_gap;
@@ -371,7 +416,7 @@ impl Recorder {
         let active = !self.paused && self.settings.auto_clip.enabled;
         let pending = if active { self.autoclip.pending() } else { Vec::new() };
         for (key, game, reason) in &pending {
-            let label = Some(reason.label());
+            let label = Some(reason.label_in(game));
             match self.auto_arrivals.get(key) {
                 Some(&id) => self.arrivals.update(id, |a| a.label = label),
                 None => {
@@ -419,16 +464,18 @@ impl Recorder {
     ) {
         info!(
             "saving {game} clip{}... ({:.1} MB copied out of the buffer)",
-            reason.map_or(String::new(), |r| format!(" ({})", r.label())),
+            reason.map_or(String::new(), |r| format!(" ({})", r.label_in(&game))),
             clip.data.len() as f64 / 1e6,
         );
-        // The map, if CS2 reported one during this clip (or just before it).
+        // The map, if the game reported one during this clip (or just before it).
         let start = clip.start_time;
-        let context = (game == cs2::GAME_NAME)
-            .then(|| self.cs2.as_ref().map(|c| c.context.lock().unwrap().clone()))
-            .flatten()
-            .filter(|c| c.seen >= start - 30 * clock::SECOND)
-            .unwrap_or_default();
+        let context = match game.as_str() {
+            cs2::GAME_NAME => self.cs2.as_ref().map(|c| c.context.lock().unwrap().clone()),
+            league::GAME_NAME => self.league.as_ref().map(|l| l.context.lock().unwrap().clone()),
+            _ => None,
+        }
+        .filter(|c| c.seen >= start - 30 * clock::SECOND)
+        .unwrap_or_default();
         if let Some(saver) = &self.saver {
             saver.submit(SaveJob {
                 clip,
@@ -463,6 +510,12 @@ impl Recorder {
     }
 
     fn start_integrations(&mut self) {
+        self.start_cs2();
+        self.start_league();
+        self.start_rocket_league();
+    }
+
+    fn start_cs2(&mut self) {
         let a = &self.settings.auto_clip;
         if !(a.enabled && a.cs2.enabled) {
             return;
@@ -471,6 +524,36 @@ impl Recorder {
             Ok(i) => self.cs2 = i,
             Err(e) => warning!("cs2: integration failed to start: {e:#}"),
         }
+    }
+
+    fn start_league(&mut self) {
+        let a = &self.settings.auto_clip;
+        if !(a.enabled && a.league.enabled) {
+            return;
+        }
+        match LeagueIntegration::start(self.events_tx.clone()) {
+            Ok(i) => self.league = Some(i),
+            Err(e) => warning!("league: integration failed to start: {e:#}"),
+        }
+    }
+
+    fn start_rocket_league(&mut self) {
+        let a = &self.settings.auto_clip;
+        if !(a.enabled && a.rocket_league.enabled) {
+            return;
+        }
+        match RocketLeagueIntegration::start(self.events_tx.clone()) {
+            Ok(i) => self.rocket_league = i,
+            Err(e) => warning!("rocket league: integration failed to start: {e:#}"),
+        }
+    }
+
+    /// League's and Rocket League's own rules, with the shared timing.
+    fn set_game_rules(&mut self) {
+        let base = self.settings.autoclip_rules();
+        let a = &self.settings.auto_clip;
+        self.autoclip.set_game_rules(league::GAME_NAME, league::rules(&base, &a.league));
+        self.autoclip.set_game_rules(rocketleague::GAME_NAME, rocketleague::rules(&base, &a.rocket_league));
     }
 
     fn register_hotkey(&mut self) {
@@ -525,6 +608,8 @@ impl Drop for Recorder {
         // A hotkey clip still collecting presses is written before quitting.
         self.flush_burst();
         self.cs2 = None;
+        self.league = None;
+        self.rocket_league = None;
         self.video = None;
         self.audio = None;
         // Finishes any queued clips (and their sounds) before the cue player stops.

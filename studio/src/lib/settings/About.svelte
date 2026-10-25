@@ -27,10 +27,10 @@
   async function setChannel(channel: api.UpdateChannel["channel"]) {
     if (!updates) return;
     try {
-      await api.setUpdateChannel(channel, updates.sendLogs);
+      await api.setUpdateChannel({ ...updates, channel });
       updates = { ...updates, channel };
       channelNote = "Checking…";
-      const found = await api.checkUpdate();
+      const found = await api.checkUpdate(true);
       channelNote = found
         ? `${found.version.includes("-test") ? "Test build" : "Klipp"} ${found.version} is ready: install it from the card on the left.`
         : "You have the newest one.";
@@ -41,11 +41,11 @@
     }
   }
 
-  async function setSendLogs(sendLogs: boolean) {
+  async function setFlag(change: Partial<Pick<api.UpdateChannel, "sendLogs" | "checks">>) {
     if (!updates) return;
     try {
-      await api.setUpdateChannel(updates.channel, sendLogs);
-      updates = { ...updates, sendLogs };
+      await api.setUpdateChannel({ ...updates, ...change });
+      updates = { ...updates, ...change };
     } catch (e) {
       toast(`Couldn't save that: ${e}`);
     }
@@ -121,9 +121,15 @@
         title="Send the log to the developer"
         hint="Every 15 minutes, the new part of recorder.log goes to klipp.dev, so problems can be looked into without asking you for it. Your Windows user name is left out. No clips, pictures or settings are sent."
       >
-        <Toggle checked={updates.sendLogs} label="Send the log to the developer" onchange={setSendLogs} />
+        <Toggle checked={updates.sendLogs} label="Send the log to the developer" onchange={(v) => setFlag({ sendLogs: v })} />
       </Field>
     {/if}
+    <Field
+      title="Check for updates"
+      hint="Once a day, and when this window opens, Klipp asks klipp.dev whether a newer version is out. It sends the version you have and a random install number, nothing else, so the developer can see how many copies are in use."
+    >
+      <Toggle checked={updates.checks} label="Check for updates" onchange={(v) => setFlag({ checks: v })} />
+    </Field>
   </div>
 {/if}
 
@@ -155,6 +161,7 @@
 </div>
 
 <p class="credits">Video is encoded on your graphics card and saved with FFmpeg (LGPL).</p>
+<p class="credits">Klipp isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>
 
 <style>
   .hero {

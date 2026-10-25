@@ -87,6 +87,9 @@ struct RecorderStatus {
     /// Recording at a lower frame rate than set ({ to, from }), because the
     /// graphics card couldn't keep up; until the recorder restarts.
     reduced: Option<Value>,
+    /// What the check after an update changed in the video settings
+    /// ({ from, to, version }), because the saved ones weren't smooth.
+    adjusted: Option<Value>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -324,7 +327,13 @@ fn recorder_status() -> RecorderStatus {
     let problem = health["problem"].as_str().map(String::from);
     let reduced = health["reduced"].is_object().then(|| health["reduced"].clone());
     let hotkey_taken = report("hotkey.json")["works"] == false;
-    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken, reduced }
+    let tuning = report("tuning.json");
+    let adjusted = tuning["adjusted"].is_object().then(|| {
+        let mut a = tuning["adjusted"].clone();
+        a["version"] = tuning["version"].clone();
+        a
+    });
+    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken, reduced, adjusted }
 }
 
 /// Setup's Test button, step 1: a running recorder lends its save key.
@@ -361,14 +370,14 @@ fn update_channel(handle: AppHandle, app: State<App>) -> channel::Updates {
 }
 
 #[tauri::command]
-fn set_update_channel(app: State<App>, channel: String, send_logs: bool) -> CmdResult<()> {
-    channel::write(&app.config.settings_dir(), &channel, send_logs).map_err(err)
+fn set_update_channel(handle: AppHandle, app: State<App>, channel: String, send_logs: bool, checks: bool) -> CmdResult<()> {
+    channel::write(&app.config.settings_dir(), &handle.package_info().version.to_string(), &channel, send_logs, checks).map_err(err)
 }
 
 /// The update the channel offers (see `channel`), for the window's update card.
 #[tauri::command]
-async fn check_update(webview: tauri::Webview, channel: String) -> CmdResult<Option<channel::Metadata>> {
-    channel::check(&webview, &channel).await.map_err(err)
+async fn check_update(webview: tauri::Webview, app: State<'_, App>, channel: String) -> CmdResult<Option<channel::Metadata>> {
+    channel::check(&webview, &app.config.settings_dir(), &channel).await.map_err(err)
 }
 
 #[tauri::command]

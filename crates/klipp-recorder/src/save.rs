@@ -185,7 +185,7 @@ fn save(job: &SaveJob) -> Result<Saved> {
     let folder = job.clips_dir.join(folder_name(&job.game));
     fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let stem = match job.reason {
-        Some(reason) => format!("{}_{}", timestamp(), reason.label()),
+        Some(reason) => format!("{}_{}", timestamp(), reason.label_in(&job.game)),
         None => timestamp(),
     };
     let path = unique_path(&folder, &stem);
@@ -228,13 +228,13 @@ fn write_info(path: &Path, job: &SaveJob, seconds: f64) -> Result<()> {
         .events
         .iter()
         .filter(|e| e.time >= start)
-        .map(|e| EventInfo { kind: e.kind.label(), at_secs: seconds_into(job, e.time), detail: &e.detail })
+        .map(|e| EventInfo { kind: e.kind.label_in(&job.game), at_secs: seconds_into(job, e.time), detail: &e.detail })
         .collect();
     let info = ClipInfo {
         version: 2,
         game: &job.game,
         kind: job.kind,
-        reason: job.reason.map(EventKind::label),
+        reason: job.reason.map(|r| r.label_in(&job.game)),
         map: &job.map,
         mode: &job.mode,
         duration_secs: (seconds * 1000.0).round() / 1000.0,
@@ -277,7 +277,7 @@ fn chapters(job: &SaveJob, end: i64) -> Vec<Chapter> {
             if kinds.len() > 1 {
                 kinds.retain(|&k| k != EventKind::Kill);
             }
-            let title = kinds.iter().map(|k| k.title()).collect::<Vec<_>>().join(" · ");
+            let title = kinds.iter().map(|k| k.title_in(&job.game)).collect::<Vec<_>>().join(" · ");
             let end_ms = starts.get(i + 1).copied().unwrap_or(ms(end)).max(starts[i]);
             Chapter { start_ms: starts[i], end_ms, title }
         }))

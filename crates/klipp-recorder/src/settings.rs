@@ -37,7 +37,7 @@ pub struct Settings {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Indicators {
-    /// "Auto-clips ON" when a CS2 match starts.
+    /// "Auto-clips ON" when a match starts in a game Klipp auto-clips.
     pub autoclips_on: bool,
     /// A mark when a clip is saved, or can't be.
     pub saves: bool,
@@ -52,6 +52,8 @@ pub struct AutoClip {
     /// Events closer together than this end up in the same clip.
     pub merge_gap_secs: f32,
     pub cs2: Cs2,
+    pub league: League,
+    pub rocket_league: RocketLeague,
     /// Per-event overrides, keyed by event name.
     pub timing: BTreeMap<String, Timing>,
 }
@@ -64,6 +66,8 @@ impl Default for AutoClip {
             post_roll_secs: 4.0,
             merge_gap_secs: 12.0,
             cs2: Cs2::default(),
+            league: League::default(),
+            rocket_league: RocketLeague::default(),
             timing: BTreeMap::new(),
         }
     }
@@ -112,6 +116,56 @@ impl Default for Cs2 {
     }
 }
 
+/// League of Legends. Multi-kills are always counted the game's way.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct League {
+    pub enabled: bool,
+    pub multi_kill_min: u8,
+    pub any_kill: bool,
+    pub first_blood: bool,
+    pub death: bool,
+    /// A Baron, Dragon or Herald you stole.
+    pub steal: bool,
+    /// Every objective you took part in (they're always marked).
+    pub objective: bool,
+    /// Your team killed the whole enemy team, with you in the fight.
+    pub ace: bool,
+}
+
+impl Default for League {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            multi_kill_min: 2,
+            any_kill: false,
+            first_blood: true,
+            death: false,
+            steal: true,
+            objective: false,
+            ace: true,
+        }
+    }
+}
+
+/// Rocket League. Assists and saves are always markers; these make them clips too.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RocketLeague {
+    pub enabled: bool,
+    pub goal: bool,
+    pub assist: bool,
+    pub save: bool,
+    pub epic_save: bool,
+    pub demolition: bool,
+}
+
+impl Default for RocketLeague {
+    fn default() -> Self {
+        Self { enabled: true, goal: true, assist: false, save: false, epic_save: true, demolition: true }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Timing {
@@ -120,7 +174,10 @@ pub struct Timing {
 }
 
 /// Event names allowed under `[auto_clip.timing]`.
-const TIMING_EVENTS: &[&str] = &["kill", "headshot", "2k", "3k", "4k", "ace", "multikill", "knife", "zeus", "death", "mvp"];
+const TIMING_EVENTS: &[&str] = &[
+    "kill", "headshot", "2k", "3k", "4k", "ace", "multikill", "knife", "zeus", "death", "mvp", "penta", "firstblood", "steal", "objective",
+    "teamace", "assist", "goal", "save", "epicsave", "demolition",
+];
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -316,9 +373,11 @@ impl Settings {
         clamp_to("auto_clip.pre_roll_secs", &mut a.pre_roll_secs, 0.0, 120.0, &mut w);
         clamp_to("auto_clip.post_roll_secs", &mut a.post_roll_secs, 0.0, 60.0, &mut w);
         clamp_to("auto_clip.merge_gap_secs", &mut a.merge_gap_secs, 1.0, 60.0, &mut w);
-        if a.cs2.multi_kill_min == 1 || a.cs2.multi_kill_min > 5 {
-            w.push(format!("auto_clip.cs2.multi_kill_min {} should be 0 (off) or 2-5; using 2", a.cs2.multi_kill_min));
-            a.cs2.multi_kill_min = 2;
+        for (game, min) in [("cs2", &mut a.cs2.multi_kill_min), ("league", &mut a.league.multi_kill_min)] {
+            if *min == 1 || *min > 5 {
+                w.push(format!("auto_clip.{game}.multi_kill_min {min} should be 0 (off) or 2-5; using 2"));
+                *min = 2;
+            }
         }
         a.timing.retain(|name, _| {
             let known = TIMING_EVENTS.contains(&name.as_str());
@@ -379,9 +438,20 @@ impl Settings {
             knife_or_zeus_kill: a.cs2.knife_or_zeus_kill,
             death: a.cs2.death,
             mvp: a.cs2.mvp,
+            victory: false,
+            first_blood: false,
+            steal: false,
+            objective: false,
+            team_ace: false,
+            goal: false,
+            assist: false,
+            save: false,
+            epic_save: false,
+            demolition: false,
             pre_roll: ticks(a.pre_roll_secs),
             post_roll: ticks(a.post_roll_secs),
             merge_gap: ticks(a.merge_gap_secs),
+            lateness: 0,
             timing: a.timing.iter().map(|(k, t)| (k.clone(), (t.pre_roll_secs.map(ticks), t.post_roll_secs.map(ticks)))).collect(),
         }
     }

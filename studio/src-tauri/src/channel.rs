@@ -1,8 +1,14 @@
 //! The update channel: normal releases, or test builds too (for testers).
 //! Kept in updates.json next to settings.toml, where the recorder reads it
 //! as well (its update check, and sending the log on the test channel).
+//!
+//! Checks ask klipp.dev first: it answers with the same manifests as GitHub
+//! and counts active installs from the random install number it's sent
+//! (D43). GitHub directly if klipp.dev can't be reached.
 
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 
 use anyhow::{Result, ensure};
@@ -10,10 +16,17 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{Manager, Runtime, Webview};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use toml_edit::DocumentMut;
 
 /// The latest release's manifest, and the test channel's (the newest test build).
 const RELEASE: &str = "https://github.com/alonsy/klipp/releases/latest/download/latest.json";
 const TEST: &str = "https://github.com/alonsy/klipp/releases/download/test-channel/latest.json";
+const KLIPP_DEV: &str = "https://klipp.dev/api/update";
+
+/// Settings tables test builds add that releases before them don't know.
+/// Their recorders refuse unknown settings (and fall back to defaults), so
+/// going back to a normal release takes these out first.
+const TEST_ONLY_SETTINGS: &[(&str, &str)] = &[("auto_clip", "league"), ("auto_clip", "rocket_league")];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +34,8 @@ pub struct Updates {
     /// "production" or "test".
     channel: String,
     send_logs: bool,
+    /// Look for updates by itself.
+    checks: bool,
     /// This copy is a test build ("0.3.5-test.1").
     test_build: bool,
 }
@@ -35,15 +50,55 @@ pub fn read(dir: &Path, version: &str) -> Updates {
         _ if test_build => "test",
         _ => "production",
     };
-    let send_logs = file.as_ref().and_then(|v| v["sendLogs"].as_bool()).unwrap_or(true);
-    Updates { channel: channel.into(), send_logs, test_build }
+    let flag = |key: &str| file.as_ref().and_then(|v| v[key].as_bool()).unwrap_or(true);
+    Updates { channel: channel.into(), send_logs: flag("sendLogs"), checks: flag("checks"), test_build }
 }
 
-pub fn write(dir: &Path, channel: &str, send_logs: bool) -> Result<()> {
+pub fn write(dir: &Path, version: &str, channel: &str, send_logs: bool, checks: bool) -> Result<()> {
     ensure!(channel == "production" || channel == "test", "no such update channel: {channel}");
     fs::create_dir_all(dir)?;
-    fs::write(dir.join("updates.json"), serde_json::to_vec_pretty(&json!({ "channel": channel, "sendLogs": send_logs }))?)?;
+    fs::write(dir.join("updates.json"), serde_json::to_vec_pretty(&json!({ "channel": channel, "sendLogs": send_logs, "checks": checks }))?)?;
+    if channel == "production" && version.contains("-test") {
+        forget_test_settings(&dir.join("settings.toml"))?;
+    }
     Ok(())
+}
+
+/// Takes the test builds' own settings tables out of settings.toml, keeping everything else as it is.
+fn forget_test_settings(path: &Path) -> Result<()> {
+    let Ok(text) = fs::read_to_string(path) else { return Ok(()) };
+    let mut doc: DocumentMut = text.trim_start_matches('\u{feff}').parse()?;
+    let mut changed = false;
+    for (section, table) in TEST_ONLY_SETTINGS {
+        if let Some(t) = doc.get_mut(section).and_then(|s| s.as_table_like_mut()) {
+            changed |= t.remove(table).is_some();
+        }
+    }
+    if changed {
+        fs::write(path, doc.to_string())?;
+    }
+    Ok(())
+}
+
+/// The recorder's random install number (made here if the recorder hasn't yet).
+fn install_id(dir: &Path) -> Option<String> {
+    let path = dir.join("install-id");
+    if let Ok(id) = fs::read_to_string(&path) {
+        let id = id.trim().to_string();
+        if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(id);
+        }
+    }
+    // RandomState is seeded from the operating system's random source.
+    let half = || {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+        h.finish()
+    };
+    let id = format!("{:016x}{:016x}", half(), half());
+    fs::create_dir_all(dir).ok()?;
+    fs::write(&path, &id).ok()?;
+    Some(id)
 }
 
 /// What the window's `Update` object is made from (the updater plugin's own shape).
@@ -61,18 +116,20 @@ pub struct Metadata {
 /// newer of the newest test build and the latest release; leaving a test
 /// build for normal releases offers the latest release even though its
 /// number is lower.
-pub async fn check<R: Runtime>(webview: &Webview<R>, channel: &str) -> Result<Option<Metadata>> {
+pub async fn check<R: Runtime>(webview: &Webview<R>, dir: &Path, channel: &str) -> Result<Option<Metadata>> {
     let current = webview.package_info().version.clone();
-    let update = if channel == "test" {
-        match (at(webview, RELEASE, false).await, at(webview, TEST, false).await) {
+    let any_version = channel != "test" && !current.pre.is_empty();
+    let asked = format!("{KLIPP_DEV}?channel={channel}&version={current}&from=window");
+    let update = match at(webview, &asked, any_version, install_id(dir)).await {
+        Ok(found) => found,
+        Err(_) if channel == "test" => match (at(webview, RELEASE, false, None).await, at(webview, TEST, false, None).await) {
             (Ok(Some(r)), Ok(Some(t))) => Some(if newer(&t.version, &r.version) { t } else { r }),
             (Ok(r), Ok(t)) => r.or(t),
             (Ok(r), Err(_)) => r,
             (Err(_), Ok(t)) => t,
             (Err(e), Err(_)) => return Err(e),
-        }
-    } else {
-        at(webview, RELEASE, !current.pre.is_empty()).await?
+        },
+        Err(_) => at(webview, RELEASE, any_version, None).await?,
     };
     Ok(update.map(|u| Metadata {
         current_version: u.current_version.clone(),
@@ -83,8 +140,11 @@ pub async fn check<R: Runtime>(webview: &Webview<R>, channel: &str) -> Result<Op
     }))
 }
 
-async fn at<R: Runtime>(webview: &Webview<R>, url: &str, any_version: bool) -> Result<Option<Update>> {
+async fn at<R: Runtime>(webview: &Webview<R>, url: &str, any_version: bool, install: Option<String>) -> Result<Option<Update>> {
     let mut builder = webview.updater_builder().endpoints(vec![url.parse()?])?;
+    if let Some(id) = install {
+        builder = builder.header("Klipp-Install", id)?;
+    }
     if any_version {
         builder = builder.version_comparator(|current, remote| remote.version != current);
     }

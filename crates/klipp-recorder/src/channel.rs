@@ -21,6 +21,17 @@ pub struct Updates {
     pub channel: Channel,
     /// Test channel only: the log goes to the developer every 15 minutes.
     pub send_logs: bool,
+    /// Look for updates by itself (klipp.dev first, with the version and the install number).
+    pub checks: bool,
+}
+
+impl Channel {
+    pub fn key(self) -> &'static str {
+        match self {
+            Channel::Production => "production",
+            Channel::Test => "test",
+        }
+    }
 }
 
 /// A test build ("0.3.5-test.1") starts on the test channel.
@@ -42,7 +53,8 @@ pub fn read() -> Updates {
         _ => Channel::Production,
     };
     let send_logs = file.as_ref().and_then(|v| v["sendLogs"].as_bool()).unwrap_or(true);
-    Updates { channel, send_logs }
+    let checks = file.as_ref().and_then(|v| v["checks"].as_bool()).unwrap_or(true);
+    Updates { channel, send_logs, checks }
 }
 
 /// A random number made once per install, so the developer can tell one

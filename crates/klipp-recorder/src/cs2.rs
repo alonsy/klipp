@@ -25,7 +25,7 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::core::w;
 
 use crate::clock;
-use crate::events::{EventKind, GameEvent};
+use crate::events::{EventKind, GameEvent, MatchContext};
 use crate::log::{info, warning};
 
 pub const GAME_NAME: &str = "Counter-Strike 2";
@@ -38,15 +38,6 @@ const MAX_BODY: usize = 1 << 20;
 /// The timing log is rotated when it gets this big.
 const MAX_LOG_BYTES: u64 = 20 * 1024 * 1024;
 
-/// What CS2 is currently playing, for naming and grouping clips.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MatchContext {
-    pub map: String,
-    pub mode: String,
-    /// When this was last seen (shared clock); 0 = never.
-    pub seen: i64,
-}
-
 pub struct Cs2Integration {
     stop: Arc<AtomicBool>,
     port: u16,
@@ -57,7 +48,7 @@ pub struct Cs2Integration {
 impl Cs2Integration {
     /// Installs the GSI config if needed and starts listening. Returns `Ok(None)`
     /// if CS2 isn't installed.
-    pub fn start(port: u16, debug_log: bool, events: Sender<GameEvent>) -> Result<Option<Self>> {
+    pub fn start(port: u16, debug_log: bool, events: Sender<(String, GameEvent)>) -> Result<Option<Self>> {
         let Some(cfg_dir) = find_cfg_dir() else {
             info!("cs2: not installed (no Steam library has app {STEAM_APP_ID}); auto-clips for CS2 are off");
             return Ok(None);
@@ -114,7 +105,7 @@ impl Drop for Cs2Integration {
 struct Job {
     token: String,
     tracker: Arc<Mutex<Tracker>>,
-    events: Sender<GameEvent>,
+    events: Sender<(String, GameEvent)>,
     context: Arc<Mutex<MatchContext>>,
     log: Option<Arc<GsiLog>>,
 }
@@ -167,7 +158,7 @@ impl Job {
             *self.context.lock().unwrap() = MatchContext { seen: arrived, ..context };
         }
         for e in events {
-            let _ = self.events.send(e);
+            let _ = self.events.send((GAME_NAME.to_string(), e));
         }
         Ok(())
     }

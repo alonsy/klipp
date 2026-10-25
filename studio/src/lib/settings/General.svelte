@@ -41,7 +41,7 @@
 
 <span class="label group-title">On screen</span>
 <div class="group">
-  <Field title="Show &ldquo;Auto-clips ON&rdquo;" hint="When a CS2 match starts, top right under the kill feed. Never in your clips, and it never takes focus from the game.">
+  <Field title="Show &ldquo;Auto-clips ON&rdquo;" hint="When a match starts in CS2, League of Legends or Rocket League, top right under the kill feed. Never in your clips, and it never takes focus from the game.">
     <button class="ghost preview" onclick={() => preview("on")}>Preview</button>
     <Toggle checked={s.indicators?.autoclips_on ?? false} label="Show Auto-clips ON" onchange={(v) => set(["indicators", "autoclips_on"], v)} />
   </Field>

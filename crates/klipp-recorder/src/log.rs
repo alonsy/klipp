@@ -6,6 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
@@ -33,13 +34,21 @@ pub fn to_console_only() {
     *LOG.lock().unwrap() = None;
 }
 
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Log lines go to the file only: for modes whose output is read as JSON (`--probe`).
+pub fn to_file_only() {
+    QUIET.store(true, Ordering::Relaxed);
+}
+
 pub fn write(level: &str, args: fmt::Arguments) {
     let t = unsafe { GetLocalTime() };
     let line = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02} {level} {args}",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     );
-    if level == "WARN" {
+    if QUIET.load(Ordering::Relaxed) {
+    } else if level == "WARN" {
         eprintln!("{line}");
     } else {
         println!("{line}");
