@@ -11,6 +11,7 @@ mod clipboard;
 mod config;
 mod export;
 mod ffmpeg;
+mod installlog;
 mod library;
 mod lifecycle;
 mod meta;
@@ -49,13 +50,17 @@ struct Paths {
 
 /// What Klipp was opened for: `klipp.exe <clip.mp4>` opens the clip in the
 /// editor, `klipp.exe --settings` opens settings, `klipp.exe --update` (the
-/// tray's "Update to Klipp x.y.z") checks for the update right away.
+/// tray's "Update to Klipp x.y.z") checks for the update right away, and
+/// `klipp.exe --install-update` (a test build's recorder, between games)
+/// installs it without showing the window.
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct OpenRequest {
     clip: Option<String>,
     page: Option<String>,
 }
+
+const INSTALL_UPDATE: &str = "--install-update";
 
 impl OpenRequest {
     fn from_args(args: impl IntoIterator<Item = String>) -> Self {
@@ -65,6 +70,8 @@ impl OpenRequest {
                 r.page = Some("settings".into());
             } else if a == "--update" {
                 r.page = Some("update".into());
+            } else if a == INSTALL_UPDATE {
+                r.page = Some("install-update".into());
             } else if a.to_lowercase().ends_with(".mp4") && PathBuf::from(&a).is_file() {
                 r.clip = Some(a);
             }
@@ -370,8 +377,29 @@ fn update_channel(handle: AppHandle, app: State<App>) -> channel::Updates {
 }
 
 #[tauri::command]
-fn set_update_channel(handle: AppHandle, app: State<App>, channel: String, send_logs: bool, checks: bool) -> CmdResult<()> {
-    channel::write(&app.config.settings_dir(), &handle.package_info().version.to_string(), &channel, send_logs, checks).map_err(err)
+fn set_update_channel(handle: AppHandle, app: State<App>, channel: String, send_logs: bool, checks: bool, auto_install: bool) -> CmdResult<()> {
+    channel::write(&app.config.settings_dir(), &handle.package_info().version.to_string(), &channel, send_logs, checks, auto_install).map_err(err)
+}
+
+/// A line for install.log (see `installlog`): what the updater is doing.
+#[tauri::command]
+fn install_log(app: State<App>, line: String) -> CmdResult<()> {
+    installlog::append(&app.config.log_dir, &line).map_err(err)
+}
+
+/// An export is writing a file (an update would cut it off).
+#[tauri::command]
+fn exporting(app: State<App>) -> bool {
+    app.exports.busy()
+}
+
+/// Started hidden to install an update and there's none: nothing more to do.
+#[tauri::command]
+fn exit_if_hidden(handle: AppHandle) {
+    let visible = handle.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(true));
+    if !visible {
+        handle.exit(0);
+    }
 }
 
 /// The update the channel offers (see `channel`), for the window's update card.
@@ -457,7 +485,10 @@ fn main() {
         // Opening Klipp again (Start menu, tray) focuses this window instead
         // and passes on what it was opened for.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            show_main(app);
+            // Installing an update between games doesn't bring the window to the front.
+            if !args.iter().any(|a| a == INSTALL_UPDATE) {
+                show_main(app);
+            }
             let _ = app.emit("open-request", OpenRequest::from_args(args.into_iter().skip(1)));
         }))
         // New versions from GitHub releases, signed with Klipp's key (see tauri.conf.json).
@@ -475,6 +506,10 @@ fn main() {
             arrivals::watch(app.handle().clone());
             if let Some(w) = app.get_webview_window("main") {
                 neutral_border(&w);
+                // Hidden until here (tauri.conf.json), and for good when only installing an update.
+                if !std::env::args().any(|a| a == INSTALL_UPDATE) {
+                    let _ = w.show();
+                }
             }
             Ok(())
         })
@@ -494,6 +529,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             update_channel,
             set_update_channel,
+            install_log,
+            exporting,
+            exit_if_hidden,
             check_update,
             paths,
             startup_request,

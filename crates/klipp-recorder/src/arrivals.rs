@@ -62,6 +62,11 @@ impl Arrivals {
         }
     }
 
+    /// Nothing is on its way (no clip collecting presses, qualifying or being written).
+    pub fn is_empty(&self) -> bool {
+        self.state.lock().unwrap().1.is_empty()
+    }
+
     pub fn remove(&self, id: u64) {
         let mut s = self.state.lock().unwrap();
         let n = s.1.len();

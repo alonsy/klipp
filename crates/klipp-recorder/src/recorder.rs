@@ -160,6 +160,11 @@ impl Recorder {
         self.hotkey_registered
     }
 
+    /// A clip is on its way (see arrivals): not the moment to restart for an update.
+    pub fn saving(&self) -> bool {
+        !self.arrivals.is_empty()
+    }
+
     pub fn paused(&self) -> bool {
         self.paused
     }

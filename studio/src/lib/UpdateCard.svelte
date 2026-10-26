@@ -59,6 +59,8 @@
     let total = 0;
     let received = 0;
     progress = 0;
+    const version = update.version;
+    api.installLog(`updating to ${version} from the update card (this is ${update.currentVersion}): downloading`);
     try {
       await update.downloadAndInstall((e) => {
         if (e.event === "Started") total = e.data.contentLength ?? 0;
@@ -68,11 +70,13 @@
         } else if (e.event === "Finished") {
           progress = 1;
           installing = true;
+          api.installLog(`downloaded ${version}; checking its signature, then its installer takes over`);
         }
       });
     } catch (e) {
       progress = null;
       installing = false;
+      api.installLog(`updating to ${version} failed: ${e}`);
       toast(`Couldn't update: ${e}`);
     }
   }

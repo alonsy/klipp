@@ -100,6 +100,11 @@ impl Exports {
         id
     }
 
+    /// Some export is still running.
+    pub fn busy(&self) -> bool {
+        !self.running.lock().unwrap().is_empty()
+    }
+
     pub fn cancel(&self, id: u64) {
         if let Some(slot) = self.running.lock().unwrap().get(&id)
             && let Some(child) = slot.lock().unwrap().as_mut()

@@ -7,6 +7,7 @@
 mod arrivals;
 mod audio;
 mod autoclip;
+mod autoinstall;
 mod autostart;
 mod cancel;
 mod capture;
@@ -20,6 +21,7 @@ mod events;
 mod games;
 mod gpu;
 mod hotkey;
+mod installlog;
 mod gpuload;
 mod league;
 mod log;
@@ -394,6 +396,9 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         return Ok(());
     };
     klipp_media::init_logging();
+    if let Some(dir) = log_path.as_deref().and_then(Path::parent) {
+        installlog::import(dir);
+    }
 
     let settings_path = match args.settings {
         Some(p) => p,
@@ -443,6 +448,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut prev = (Instant::now(), stats::sample());
     let mut gpu_load = gpuload::GpuLoad::start();
     let mut pending_save = None;
+    let mut auto_install = autoinstall::AutoInstall::default();
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if !msg.hwnd.is_invalid() {
@@ -550,6 +556,14 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 recorder.check_health();
                 recorder.retry_hotkey();
                 hotkey_ok |= recorder.hotkey_registered();
+                let game = recorder.games.current(autoinstall::QUIET_FOR);
+                if let Some(version) = auto_install.due(update::available(), &game, recorder.saving()) {
+                    if open_studio(&["--install-update".as_ref()]) {
+                        info!("update: installing Klipp {version} by itself (test channel, no game for 3 minutes); the window's updater takes it from here");
+                    } else {
+                        warning!("update: couldn't start the window to install Klipp {version}");
+                    }
+                }
             }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {

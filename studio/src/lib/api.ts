@@ -180,11 +180,19 @@ export interface UpdateChannel {
   sendLogs: boolean;
   /** Look for updates by itself (klipp.dev, with the version and a random install number). */
   checks: boolean;
+  /** Test channel: a newer test build installs itself between games. */
+  autoInstall: boolean;
   /** This copy is a test build ("0.3.5-test.1"). */
   testBuild: boolean;
 }
 export const updateChannel = () => invoke<UpdateChannel>("update_channel");
-export const setUpdateChannel = (u: Pick<UpdateChannel, "channel" | "sendLogs" | "checks">) => invoke<void>("set_update_channel", u);
+export const setUpdateChannel = (u: Pick<UpdateChannel, "channel" | "sendLogs" | "checks" | "autoInstall">) => invoke<void>("set_update_channel", u);
+/** A line for install.log, which the recorder sends with its log: what updating did. */
+export const installLog = (line: string) => invoke<void>("install_log", { line }).catch(() => {});
+/** An export is writing a file. */
+export const exporting = () => invoke<boolean>("exporting");
+/** Quits if the window was never shown (started only to install an update). */
+export const exitIfHidden = () => invoke<void>("exit_if_hidden");
 
 /** The update the chosen channel offers, ready to download and install. `whenOff`: check even with checks off (asked for). */
 export async function checkUpdate(whenOff = false): Promise<Update | null> {

@@ -36,6 +36,8 @@ pub struct Updates {
     send_logs: bool,
     /// Look for updates by itself.
     checks: bool,
+    /// Test channel only: a newer test build installs itself between games (the recorder's autoinstall).
+    auto_install: bool,
     /// This copy is a test build ("0.3.5-test.1").
     test_build: bool,
 }
@@ -51,13 +53,13 @@ pub fn read(dir: &Path, version: &str) -> Updates {
         _ => "production",
     };
     let flag = |key: &str| file.as_ref().and_then(|v| v[key].as_bool()).unwrap_or(true);
-    Updates { channel: channel.into(), send_logs: flag("sendLogs"), checks: flag("checks"), test_build }
+    Updates { channel: channel.into(), send_logs: flag("sendLogs"), checks: flag("checks"), auto_install: flag("autoInstall"), test_build }
 }
 
-pub fn write(dir: &Path, version: &str, channel: &str, send_logs: bool, checks: bool) -> Result<()> {
+pub fn write(dir: &Path, version: &str, channel: &str, send_logs: bool, checks: bool, auto_install: bool) -> Result<()> {
     ensure!(channel == "production" || channel == "test", "no such update channel: {channel}");
     fs::create_dir_all(dir)?;
-    fs::write(dir.join("updates.json"), serde_json::to_vec_pretty(&json!({ "channel": channel, "sendLogs": send_logs, "checks": checks }))?)?;
+    fs::write(dir.join("updates.json"), serde_json::to_vec_pretty(&json!({ "channel": channel, "sendLogs": send_logs, "checks": checks, "autoInstall": auto_install }))?)?;
     if channel == "production" && version.contains("-test") {
         forget_test_settings(&dir.join("settings.toml"))?;
     }

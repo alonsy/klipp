@@ -41,7 +41,7 @@
     }
   }
 
-  async function setFlag(change: Partial<Pick<api.UpdateChannel, "sendLogs" | "checks">>) {
+  async function setFlag(change: Partial<Pick<api.UpdateChannel, "sendLogs" | "checks" | "autoInstall">>) {
     if (!updates) return;
     try {
       await api.setUpdateChannel({ ...updates, ...change });
@@ -122,6 +122,12 @@
         hint="Every 15 minutes, the new part of recorder.log goes to klipp.dev, so problems can be looked into without asking you for it. Your Windows user name is left out. No clips, pictures or settings are sent."
       >
         <Toggle checked={updates.sendLogs} label="Send the log to the developer" onchange={(v) => setFlag({ sendLogs: v })} />
+      </Field>
+      <Field
+        title="Install test builds by themselves"
+        hint="When a new test build is out, Klipp installs it once no game has been in front for a few minutes and no clip is being saved. Recording restarts, so the replay buffer starts over."
+      >
+        <Toggle checked={updates.autoInstall} label="Install test builds by themselves" onchange={(v) => setFlag({ autoInstall: v })} />
       </Field>
     {/if}
     <Field

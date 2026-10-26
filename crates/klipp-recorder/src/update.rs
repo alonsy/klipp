@@ -1,4 +1,4 @@
-//! Once a day, asks GitHub whether a newer Klipp is out. When there is one,
+//! Once a day (every 3 hours on the test channel), asks whether a newer Klipp is out. When there is one,
 //! the tray menu offers it ("Update to Klipp 0.2.2"), which opens the window's
 //! update card. Nothing pops up. The request goes through WinHTTP, which is
 //! part of Windows, so this adds no library and next to no memory.
@@ -33,6 +33,8 @@ const TEST_PATH: PCWSTR = w!("/alonsy/klipp/releases/download/test-channel/lates
 /// Not right at startup: Windows is busy logging in, and the network may not be up yet.
 const FIRST_CHECK: Duration = Duration::from_secs(90);
 const EVERY: Duration = Duration::from_secs(24 * 3600);
+/// Testers get test builds within hours (they install themselves; see autoinstall).
+const EVERY_ON_TEST: Duration = Duration::from_secs(3 * 3600);
 
 static AVAILABLE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -60,7 +62,7 @@ pub fn start() {
                 Ok(_) => {}
                 Err(e) => warning!("update check: {e:#}"),
             }
-            thread::sleep(EVERY);
+            thread::sleep(if channel::read().channel == Channel::Test { EVERY_ON_TEST } else { EVERY });
         }
     });
     if let Err(e) = spawned {

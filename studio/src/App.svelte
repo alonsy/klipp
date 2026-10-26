@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import ArrivingPill from "./lib/ArrivingPill.svelte";
+  import { installByItself } from "./lib/autoupdate";
   import CloseNotice from "./lib/CloseNotice.svelte";
   import Editor from "./lib/Editor.svelte";
   import Library from "./lib/Library.svelte";
@@ -19,6 +20,8 @@
       openPage("clips");
       window.dispatchEvent(new Event("klipp:check-update"));
     }
+    // A test build's recorder, between games: install the next one without asking.
+    if (request.page === "install-update") installByItself();
     if (request.clip) {
       await reload();
       const want = request.clip.toLowerCase();
