@@ -22,6 +22,13 @@
   function qualityName(q: number) {
     return q <= 24 ? "Very high" : q <= 30 ? "High" : q <= 35 ? "Medium" : "Low";
   }
+
+  const performance = $derived((s.video.performance ?? "off") as "off" | "on" | "plus");
+  const performanceHints = {
+    off: "Klipp always records as set above.",
+    on: "While a game keeps your graphics card busy, Klipp records at a lower bitrate, then a lower frame rate, and goes back up when the card has room.",
+    plus: "As Performance, and Klipp records the lightest way your PC allows: the light capture method and the encoder's fastest setting.",
+  };
 </script>
 
 <div class="banner"><Icon name="info" size={17} />Changing these restarts recording for about a second, and what was buffered so far is dropped.</div>
@@ -60,6 +67,27 @@
       {#each [20, 30, 40, 60, 80] as m (m)}<option value={m}>{m} Mbps</option>{/each}
     </select>
   </Field>
+</div>
+
+<div class="group">
+  <Field title="Performance mode" hint={performanceHints[performance]}>
+    <Segmented
+      value={performance}
+      label="Performance mode"
+      options={[["off", "Off"], ["on", "Performance"], ["plus", "Performance+"]]}
+      onchange={(v) => set(["video", "performance"], v)}
+    />
+  </Field>
+  {#if performance !== "plus"}
+    <Field title="Capture method" hint="Light does the least work on the graphics card, for weaker ones. Automatic picks what works best on your Windows.">
+      <select value={s.video.capture ?? "auto"} onchange={(e) => set(["video", "capture"], e.currentTarget.value)} aria-label="Capture method">
+        <option value="auto">Automatic</option>
+        <option value="light">Light</option>
+        <option value="wgc">Windows Graphics Capture</option>
+        <option value="duplication">Desktop Duplication</option>
+      </select>
+    </Field>
+  {/if}
 </div>
 
 <style>

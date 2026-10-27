@@ -73,6 +73,12 @@ pub struct Recorder {
     tuning: crate::tuning::Tuning,
     /// When this session started, to count sessions that couldn't keep up.
     session: String,
+    /// Performance mode's steps, and its look at the graphics card while a
+    /// game is in front (see `performance`).
+    perf: crate::performance::Governor,
+    perf_load: Option<crate::gpuload::GpuLoad>,
+    /// The video's (frames, late, skipped) at the last look.
+    perf_seen: (u64, u64, u64),
 }
 
 /// A clip saved with the hotkey that more presses can still extend. Each
@@ -135,6 +141,9 @@ impl Recorder {
             fps_cap: None,
             tuning: crate::tuning::Tuning::load(),
             session: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string(),
+            perf: crate::performance::Governor::default(),
+            perf_load: None,
+            perf_seen: (0, 0, 0),
         };
         r.set_game_rules();
         crate::watchdog::clear_health();
@@ -206,6 +215,75 @@ impl Recorder {
             }
             self.watchdog.set_reduced(Some((REDUCED_FPS, fps)), learned);
         }
+    }
+
+    /// Performance mode's look at the card, every couple of seconds: while a
+    /// game is in front, a step down when it stays busy (or Klipp falls
+    /// behind), a step up when it has room; full again outside games.
+    pub fn tick_performance(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counts = (self.shared.frames.load(Relaxed), self.shared.late_frames.load(Relaxed), self.shared.skipped_ticks.load(Relaxed));
+        let (frames, late, skipped) = (counts.0.saturating_sub(self.perf_seen.0), counts.1.saturating_sub(self.perf_seen.1), counts.2.saturating_sub(self.perf_seen.2));
+        self.perf_seen = counts;
+        let on = self.settings.video.performance != crate::settings::Performance::Off && !self.paused && self.video.is_some();
+        let game = self.games.current(Duration::from_secs(5));
+        if !on || game == crate::games::DESKTOP {
+            // Nothing to count outside games.
+            self.perf_load = None;
+            if self.perf.reset().is_some() {
+                self.set_performance_step(0, if on { "the game is closed or in the background" } else { "performance mode is off" });
+            }
+            return;
+        }
+        // More than one frame in twenty late or left out.
+        let behind = (late + skipped) * 20 > frames + skipped;
+        let busy = match &mut self.perf_load {
+            Some(load) => load.sample().into_iter().find(|e| e.kind == "3D").map_or(0.0, |e| e.total),
+            // The first look only starts counting.
+            None => {
+                self.perf_load = crate::gpuload::GpuLoad::start();
+                return;
+            }
+        };
+        let before = self.perf.level();
+        let sample = crate::performance::Sample { in_game: true, busy, behind };
+        if let Some(level) = self.perf.update(Instant::now(), sample) {
+            let why = if level > before {
+                format!("{game} keeps the graphics card {busy:.0}% busy{}", if behind { " and Klipp's frames fell behind" } else { "" })
+            } else {
+                format!("the graphics card has room again ({busy:.0}% busy)")
+            };
+            self.set_performance_step(level, &why);
+        }
+    }
+
+    /// Tells the running video what performance mode asks, and logs it.
+    fn set_performance_step(&self, level: usize, why: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (stride, fps, bitrate) = crate::performance::at(level, self.video_settings().fps, self.settings.video.max_bitrate_mbps * 1_000_000);
+        self.shared.perf_stride.store(stride, Relaxed);
+        self.shared.perf_max_bitrate.store(if level == 0 { 0 } else { bitrate }, Relaxed);
+        let last = crate::performance::STEPS.len() - 1;
+        let step = if level == 0 { "full".to_string() } else { format!("step {level} of {last}") };
+        info!("performance: {why}; recording {} ({step})", self.step_words(fps, bitrate));
+    }
+
+    /// "30 fps, up to 20 Mbit/s"; AMF keeps its bitrate while recording.
+    fn step_words(&self, fps: u32, bitrate: u32) -> String {
+        if self.shared.bitrate_adjustable.load(std::sync::atomic::Ordering::Relaxed) {
+            format!("{fps} fps, up to {} Mbit/s", bitrate / 1_000_000)
+        } else {
+            format!("{fps} fps (this encoder keeps its bitrate while recording)")
+        }
+    }
+
+    /// Performance mode's step for the activity line, when it isn't full.
+    pub fn performance_note(&self) -> Option<String> {
+        let level = self.perf.level();
+        (level > 0).then(|| {
+            let (_, fps, bitrate) = crate::performance::at(level, self.video_settings().fps, self.settings.video.max_bitrate_mbps * 1_000_000);
+            format!("performance step {level}: {}", self.step_words(fps, bitrate))
+        })
     }
 
     /// The video settings in effect: the user's, with the frame rate capped
@@ -309,6 +387,9 @@ impl Recorder {
                 self.fps_cap = None;
                 self.tuning.forget();
                 self.watchdog.set_reduced(None, false);
+                if self.perf.reset().is_some() {
+                    self.set_performance_step(0, "new video settings");
+                }
                 match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                     Ok(v) => self.video = Some(v),
                     Err(e) => warning!("video failed to restart with the new settings: {e:#}"),

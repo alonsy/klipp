@@ -222,6 +222,25 @@ pub enum CaptureMethod {
     Wgc,
     /// DXGI Desktop Duplication.
     Duplication,
+    /// The least work on the graphics card: Windows Graphics Capture's own
+    /// pictures go straight to the encoder's conversion, no copy, about as
+    /// many as are recorded (`capture`). Desktop Duplication on Windows 10.
+    Light,
+}
+
+/// Performance mode: how much Klipp steps back while a game is in front.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Performance {
+    /// The video settings, always.
+    #[default]
+    Off,
+    /// In games, a lower frame rate and bitrate while the graphics card is
+    /// busy, back up when it has room (`performance`).
+    On,
+    /// That, recorded the lightest way this PC has: the light capture and the
+    /// encoder's fastest preset.
+    Plus,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -238,6 +257,7 @@ pub struct Video {
     /// Part of a graphics card's name to encode on instead of the one that
     /// drives the screen ("" = that one). For testing.
     pub gpu: String,
+    pub performance: Performance,
 }
 
 impl Default for Video {
@@ -251,6 +271,7 @@ impl Default for Video {
             monitor: String::new(),
             capture: CaptureMethod::Auto,
             gpu: String::new(),
+            performance: Performance::Off,
         }
     }
 }
@@ -405,6 +426,23 @@ impl Settings {
         w
     }
 
+    /// Writes `video.performance` into settings.toml (the tray's Performance
+    /// mode menu), keeping everything else; the recorder applies it as any change.
+    pub fn save_performance(path: &Path, mode: Performance) -> Result<()> {
+        let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut doc: toml_edit::DocumentMut = text.parse().context("settings.toml")?;
+        if !doc.contains_table("video") {
+            doc["video"] = toml_edit::table();
+        }
+        let value = match mode {
+            Performance::Off => "off",
+            Performance::On => "on",
+            Performance::Plus => "plus",
+        };
+        doc["video"]["performance"] = toml_edit::value(value);
+        fs::write(path, doc.to_string()).with_context(|| format!("writing {}", path.display()))
+    }
+
     pub fn video_settings(&self) -> VideoSettings {
         let v = &self.video;
         VideoSettings {
@@ -422,8 +460,10 @@ impl Settings {
             quality: v.quality,
             max_mbps: v.max_bitrate_mbps,
             monitor: v.monitor.clone(),
-            capture: v.capture,
+            // Performance+ records the lightest way there is.
+            capture: if v.performance == Performance::Plus { CaptureMethod::Light } else { v.capture },
             gpu: v.gpu.clone(),
+            light_encoder: v.performance == Performance::Plus,
         }
     }
 

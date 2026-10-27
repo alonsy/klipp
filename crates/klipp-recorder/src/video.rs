@@ -36,6 +36,8 @@ pub struct VideoSettings {
     pub capture: CaptureMethod,
     /// Encode on the card whose name contains this instead ("" = the screen's).
     pub gpu: String,
+    /// The encoder's fastest preset (Performance+).
+    pub light_encoder: bool,
 }
 
 /// After a stall longer than this (sleep, hibernate, debugger), skip ahead
@@ -115,14 +117,15 @@ fn output_size(src_w: u32, src_h: u32, height: Option<u32>) -> (u32, u32) {
     }
 }
 
-/// Starts the capture method the settings ask for. On Windows 10, "auto" means
-/// Desktop Duplication (no yellow border); if that can't start, it falls back
-/// to Windows Graphics Capture.
+/// Starts the capture method the settings ask for. On Windows 10, "auto" and
+/// "light" mean Desktop Duplication (no yellow border; it already takes only
+/// as many pictures as are recorded); if that can't start, it falls back to
+/// Windows Graphics Capture.
 fn start_capture(gpu: &Gpu, monitor: HMONITOR, s: &VideoSettings) -> Result<Capture> {
     let duplicate = match s.capture {
         CaptureMethod::Duplication => true,
         CaptureMethod::Wgc => false,
-        CaptureMethod::Auto => duplication::border_cannot_be_hidden(),
+        CaptureMethod::Auto | CaptureMethod::Light => duplication::border_cannot_be_hidden(),
     };
     if duplicate {
         match DuplicationCapture::start(gpu, monitor, s.fps) {
@@ -130,7 +133,9 @@ fn start_capture(gpu: &Gpu, monitor: HMONITOR, s: &VideoSettings) -> Result<Capt
             Err(e) => warning!("video: desktop duplication unavailable ({e:#}); using Windows Graphics Capture"),
         }
     }
-    Ok(Capture::Wgc(MonitorCapture::start(gpu, monitor, s.fps)?))
+    let light = s.capture == CaptureMethod::Light;
+    let capture = MonitorCapture::start(gpu, monitor, s.fps, light)?;
+    Ok(if light { Capture::Light(capture) } else { Capture::Wgc(capture) })
 }
 
 /// A new capture of the screen the settings name, looked up again: a monitor
@@ -161,11 +166,20 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
         let (converter, (w, h), size_generation) = {
             let latest = capture.latest().lock();
             let out = output_size(latest.width, latest.height, s.height);
-            let converter = Converter::new(&gpu, &latest.texture, (latest.width, latest.height), out, s.fps)?;
+            let converter = Converter::new(&gpu, (latest.width, latest.height), out, s.fps)?;
             (converter, out, latest.size_generation)
         };
         let device = HwDevice::from_d3d11(&gpu.device, &gpu.context)?;
-        let config = |codec| VideoEncoderConfig { vendor, codec, width: w, height: h, fps: s.fps, quality: s.quality, max_bitrate: s.max_mbps * 1_000_000 };
+        let config = |codec| VideoEncoderConfig {
+            vendor,
+            codec,
+            width: w,
+            height: h,
+            fps: s.fps,
+            quality: s.quality,
+            max_bitrate: s.max_mbps * 1_000_000,
+            light: s.light_encoder,
+        };
         // Older cards can't encode AV1 (it needs a GeForce RTX 40, Radeon RX 7000,
         // Intel Arc or newer); they still record, in H.264.
         let (encoder, codec) = match VideoEncoder::new(&device, &config(s.codec)) {
@@ -177,6 +191,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             Err(e) => return Err(e),
         };
         *shared.video_stream.lock().unwrap() = Some(encoder.stream_info()?);
+        shared.bitrate_adjustable.store(vendor != klipp_media::Vendor::Amd, Ordering::Relaxed);
 
         // Windows sends a first frame right after capture starts.
         let waited = Instant::now();
@@ -188,6 +203,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
         }
         let method = match capture {
             Capture::Wgc(_) => "Windows Graphics Capture",
+            Capture::Light(_) => "Windows Graphics Capture, light (no copy)",
             Capture::Duplication(_) => "Desktop Duplication",
         };
         let screen = chosen.map_or("the main display".to_string(), |m| m.name);
@@ -198,9 +214,10 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             None => "GPU scheduling unknown",
         };
         info!(
-            "video: {} ({}, {scheduling}) | {screen} via {method} | encoding {}x{} {:?} @ {} fps",
+            "video: {} ({}{}, {scheduling}) | {screen} via {method} | encoding {}x{} {:?} @ {} fps",
             gpu.adapter_name,
             vendor.encoder(),
+            if s.light_encoder { ", fastest preset" } else { "" },
             w,
             h,
             codec,
@@ -221,6 +238,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
     };
 
     let fps = s.fps as i64;
+    let max_bitrate = s.max_mbps * 1_000_000;
     let t0 = clock::now();
     let start = Instant::now();
     let pool = encoder.frame_pool()?;
@@ -246,7 +264,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
                 buffer.buffer.lock().unwrap().push(info, p.data());
                 Ok(())
             };
-            if let Err(e) = encode_frames(encoder, device, queue, &shared, sink) {
+            if let Err(e) = encode_frames(encoder, device, queue, &shared, max_bitrate, sink) {
                 warning!("video: the encoder stopped: {e:#}");
             }
         }
@@ -332,7 +350,11 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             shared.captured.fetch_add(generation - seen_generation, Ordering::Relaxed);
             seen_generation = generation;
         }
-        let job = if generation != last_generation {
+        // Performance mode in a busy game: a new picture only every
+        // `stride` ticks, the one before repeated in between (half or a
+        // third of the frame rate in the clip, without restarting the video).
+        let stride = shared.perf_stride.load(Ordering::Relaxed).max(1) as i64;
+        let job = if generation != last_generation && i % stride == 0 {
             let waiting = Instant::now();
             let latest = capture.latest().lock();
             let wait = waiting.elapsed();
@@ -341,7 +363,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
                 if size != capture_size {
                     info!("video: capture size changed to {}x{}; scaling to {}x{}", size.0, size.1, out_size.0, out_size.1);
                 }
-                converter = Converter::new(&gpu, &latest.texture, size, out_size, s.fps)?;
+                converter = Converter::new(&gpu, size, out_size, s.fps)?;
                 converter_generation = latest.size_generation;
                 capture_size = size;
                 fresh_capture = false;
@@ -350,7 +372,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             let (texture, slice) = frame.texture();
             crate::gpu::keep_resident(texture);
             let converting = Instant::now();
-            converter.convert(texture, slice)?;
+            converter.convert(&latest.texture, texture, slice)?;
             shared.steps.converted(wait, converting.elapsed());
             drop(latest);
             last_generation = generation;
@@ -410,18 +432,30 @@ enum Job {
     Repeat(i64),
 }
 
-/// The encoder's thread: encodes queued frames in order until the video loop stops.
+/// The encoder's thread: encodes queued frames in order until the video loop
+/// stops, at the bitrate ceiling Performance mode asks for (`max_bitrate`, the
+/// setting, when it asks for none).
 fn encode_frames(
     mut encoder: VideoEncoder,
     device: HwDevice,
     queue: mpsc::Receiver<Job>,
     shared: &Shared,
+    max_bitrate: u32,
     mut sink: impl FnMut(&mut Packet) -> Result<()>,
 ) -> Result<()> {
     let _priority = crate::mmcss::CaptureThread::register();
     let mut last: Option<HwFrame> = None;
+    let mut ceiling = max_bitrate;
     for job in queue {
         shared.steps.dequeued();
+        let asked = match shared.perf_max_bitrate.load(Ordering::Relaxed) {
+            0 => max_bitrate,
+            b => b.min(max_bitrate),
+        };
+        if asked != ceiling {
+            encoder.set_max_bitrate(asked);
+            ceiling = asked;
+        }
         let pts = match job {
             Job::New(frame, pts) => {
                 last = Some(frame);

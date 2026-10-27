@@ -161,8 +161,9 @@ FunctionEnd
   ; Already set up (an update): recording carries on right away. A fresh
   ; install starts recording when setup finishes in the Klipp window.
   ${If} ${FileExists} "$APPDATA\Klipp\settings.toml"
+    ; Logged first: the recorder takes install.log in as it starts.
+    !insertmacro KlippLog "Klipp ${VERSION} installed; starting the recorder"
     nsis_tauri_utils::RunAsUser "$INSTDIR\klipp-recorder.exe" ""
-    !insertmacro KlippLog "Klipp ${VERSION} installed; started the recorder"
   ${Else}
     !insertmacro KlippLog "Klipp ${VERSION} installed; setup starts the recorder"
   ${EndIf}

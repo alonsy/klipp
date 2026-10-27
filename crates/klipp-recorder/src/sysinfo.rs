@@ -26,7 +26,7 @@ pub fn log_summary(s: &Settings) {
     let v = &s.video;
     let sources: Vec<String> = s.audio.sources.iter().map(|src| format!("{:?}", src.kind).to_lowercase()).collect();
     info!(
-        "settings: {:?} {:?} {} fps, quality {}, up to {} Mbit/s, {:?} capture{} | buffer {} s | audio {} | auto-clips {}",
+        "settings: {:?} {:?} {} fps, quality {}, up to {} Mbit/s, {:?} capture{}, performance mode {} | buffer {} s | audio {} | auto-clips {}",
         v.codec,
         v.resolution,
         v.fps,
@@ -34,6 +34,7 @@ pub fn log_summary(s: &Settings) {
         v.max_bitrate_mbps,
         v.capture,
         if v.gpu.is_empty() { String::new() } else { format!(" on {}", v.gpu) },
+        format!("{:?}", v.performance).to_lowercase(),
         s.replay.length_secs,
         if sources.is_empty() { "none".into() } else { sources.join(", ") },
         if s.auto_clip.enabled { "on" } else { "off" }

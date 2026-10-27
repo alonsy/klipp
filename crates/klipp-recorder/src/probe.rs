@@ -19,6 +19,7 @@ use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTAT
 
 use crate::gpu::Gpu;
 use crate::monitors;
+use crate::settings::CaptureMethod;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,7 +175,7 @@ fn test_performance(monitor: &str, gpu: &str, screen_height: u32, refresh: u32, 
             continue;
         };
         for &fps in rates {
-            let check = measure("probe", monitor, gpu, codec, height, screen_height, fps);
+            let check = measure("probe", monitor, gpu, CaptureMethod::Auto, codec, height, screen_height, fps);
             if check.smooth && report.recommended.is_none() {
                 report.recommended = Some(Recommended { height, fps });
             }
@@ -188,8 +189,9 @@ fn test_performance(monitor: &str, gpu: &str, screen_height: u32, refresh: u32, 
 }
 
 /// The recording path at one setting, measured and logged (`who`: "probe", "check after the update").
-pub(crate) fn measure(who: &str, monitor: &str, gpu: &str, codec: VideoCodec, height: u32, screen_height: u32, fps: u32) -> PerfCheck {
-    let mut check = record_for_a_moment(monitor, gpu, codec, (height < screen_height).then_some(height), fps);
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn measure(who: &str, monitor: &str, gpu: &str, capture: CaptureMethod, codec: VideoCodec, height: u32, screen_height: u32, fps: u32) -> PerfCheck {
+    let mut check = record_for_a_moment(monitor, gpu, capture, codec, (height < screen_height).then_some(height), fps);
     check.height = height;
     crate::log::info!(
         "{who}: {height}p {fps} fps {}: {} frames, {} late, {} left out | send {:.1}/{:.0} ms, convert {:.1} ms | card busy {:.0}% of each frame{}{}",
@@ -208,7 +210,7 @@ pub(crate) fn measure(who: &str, monitor: &str, gpu: &str, codec: VideoCodec, he
 }
 
 /// Records into a throwaway buffer for a few seconds and measures it.
-fn record_for_a_moment(monitor: &str, gpu: &str, codec: VideoCodec, height: Option<u32>, fps: u32) -> PerfCheck {
+fn record_for_a_moment(monitor: &str, gpu: &str, capture: CaptureMethod, codec: VideoCodec, height: Option<u32>, fps: u32) -> PerfCheck {
     use crate::video::{VideoPipeline, VideoSettings};
     let codec_name = if codec == VideoCodec::Av1 { "av1" } else { "h264" };
     let mut check = PerfCheck {
@@ -233,8 +235,9 @@ fn record_for_a_moment(monitor: &str, gpu: &str, codec: VideoCodec, height: Opti
         quality: 30,
         max_mbps: 40,
         monitor: monitor.to_string(),
-        capture: crate::settings::CaptureMethod::Auto,
+        capture,
         gpu: gpu.to_string(),
+        light_encoder: capture == CaptureMethod::Light,
     };
     let pipeline = match VideoPipeline::start(settings, shared.clone()) {
         Ok(p) => p,
@@ -282,7 +285,7 @@ fn test_encoders(monitor: HMONITOR, gpu_name: &str, (w, h): (u32, u32), report: 
     let mut checks = Vec::new();
     for (codec, name) in [(VideoCodec::Av1, "av1"), (VideoCodec::H264, "h264")] {
         for &(width, height) in &sizes {
-            let cfg = VideoEncoderConfig { vendor, codec, width, height, fps: 60, quality: 30, max_bitrate: 40_000_000 };
+            let cfg = VideoEncoderConfig { vendor, codec, width, height, fps: 60, quality: 30, max_bitrate: 40_000_000, light: false };
             let result = encode_some(&device, &cfg);
             checks.push(EncoderCheck { codec: name, width, height, ok: result.is_ok(), error: result.err().map(|e| format!("{e:#}")) });
         }

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use windows::Foundation::{TimeSpan, TypedEventHandler};
-use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
+use windows::Graphics::Capture::{Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
@@ -18,16 +18,18 @@ use windows::core::{IInspectable, Interface, Ref, factory};
 
 use crate::gpu::{Gpu, create_bgra_texture};
 
-/// Either capture method: both keep the newest frame in a `LatestFrame`.
+/// The capture methods: each keeps the newest frame in a `LatestFrame`.
 pub enum Capture {
     Wgc(MonitorCapture),
+    /// Windows Graphics Capture without a copy of each picture.
+    Light(MonitorCapture),
     Duplication(crate::duplication::DuplicationCapture),
 }
 
 impl Capture {
     pub fn latest(&self) -> &Arc<LatestFrame> {
         match self {
-            Capture::Wgc(c) => &c.latest,
+            Capture::Wgc(c) | Capture::Light(c) => &c.latest,
             Capture::Duplication(c) => &c.latest,
         }
     }
@@ -37,12 +39,16 @@ const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
 /// Our copy of the newest captured frame. Replaced (with a new size) when the
 /// display mode changes, e.g. a game switching to 4:3 in exclusive fullscreen.
+/// The light capture keeps Windows' own frame instead of a copy: `texture` is
+/// then that frame's buffer, held open until the next one arrives.
 pub struct Latest {
     pub texture: ID3D11Texture2D,
     pub width: u32,
     pub height: u32,
     /// Increases every time the texture is replaced with a different size.
     pub size_generation: u64,
+    /// The light capture's frame, whose buffer `texture` is.
+    held: Option<Direct3D11CaptureFrame>,
 }
 
 /// The most recent captured frame, copied into a texture we own so Windows can
@@ -63,7 +69,7 @@ unsafe impl Sync for LatestFrame {}
 impl LatestFrame {
     pub fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
-            latest: Mutex::new(Latest { texture: create_bgra_texture(device, width, height)?, width, height, size_generation: 0 }),
+            latest: Mutex::new(Latest { texture: create_bgra_texture(device, width, height)?, width, height, size_generation: 0, held: None }),
             generation: AtomicU64::new(0),
             resizes: AtomicU64::new(0),
             closed: AtomicBool::new(false),
@@ -86,9 +92,19 @@ impl LatestFrame {
     /// The capture size changed: a new texture of the new size.
     pub fn resize(&self, latest: &mut Latest, device: &ID3D11Device, width: u32, height: u32) -> Result<()> {
         let texture = create_bgra_texture(device, width, height)?;
-        *latest = Latest { texture, width, height, size_generation: latest.size_generation + 1 };
+        if let Some(frame) = latest.held.take() {
+            let _ = frame.Close();
+        }
+        *latest = Latest { texture, width, height, size_generation: latest.size_generation + 1, held: None };
         self.resizes.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Windows' frame itself is the newest picture (the light capture): kept
+    /// open, its buffer read straight from, and the one before given back.
+    fn hold(&self, latest: &mut Latest, frame: Direct3D11CaptureFrame, texture: ID3D11Texture2D) -> Option<Direct3D11CaptureFrame> {
+        latest.texture = texture;
+        latest.held.replace(frame)
     }
 
     /// Increases every time a new frame lands in the texture. 0 = nothing captured yet.
@@ -125,7 +141,8 @@ pub struct MonitorCapture {
 }
 
 impl MonitorCapture {
-    pub fn start(gpu: &Gpu, monitor: HMONITOR, max_fps: u32) -> Result<Self> {
+    /// `light`: no copy of each picture, and fewer pictures (see `Light`).
+    pub fn start(gpu: &Gpu, monitor: HMONITOR, max_fps: u32, light: bool) -> Result<Self> {
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
         let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(monitor)? };
         let size = item.Size()?;
@@ -135,7 +152,9 @@ impl MonitorCapture {
 
         let dxgi: IDXGIDevice = gpu.device.cast()?;
         let winrt_device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? }.cast()?;
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&winrt_device, FORMAT, 2, size)?;
+        // The light capture holds one buffer open; Windows writes into the others.
+        let buffers = if light { 3 } else { 2 };
+        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&winrt_device, FORMAT, buffers, size)?;
         let session = pool.CreateCaptureSession(&item)?;
         // Both are newer Windows 11 features; capture still works without them.
         let _ = session.SetIsBorderRequired(false);
@@ -143,8 +162,11 @@ impl MonitorCapture {
         // screen's refresh steps (6.06 ms at 165 Hz) push most game frames
         // just short of the interval, so every other one was skipped: 34 new
         // pictures a second at 60 fps on a tester's PC in CS2 (FIX-17). The
-        // video loop takes the newest at each tick.
-        let _ = session.SetMinUpdateInterval(TimeSpan::from(Duration::from_secs_f64(1.0 / (2 * max_fps) as f64)));
+        // video loop takes the newest at each tick. The light capture asks
+        // for a quarter more than the rate: at 60 fps that's every third
+        // refresh at 165 Hz (55 a second), every second one at 144 Hz.
+        let per_second = if light { max_fps as f64 * 1.25 } else { 2.0 * max_fps as f64 };
+        let _ = session.SetMinUpdateInterval(TimeSpan::from(Duration::from_secs_f64(1.0 / per_second)));
         session.SetIsCursorCaptureEnabled(true)?;
 
         let cb = CallbackGpu { device: gpu.device.clone(), context: gpu.context.clone(), winrt_device };
@@ -163,12 +185,18 @@ impl MonitorCapture {
                     // The display mode changed. This frame still has the old
                     // size, so skip it, resize the pool, and replace our copy.
                     frame.Close()?;
-                    pool.Recreate(&cb.winrt_device, FORMAT, 2, content)?;
                     let _ = shared.resize(&mut latest, &cb.device, w, h);
+                    pool.Recreate(&cb.winrt_device, FORMAT, buffers, content)?;
                     return Ok(());
                 }
                 let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
                 let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
+                if light {
+                    let before = shared.hold(&mut latest, frame, source);
+                    drop(latest);
+                    shared.publish();
+                    return before.map_or(Ok(()), |f| f.Close());
+                }
                 unsafe { cb.context.CopyResource(&latest.texture, &source) };
                 drop(latest);
                 shared.publish();

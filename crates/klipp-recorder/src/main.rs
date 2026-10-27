@@ -30,6 +30,7 @@ mod mmcss;
 mod monitors;
 mod overlay;
 mod perfcheck;
+mod performance;
 mod probe;
 mod process_loopback;
 mod recorder;
@@ -420,6 +421,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let mut recorder = Recorder::start(settings)?;
     let mut tray = Tray::create(&tooltip(recorder.settings()))?;
+    tray.set_performance(recorder.settings().video.performance);
     update::start();
     logsend::start(log_path.clone());
     let mut hotkey_ok = recorder.hotkey_registered();
@@ -512,6 +514,18 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                         open_url("https://github.com/alonsy/klipp/releases/latest");
                     }
                 }
+                // Saved like any setting: the watcher applies it within a second.
+                Some(c @ (Command::PerformanceOff | Command::PerformanceOn | Command::PerformancePlus)) => {
+                    let mode = match c {
+                        Command::PerformanceOn => settings::Performance::On,
+                        Command::PerformancePlus => settings::Performance::Plus,
+                        _ => settings::Performance::Off,
+                    };
+                    match Settings::save_performance(&settings_path, mode) {
+                        Ok(()) => tray.set_performance(mode),
+                        Err(e) => warning!("performance mode: couldn't change the setting: {e:#}"),
+                    }
+                }
                 Some(Command::ReAddIcon) => tray.add(),
                 Some(Command::ThemeChanged) => tray.refresh_theme(),
                 Some(Command::Quit) => {
@@ -526,7 +540,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 // What was in front and how busy the graphics card was: what clips are judged against.
                 let game = recorder.games.current(Duration::from_secs(60));
                 let gpu = gpu_load.as_mut().map_or("not measured".into(), |g| gpuload::describe(&g.sample()));
-                info!("activity: {game} | graphics card {gpu}");
+                let step = recorder.performance_note().map(|n| format!(" | {n}")).unwrap_or_default();
+                info!("activity: {game} | graphics card {gpu}{step}");
             }
             WM_TIMER if msg.wParam.0 == settings_timer => {
                 if lend_event.is_some_and(|e| unsafe { WaitForSingleObject(e, 0) } == WAIT_OBJECT_0) {
@@ -537,6 +552,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                         Ok(s) if s != *recorder.settings() => {
                             recorder.apply(s);
                             tray.set_tooltip(&tooltip(recorder.settings()));
+                            tray.set_performance(recorder.settings().video.performance);
                             let ok = recorder.hotkey_registered();
                             if hotkey_ok && !ok {
                                 tray.notify("Hotkey unavailable", &format!("{} is used by another app.", recorder.settings().replay.hotkey));
@@ -554,6 +570,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());
                 recorder.check_health();
+                recorder.tick_performance();
                 recorder.retry_hotkey();
                 hotkey_ok |= recorder.hotkey_registered();
                 let game = recorder.games.current(autoinstall::QUIET_FOR);

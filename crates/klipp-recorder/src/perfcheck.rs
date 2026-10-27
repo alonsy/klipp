@@ -40,7 +40,9 @@ pub fn run(path: &Path, settings: Settings) -> Settings {
         Resolution::P720 => 720.min(screen_height),
     };
     let codec = if video.codec == Codec::Av1 { VideoCodec::Av1 } else { VideoCodec::H264 };
-    let measure = |h: u32, fps: u32| crate::probe::measure("check after the update", &video.monitor, &video.gpu, codec, h, screen_height, fps).smooth;
+    // The way it records (Performance+ uses the light capture).
+    let capture = settings.video_settings().capture;
+    let measure = |h: u32, fps: u32| crate::probe::measure("check after the update", &video.monitor, &video.gpu, capture, codec, h, screen_height, fps).smooth;
     if measure(height, video.fps) {
         tuning.mark_checked(None);
         return settings;

@@ -17,9 +17,14 @@ max_bitrate_mbps = 40    # ceiling that keeps the buffer's RAM predictable
 monitor = ""             # "" records the main display; pick another in Settings → Video
 # "auto" uses Desktop Duplication on Windows 10 (where the other method draws a
 # yellow border around the screen) and Windows Graphics Capture on Windows 11.
-# "wgc" or "duplication" forces one.
+# "wgc" or "duplication" forces one; "light" does the least work on the
+# graphics card (for weaker ones).
 capture = "auto"
 gpu = ""                 # "" encodes on the card that drives the screen
+# Performance mode. "on": while a game keeps the graphics card busy, Klipp
+# records at a lower frame rate and bitrate, and goes back up when it has room.
+# "plus": that, and the lightest capture and encoding. "off": always as set above.
+performance = "off"
 
 [audio]
 # One track per source, plus a "Mix" track of all of them that players use by default.

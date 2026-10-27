@@ -1,7 +1,7 @@
 //! State shared between the video thread, the main thread and the clip saver.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use klipp_media::StreamInfo;
@@ -34,6 +34,13 @@ pub struct Shared {
     /// Graphics memory Klipp uses, and what Windows allows it, in MB.
     pub vram_used_mb: AtomicU64,
     pub vram_budget_mb: AtomicU64,
+    /// Performance mode's asks of the running video (see `performance`): a
+    /// new picture every this many frames (1 = every frame)...
+    pub perf_stride: AtomicU32,
+    /// ...and this bitrate ceiling in bits/s (0 = the setting's).
+    pub perf_max_bitrate: AtomicU32,
+    /// The running encoder takes a new ceiling while recording (not AMF).
+    pub bitrate_adjustable: AtomicBool,
 }
 
 /// Time spent in the video steps since the last stats line: waiting for the
@@ -145,6 +152,9 @@ impl Shared {
             steps: Steps::default(),
             vram_used_mb: AtomicU64::new(0),
             vram_budget_mb: AtomicU64::new(0),
+            perf_stride: AtomicU32::new(1),
+            perf_max_bitrate: AtomicU32::new(0),
+            bitrate_adjustable: AtomicBool::new(true),
         }
     }
 }
