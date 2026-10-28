@@ -1,8 +1,10 @@
 <script lang="ts">
   // First-run setup: checks what this PC can record, then asks for audio,
   // video and saving choices with the best ones preselected, and starts
-  // recording with them. Also reachable from Settings ("Run setup again").
-  import { onMount } from "svelte";
+  // recording with them. Also reachable from Settings ("Run setup diagnostics
+  // again"), and shown once after an update as just the PC test and video
+  // (`pcOnly`, IDEA-45).
+  import { onMount, untrack } from "svelte";
   import * as api from "../api";
   import type { AudioDevice, Drive, SystemCheck } from "../api";
   import HotkeyInput from "../HotkeyInput.svelte";
@@ -10,23 +12,28 @@
   import { DISCORD, routerInstalled } from "../discordTrack";
   import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
+  import { recommendPreset, type PcTest } from "../pctest";
+  import { matchPreset, PRESETS, presetValues, type PresetId } from "../presets";
+  import SystemMeters from "../SystemMeters.svelte";
   import { library, openPage, refreshRecorder, reload, toast } from "../state.svelte";
   import Segmented from "../ui/Segmented.svelte";
   import Slider from "../ui/Slider.svelte";
   import Toggle from "../ui/Toggle.svelte";
   import WindowControls from "../WindowControls.svelte";
 
-  let { rerun = false }: { rerun?: boolean } = $props();
+  let { rerun = false, pcOnly = false, ondone }: { rerun?: boolean; pcOnly?: boolean; ondone?: () => void } = $props();
 
-  const steps = [
+  const allSteps = [
     { id: "welcome", name: "Welcome" },
     { id: "check", name: "Your PC" },
     { id: "audio", name: "Audio" },
     { id: "video", name: "Video" },
     { id: "saving", name: "Saving clips" },
   ] as const;
-  type Step = (typeof steps)[number]["id"];
-  let step = $state<Step>("welcome");
+  type Step = (typeof allSteps)[number]["id"];
+  const steps = $derived(pcOnly ? allSteps.filter((s) => s.id === "check" || s.id === "video") : allSteps);
+  // The component lives for one run of setup, so the first step is fixed.
+  let step = $state<Step>(untrack(() => (pcOnly ? "check" : "welcome")));
   let index = $derived(steps.findIndex((s) => s.id === step));
 
   let check = $state<SystemCheck | null>(null);
@@ -47,8 +54,6 @@
   let c = $state({
     sonar: false,
     output: "",
-    chat: false,
-    chatDevice: "",
     /** Discord on its own track (experimental). */
     discord: false,
     mic: true,
@@ -59,6 +64,11 @@
     resolution: "native" as "native" | "1440p" | "1080p" | "720p",
     fps: 60,
     codec: "av1" as "av1" | "h264",
+    quality: 30,
+    max_bitrate_mbps: 40,
+    capture: "auto" as "auto" | "light" | "wgc" | "duplication",
+    performance: "off" as "off" | "on" | "plus",
+    fast_encoder: false,
     /** "" = the main display. */
     monitor: "",
     hotkey: "F8",
@@ -102,6 +112,13 @@
         c.volume = Number(s.cue?.volume ?? 0.6);
       }, () => {});
     }
+    if (pcOnly) {
+      // Only the video is asked for: start from what's set now.
+      api.readSettings().then((s) => {
+        c.monitor = s.video?.monitor ?? "";
+        c.length = s.replay?.length_secs ?? c.length;
+      }, () => {});
+    }
   });
 
   /** Set once the audio choices were changed by hand, so detection stops deciding. */
@@ -118,7 +135,7 @@
 
   $effect(() => {
     // Saved settings may name a device by part of its name ("Arctis Nova Pro");
-    // show the full name it stands for, as Settings → Sounds does.
+    // show the full name it stands for, as Settings → Recording does.
     if (c.cue && playback.length > 0 && !playback.includes(c.cue)) {
       const full = playback.find((n) => n.toLowerCase().includes(c.cue.toLowerCase()));
       if (full) c.cue = full;
@@ -152,22 +169,38 @@
     return !!gpu && gpu.vendor !== "nvidia" && gpu.vramMb < 1024;
   });
   const refresh = $derived(check?.monitor?.refreshHz ?? 60);
+  const screen = $derived({ height: nativeH, refreshHz: refresh });
+  const preset = $derived(matchPreset(c, screen));
 
-  function recommend(r: SystemCheck) {
+  /** The check measured what recording costs this PC (newer recorders): it is the PC test. */
+  function asPcTest(r: SystemCheck | null): PcTest | null {
+    return r?.system ? ({ testVersion: 1, klippVersion: "", at: new Date().toISOString(), ...r } as unknown as PcTest) : null;
+  }
+  const pcTest = $derived(asPcTest(check));
+
+  /** The preset this PC runs smoothly with room left for a game. The probe
+   * recorded a few seconds at each candidate; 120 fps needs about twice the
+   * memory for the buffer, so not on PCs with little of it. */
+  function recommendedPreset(r: SystemCheck): PresetId {
     const h = r.monitor?.height ?? 1080;
     const gpu = r.gpus.find((g) => g.name === r.recordingGpu);
     const builtIn = !!gpu && gpu.vendor !== "nvidia" && gpu.vramMb < 1024;
-    // 4K and up records at 1440p by default: sharp, at a third of the memory.
-    // Built-in graphics record 1080p, which they can keep up with at 60 fps.
-    c.resolution = builtIn && h > 1080 ? "1080p" : h > 1440 ? "1440p" : "native";
-    c.fps = 60;
-    // The probe recorded a few seconds at each candidate: its pick runs
-    // smoothly with most of the card left for a game. 120 fps needs about
-    // twice the memory for the buffer, so not on PCs with little of it.
-    if (r.recommended) {
-      c.resolution = r.recommended.height === h ? "native" : (`${r.recommended.height}p` as typeof c.resolution);
-      c.fps = r.recommended.fps === 120 && r.ramMb >= 12000 ? 120 : 60;
-    }
+    const rec = r.recommended;
+    if (!rec || rec.height < Math.min(h, 1440)) return "plus";
+    if (rec.fps === 120 && (r.monitor?.refreshHz ?? 60) >= 120 && r.ramMb >= 12000 && !builtIn) return "high";
+    return builtIn ? "performance" : "normal";
+  }
+
+  function applyPreset(id: PresetId) {
+    Object.assign(c, presetValues(id, screen));
+    // Keep the codec possible at the chosen size.
+    c.codec = encodes("av1", heightOf(c.resolution)) || !encodes("h264", heightOf(c.resolution)) ? "av1" : "h264";
+  }
+
+  function recommend(r: SystemCheck) {
+    // Newer recorders measure what recording costs (the PC test); older ones only say what ran smoothly.
+    const test = asPcTest(r);
+    applyPreset(test ? recommendPreset(test, { height: r.monitor?.height ?? 1080, refreshHz: r.monitor?.refreshHz ?? 60 }) : recommendedPreset(r));
     c.codec = encodes("av1", heightOf(c.resolution)) ? "av1" : "h264";
     c.cs2 = r.cs2;
     // F8 on desktops; laptops often need Fn for F keys, and Alt+F8 is easy to reach with it.
@@ -206,11 +239,33 @@
       ];
     }
     return [
-      { name: c.chat || c.discord ? "Game" : "PC audio", device: c.output, kind: "loopback" },
+      { name: c.discord && !router ? "Game" : "PC audio", device: c.output, kind: "loopback" },
       ...(c.discord && !router ? [{ name: "Chat", device: "", kind: DISCORD }] : []),
-      ...(c.chat && !c.discord ? [{ name: "Chat", device: c.chatDevice, kind: "loopback" }] : []),
       ...(c.mic ? [{ name: "Mic", device: c.micDevice, kind: "capture" }] : []),
     ];
+  }
+
+  /** The video choices, as settings. */
+  function videoSettings() {
+    return (["codec", "resolution", "fps", "quality", "max_bitrate_mbps", "capture", "performance", "fast_encoder", "monitor"] as const).map((k) => ({
+      key: ["video", k],
+      value: c[k],
+    }));
+  }
+
+  /** After an update (pcOnly): the video settings only, or none. */
+  async function finishPc(use: boolean) {
+    finishing = true;
+    try {
+      if (use) await api.writeSettings(videoSettings());
+      if (use) toast("Klipp records with the new video settings.");
+      ondone?.();
+      openPage("clips");
+    } catch (e) {
+      toast(`Couldn't save the video settings: ${e}`);
+    } finally {
+      finishing = false;
+    }
   }
 
   async function finish() {
@@ -225,10 +280,7 @@
         { key: ["cue", "enabled"], value: c.sound },
         { key: ["cue", "device"], value: c.cue },
         { key: ["cue", "volume"], value: c.volume },
-        { key: ["video", "codec"], value: c.codec },
-        { key: ["video", "resolution"], value: c.resolution },
-        { key: ["video", "fps"], value: c.fps },
-        { key: ["video", "monitor"], value: c.monitor },
+        ...videoSettings(),
         { key: ["replay", "hotkey"], value: c.hotkey },
         { key: ["replay", "length_secs"], value: c.length },
         { key: ["auto_clip", "cs2", "enabled"], value: c.cs2 },
@@ -238,6 +290,7 @@
       setTimeout(refreshRecorder, 1500);
       await reload();
       toast(`Klipp is recording. Press ${c.hotkey} to save the last ${c.length} seconds.`);
+      ondone?.();
       openPage("clips");
     } catch (e) {
       toast(`Couldn't finish setup: ${e}`);
@@ -395,27 +448,12 @@
               {#if !router}
                 <div class="row">
                   <span class="what"
-                    ><b>Discord on its own track <span class="exp">Experimental</span></b><span
-                      >Voice chat apart from the game, to turn it down later or leave it out when you share</span
+                    ><b>Try separating Discord and Windows sounds <span class="exp">Experimental</span></b><span
+                      >Voice chat on its own track, to turn it down later or leave it out when you share</span
                     ></span
                   >
-                  <Toggle checked={c.discord} label="Discord on its own track" onchange={(v) => ((c.discord = v), v && (c.chat = false))} />
+                  <Toggle checked={c.discord} label="Try separating Discord and Windows sounds" onchange={(v) => (c.discord = v)} />
                 </div>
-              {/if}
-              {#if !c.discord}
-              <div class="row">
-                <span class="what"><b>Separate chat track</b><span>If voice chat plays on its own device</span></span>
-                <Toggle checked={c.chat} label="Separate chat track" onchange={(v) => (c.chat = v)} />
-              </div>
-              {/if}
-              {#if c.chat && !c.discord}
-                <label class="row sub">
-                  <span class="what"><span>Chat device</span></span>
-                  <select bind:value={c.chatDevice}>
-                    <option value="">Windows default</option>
-                    {#each playback as name (name)}<option value={name}>{name}</option>{/each}
-                  </select>
-                </label>
               {/if}
             {/if}
             <div class="row">
@@ -456,7 +494,22 @@
             {/if}
           {:else if step === "video"}
             <h1>Video</h1>
-            <p class="lead">Preselected for your screen and graphics card. Options it can't record are marked.</p>
+            <p class="lead">Picked for your PC. See what Klipp will use, and change it if you like.</p>
+            {#if pcTest}<div class="meters-wrap"><SystemMeters test={pcTest} choice={c} lengthSecs={c.length} {screen} audioTracks={1 + sources().length} /></div>{/if}
+            <div class="presets" role="radiogroup" aria-label="Preset">
+              {#each PRESETS as p (p.id)}
+                {@const v = presetValues(p.id, screen)}
+                <button class="preset" class:on={preset === p.id} role="radio" aria-checked={preset === p.id} onclick={() => applyPreset(p.id)}>
+                  <span class="pname">{p.name}</span>
+                  <span class="pspec mono">{v.resolution === "native" ? `${nativeH}p` : v.resolution} · {v.fps} fps</span>
+                </button>
+              {/each}
+              <div class="preset custom" class:on={preset === "custom"} role="radio" aria-checked={preset === "custom"} aria-disabled="true">
+                <span class="pname">Custom</span>
+                <span class="pspec">Your own mix</span>
+              </div>
+            </div>
+            <p class="phint">{preset === "custom" ? "Your own mix of the settings below." : PRESETS.find((p) => p.id === preset)?.hint}</p>
             {#if (check?.monitors.length ?? 0) > 1}
               <label class="row">
                 <span class="what"><b>Screen</b><span>The one your games run on</span></span>
@@ -493,10 +546,12 @@
                 onchange={(v) => (c.codec = v)}
               />
             </div>
-            <div class="estimate">
-              <Icon name="info" size={16} />
-              <span>In games this is about <b class="mono">{perMinute} MB</b> per minute of clips.</span>
-            </div>
+            {#if !pcTest}
+              <div class="estimate">
+                <Icon name="info" size={16} />
+                <span>In games this is about <b class="mono">{perMinute} MB</b> per minute of clips.</span>
+              </div>
+            {/if}
           {:else if step === "saving"}
             <h1>Saving clips</h1>
             <p class="lead">One key saves the last moments, from anywhere, even in fullscreen games.</p>
@@ -546,7 +601,10 @@
       <footer>
         {#if index > 0}<button class="ghost" onclick={back}><Icon name="back" size={16} />Back</button>{/if}
         <span class="grow"></span>
-        {#if step === "saving"}
+        {#if pcOnly && step === "video"}
+          <button class="ghost" disabled={finishing} onclick={() => finishPc(false)}>Keep my settings</button>
+          <button class="primary go" disabled={finishing || !canRecord} onclick={() => finishPc(true)}>Use these settings</button>
+        {:else if step === "saving"}
           <button class="primary go" disabled={finishing || !canRecord} onclick={finish}>
             <Icon name="record" size={17} />{finishing ? "Starting…" : "Start recording"}
           </button>
@@ -554,6 +612,7 @@
           <button class="primary go" disabled={step === "check" && !check && !checkError} onclick={next}>
             {step === "welcome" ? "Get started" : "Continue"}
           </button>
+          {#if pcOnly && step === "check"}<button class="ghost" onclick={() => finishPc(false)}>Skip</button>{/if}
         {/if}
       </footer>
     </section>
@@ -826,6 +885,66 @@
 
   /* Rows share the option card's side padding, so labels and switches line
      up with the card's whether or not a card is above them. */
+  .meters-wrap {
+    padding-bottom: 14px;
+  }
+
+  .presets {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .preset {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 12px 12px 11px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    text-align: left;
+  }
+
+  .preset:hover {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    background: var(--surface);
+  }
+
+  .preset.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .preset.custom {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .preset.custom.on {
+    opacity: 1;
+  }
+
+  .pname {
+    font-weight: 650;
+    font-size: 13.5px;
+    color: var(--text);
+  }
+
+  .pspec {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .phint {
+    margin: 0 0 14px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
   .option,
   .row {
     display: flex;

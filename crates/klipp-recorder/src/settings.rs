@@ -184,11 +184,15 @@ const TIMING_EVENTS: &[&str] = &[
 pub struct Replay {
     pub length_secs: u32,
     pub hotkey: String,
+    /// Manual clipping: the hotkey works anywhere, so Klipp records all the
+    /// time. Off: no hotkey, and Klipp records only while a game it
+    /// auto-clips is running (`recorder::wanted`).
+    pub manual: bool,
 }
 
 impl Default for Replay {
     fn default() -> Self {
-        Self { length_secs: 60, hotkey: "F8".into() }
+        Self { length_secs: 60, hotkey: "F8".into(), manual: true }
     }
 }
 
@@ -258,6 +262,8 @@ pub struct Video {
     /// drives the screen ("" = that one). For testing.
     pub gpu: String,
     pub performance: Performance,
+    /// The encoder's fastest preset (Performance+ always uses it).
+    pub fast_encoder: bool,
 }
 
 impl Default for Video {
@@ -272,6 +278,7 @@ impl Default for Video {
             capture: CaptureMethod::Auto,
             gpu: String::new(),
             performance: Performance::Off,
+            fast_encoder: false,
         }
     }
 }
@@ -308,11 +315,23 @@ impl Default for Audio {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Storage {
     /// Empty means Videos\Klipp; use `clips_dir()` for the actual folder.
     pub clips_dir: PathBuf,
+    /// Deletes old clips by itself (`cleanup`); favorites are never deleted.
+    pub auto_delete: bool,
+    /// Clips older than this many days go (0: no age limit).
+    pub delete_after_days: u32,
+    /// The oldest clips go while the clips take more than this many GB (0: no limit).
+    pub max_gb: u32,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Self { clips_dir: PathBuf::new(), auto_delete: false, delete_after_days: 30, max_gb: 0 }
+    }
 }
 
 impl Storage {
@@ -390,6 +409,8 @@ impl Settings {
         clamp_to("video.quality", &mut self.video.quality, 1, 51, &mut w);
         clamp_to("video.max_bitrate_mbps", &mut self.video.max_bitrate_mbps, 5, 150, &mut w);
         clamp_to("cue.volume", &mut self.cue.volume, 0.0, 1.0, &mut w);
+        clamp_to("storage.delete_after_days", &mut self.storage.delete_after_days, 0, 3650, &mut w);
+        clamp_to("storage.max_gb", &mut self.storage.max_gb, 0, 100_000, &mut w);
         let a = &mut self.auto_clip;
         clamp_to("auto_clip.pre_roll_secs", &mut a.pre_roll_secs, 0.0, 120.0, &mut w);
         clamp_to("auto_clip.post_roll_secs", &mut a.post_roll_secs, 0.0, 60.0, &mut w);
@@ -463,7 +484,7 @@ impl Settings {
             // Performance+ records the lightest way there is.
             capture: if v.performance == Performance::Plus { CaptureMethod::Light } else { v.capture },
             gpu: v.gpu.clone(),
-            light_encoder: v.performance == Performance::Plus,
+            light_encoder: v.performance == Performance::Plus || v.fast_encoder,
         }
     }
 
@@ -512,7 +533,7 @@ impl Settings {
                     Kind::Discord => Programs::Discord,
                     Kind::Loopback if discord && Some(i) == first_loopback => Programs::AllButDiscord,
                     // The save sound plays on this device: the same name ("" is the Windows default for both).
-                    Kind::Loopback if self.cue.enabled && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()) => Programs::AllButKlipp,
+                    Kind::Loopback if (self.cue.enabled || self.cue.auto_clips) && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()) => Programs::AllButKlipp,
                     _ => Programs::Device,
                 },
             })

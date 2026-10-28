@@ -9,8 +9,13 @@ use windows::core::{HSTRING, Interface, PCWSTR, w};
 use crate::log::info;
 use crate::settings::Settings;
 
+/// "AMD Ryzen 7 7800X3D 8-Core Processor", or "?".
+pub fn cpu_name() -> String {
+    registry(w!(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"), "ProcessorNameString").map(|c| c.trim().to_string()).unwrap_or_else(|| "?".into())
+}
+
 pub fn log_summary(s: &Settings) {
-    let cpu = registry(w!(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"), "ProcessorNameString").map(|c| c.trim().to_string()).unwrap_or_else(|| "?".into());
+    let cpu = cpu_name();
     let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
     let screens: Vec<String> = crate::monitors::list()
         .iter()

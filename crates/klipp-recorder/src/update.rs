@@ -1,4 +1,6 @@
-//! Once a day (every 3 hours on the test channel), asks whether a newer Klipp is out. When there is one,
+//! A minute and a half after it starts, then once a day (every 3 hours on the
+//! test channel), and never while a game is in front, asks whether a newer
+//! Klipp is out (the window also checks whenever it opens). When there is one,
 //! the tray menu offers it ("Update to Klipp 0.2.2"), which opens the window's
 //! update card. Nothing pops up. The request goes through WinHTTP, which is
 //! part of Windows, so this adds no library and next to no memory.
@@ -9,11 +11,12 @@
 //! The check asks klipp.dev first, which answers with the same manifest and
 //! counts active installs from the random install number it's sent (D43);
 //! GitHub directly if klipp.dev can't be reached. "Check for updates" off in
-//! Settings → About stops it altogether.
+//! Settings → Advanced stops it altogether.
 
 use std::cmp::Ordering;
 use std::ffi::c_void;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::thread;
 use std::time::Duration;
 
@@ -36,11 +39,21 @@ const EVERY: Duration = Duration::from_secs(24 * 3600);
 /// Testers get test builds within hours (they install themselves; see autoinstall).
 const EVERY_ON_TEST: Duration = Duration::from_secs(3 * 3600);
 
+/// While a game is in front, a due check waits this long and looks again.
+const WAIT_FOR_IDLE: Duration = Duration::from_secs(60);
+
 static AVAILABLE: Mutex<Option<String>> = Mutex::new(None);
+static IN_GAME: AtomicBool = AtomicBool::new(false);
 
 /// A newer version than this one, once a check has found it.
 pub fn available() -> Option<String> {
     AVAILABLE.lock().unwrap().clone()
+}
+
+/// Whether a game is in front (the main loop says, every couple of
+/// seconds): checks wait for the PC to be idle (IDEA-43).
+pub fn set_in_game(in_game: bool) {
+    IN_GAME.store(in_game, AtomicOrdering::Relaxed);
 }
 
 pub fn start() {
@@ -49,6 +62,10 @@ pub fn start() {
         loop {
             if !channel::read().checks {
                 thread::sleep(EVERY);
+                continue;
+            }
+            if IN_GAME.load(AtomicOrdering::Relaxed) {
+                thread::sleep(WAIT_FOR_IDLE);
                 continue;
             }
             match latest_version() {

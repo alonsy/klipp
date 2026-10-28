@@ -51,6 +51,9 @@ pub struct Recorder {
     /// The save key is lent to the Klipp window's key test until then.
     hotkey_lent_until: Option<Instant>,
     paused: bool,
+    /// Manual clipping is off and no game Klipp auto-clips is running, so
+    /// nothing is recorded (D51); see `tick_standby`.
+    standby: bool,
     pub games: GameTracker,
     cs2: Option<Cs2Integration>,
     league: Option<LeagueIntegration>,
@@ -110,6 +113,30 @@ fn buffer_limits(s: &Settings) -> (i64, u64) {
     (secs as i64 * clock::SECOND, s.video.max_bitrate_mbps as u64 * 1_000_000 / 8 * (secs + 2))
 }
 
+/// The programs of the games Klipp auto-clips, with auto-clips on for them.
+fn autoclipped_exes(s: &Settings) -> Vec<&'static str> {
+    let a = &s.auto_clip;
+    let games = [(a.cs2.enabled, "cs2.exe"), (a.league.enabled, "league of legends.exe"), (a.rocket_league.enabled, "rocketleague.exe")];
+    if !a.enabled {
+        return Vec::new();
+    }
+    games.into_iter().filter(|&(on, _)| on).map(|(_, exe)| exe).collect()
+}
+
+/// Klipp records: always with manual clipping on, otherwise only while a
+/// game it auto-clips is running (`running`: lowercase program names).
+fn wanted(s: &Settings, running: impl FnOnce() -> Vec<String>) -> bool {
+    if s.replay.manual {
+        return true;
+    }
+    let exes = autoclipped_exes(s);
+    !exes.is_empty() && running().iter().any(|name| exes.contains(&name.as_str()))
+}
+
+fn running_programs() -> Vec<String> {
+    crate::games::processes().into_iter().map(|(_, _, name)| name).collect()
+}
+
 impl Recorder {
     /// Must be called on the thread that runs the message loop (for the hotkey).
     pub fn start(settings: Settings) -> Result<Self> {
@@ -130,6 +157,7 @@ impl Recorder {
             hotkey_registered: false,
             hotkey_lent_until: None,
             paused: false,
+            standby: false,
             games: GameTracker::default(),
             cs2: None,
             league: None,
@@ -153,8 +181,13 @@ impl Recorder {
             r.fps_cap = Some(cap);
             r.watchdog.set_reduced(Some((cap, fps)), true);
         }
-        r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
-        r.start_audio();
+        if wanted(&r.settings, running_programs) {
+            r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
+            r.start_audio();
+        } else {
+            r.standby = true;
+            info!("recording: manual clipping is off, so Klipp records only while a game it auto-clips is running; none is yet");
+        }
         r.register_hotkey();
         r.start_integrations();
         Ok(r)
@@ -164,9 +197,42 @@ impl Recorder {
         &self.settings
     }
 
-    /// False if another app holds the configured hotkey.
+    /// False if another app holds the configured hotkey (there's none to hold
+    /// with manual clipping off).
     pub fn hotkey_registered(&self) -> bool {
-        self.hotkey_registered
+        self.hotkey_registered || !self.settings.replay.manual
+    }
+
+    /// Not recording because manual clipping is off and no game it auto-clips is running.
+    pub fn standby(&self) -> bool {
+        self.standby
+    }
+
+    /// With manual clipping off, starts recording when a game Klipp
+    /// auto-clips starts and stops when it's closed (every couple of seconds).
+    pub fn tick_standby(&mut self) {
+        let wanted = wanted(&self.settings, running_programs);
+        if wanted != self.standby {
+            return;
+        }
+        self.standby = !wanted;
+        if self.paused {
+            return;
+        }
+        if wanted {
+            match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
+                Ok(v) => self.video = Some(v),
+                Err(e) => warning!("video failed to start: {e:#}"),
+            }
+            self.start_audio();
+            info!("recording: a game Klipp auto-clips is running; recording");
+        } else {
+            self.flush_burst();
+            self.video = None;
+            self.audio = None;
+            self.shared.buffer.lock().unwrap().clear();
+            info!("recording: manual clipping is off and no game Klipp auto-clips is running; recording stops until one is");
+        }
     }
 
     /// A clip is on its way (see arrivals): not the moment to restart for an update.
@@ -192,7 +258,7 @@ impl Recorder {
             skipped: self.shared.skipped_ticks.load(Relaxed),
             blind: self.shared.capture_blind.load(Relaxed),
         };
-        if self.paused {
+        if self.paused || self.standby {
             self.watchdog.reset(counts);
             return;
         }
@@ -320,6 +386,8 @@ impl Recorder {
             self.audio = None;
             self.shared.buffer.lock().unwrap().clear();
             info!("recording paused; buffer cleared");
+        } else if self.standby {
+            info!("recording resumed; it starts once a game Klipp auto-clips runs");
         } else {
             match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                 Ok(v) => self.video = Some(v),
@@ -335,7 +403,7 @@ impl Recorder {
         let old = std::mem::replace(&mut self.settings, new);
         let limits_changed = old.replay.length_secs != self.settings.replay.length_secs
             || old.video.max_bitrate_mbps != self.settings.video.max_bitrate_mbps;
-        let hotkey_changed = old.replay.hotkey != self.settings.replay.hotkey;
+        let hotkey_changed = old.replay.hotkey != self.settings.replay.hotkey || old.replay.manual != self.settings.replay.manual;
         let video_changed = old.video != self.settings.video;
         // Also when moving the save sound changes whether a track leaves it out.
         let audio_changed = old.audio != self.settings.audio || old.audio_sources() != self.settings.audio_sources();
@@ -370,8 +438,8 @@ impl Recorder {
             self.rocket_league = None;
             self.start_rocket_league();
         }
-        // While paused nothing is running; resuming uses the new settings.
-        if (video_changed || audio_changed) && !self.paused {
+        // While paused or standing by nothing is running; starting again uses the new settings.
+        if (video_changed || audio_changed) && !self.paused && !self.standby {
             // New streams can't continue a clip from the old ones.
             self.flush_burst();
             if video_changed {
@@ -644,6 +712,12 @@ impl Recorder {
 
     fn register_hotkey(&mut self) {
         let text = self.settings.replay.hotkey.clone();
+        if !self.settings.replay.manual {
+            // Nothing to warn about in the window: the key is off on purpose.
+            crate::hotkey::write_state(&text, true);
+            info!("hotkey: manual clipping is off; {text} does nothing");
+            return;
+        }
         if self.try_hotkey() {
             info!("hotkey: {text} saves clips");
         } else {
@@ -664,7 +738,7 @@ impl Recorder {
     /// A key another app held may be free now (it closed, or let go of it),
     /// and a lent key comes back. Call every few seconds.
     pub fn retry_hotkey(&mut self) {
-        if self.hotkey_registered || self.hotkey_lent_until.is_some_and(|t| Instant::now() < t) {
+        if !self.settings.replay.manual || self.hotkey_registered || self.hotkey_lent_until.is_some_and(|t| Instant::now() < t) {
             return;
         }
         let lent = self.hotkey_lent_until.take().is_some();

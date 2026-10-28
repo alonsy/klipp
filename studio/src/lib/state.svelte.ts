@@ -4,7 +4,7 @@ import type { Arrival, Clip } from "./api";
 
 export type Kind = "all" | "auto" | "manual" | "favorites";
 export type Sort = "newest" | "oldest" | "longest" | "largest";
-export type Page = "clips" | "settings" | "setup";
+export type Page = "clips" | "settings" | "setup" | "pctest";
 
 export const library = $state({
   clips: [] as Clip[],
@@ -39,8 +39,6 @@ export const ui = $state({
 /** The studio's own preferences, with defaults. */
 export const prefs = $state({
   closeNotice: true,
-  autoplay: true,
-  loop: false,
   accent: "#ff5a2e",
   groupSessions: true,
   /** The editor's listening volume (not the clip's levels). */
@@ -51,6 +49,12 @@ export const prefs = $state({
   exportWithoutVoices: false,
   /** The version whose settings change (the check after an update) was already told. */
   adjustToldFor: "",
+  /** Settings → Audio shows every track (Multi Device Track Mode). */
+  audioMultiDevice: false,
+  /** Settings → Audio switched to Sonar's tracks by itself once. */
+  sonarSwitched: false,
+  /** The version the PC test screen was shown for after an update (it shows once). */
+  pcTestShownFor: "",
 });
 
 /** Clips on their way, and clips that just landed (briefly highlighted). */
@@ -76,6 +80,8 @@ export const recorder = $state({
   autostart: false,
   hotkey: "F8",
   lengthSecs: 60,
+  /** Manual clipping on: the hotkey works and Klipp records all the time. */
+  manual: true,
   /** From the recorder's watchdog: "stopped" (video restarting), "blind" (a still picture) or "slow" (can't keep up). */
   problem: null as "stopped" | "blind" | "slow" | null,
   /** Another app holds the save key. */
@@ -130,6 +136,7 @@ export async function refreshRecorder() {
     tellAdjusted(status.adjusted);
     recorder.hotkey = settings.replay?.hotkey ?? recorder.hotkey;
     recorder.lengthSecs = settings.replay?.length_secs ?? recorder.lengthSecs;
+    recorder.manual = settings.replay?.manual ?? true;
   } catch {
     // Keep what we had.
   }

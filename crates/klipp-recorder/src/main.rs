@@ -12,6 +12,7 @@ mod autostart;
 mod cancel;
 mod capture;
 mod channel;
+mod cleanup;
 mod clock;
 mod cs2;
 mod cue;
@@ -347,16 +348,15 @@ fn open_path(path: &Path) {
 }
 
 /// Shows an indicator if the settings want this one: "Auto-clips ON" needs
-/// auto-clips on for a game (only those report matches starting); auto-clip
-/// saves follow "also for auto-clips".
+/// auto-clips on for a game (only those report matches starting); "Clip
+/// saved" covers every save, and the ones that fail.
 fn indicate(indicators: &mut overlay::Indicators, s: &Settings, what: overlay::Indicator) {
     use overlay::{Indicator, Pill};
     let a = &s.auto_clip;
     let any_game = a.cs2.enabled || a.league.enabled || a.rocket_league.enabled;
     let pill = match what {
         Indicator::MatchStarted if s.indicators.autoclips_on && a.enabled && any_game => Pill::AutoClipsOn,
-        Indicator::Saved if s.indicators.saves => Pill::Saved,
-        Indicator::AutoSaved if s.indicators.saves && s.cue.auto_clips => Pill::Saved,
+        Indicator::Saved | Indicator::AutoSaved if s.indicators.saves => Pill::Saved,
         Indicator::Failed if s.indicators.saves => Pill::Failed,
         _ => return,
     };
@@ -373,6 +373,9 @@ const LEND_EVENT: PCWSTR = w!("Local\\KlippLendHotkey");
 const LEND_TIME: Duration = Duration::from_secs(15);
 
 fn tooltip(s: &Settings) -> String {
+    if !s.replay.manual {
+        return "Klipp\nRecords while a game with auto-clips runs".into();
+    }
     format!("Klipp\n{} saves the last {} s", s.replay.hotkey, s.replay.length_secs)
 }
 
@@ -437,10 +440,13 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let settings_timer = unsafe { SetTimer(None, 0, 1_000, None) };
     let games_timer = unsafe { SetTimer(None, 0, 2_000, None) };
     let autoclip_timer = unsafe { SetTimer(None, 0, 250, None) };
+    let saves = if recorder.settings().replay.manual {
+        format!("{} saves the last {} s", recorder.settings().replay.hotkey, recorder.settings().replay.length_secs)
+    } else {
+        "auto-clips only (manual clipping is off)".to_string()
+    };
     info!(
-        "recording: {} saves the last {} s to {} | settings {} | log {}",
-        recorder.settings().replay.hotkey,
-        recorder.settings().replay.length_secs,
+        "recording: {saves} to {} | settings {} | log {}",
         recorder.settings().storage.clips_dir().display(),
         settings_path.display(),
         log_path.as_deref().map_or("(none)".into(), |p| p.display().to_string())
@@ -451,6 +457,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut gpu_load = gpuload::GpuLoad::start();
     let mut pending_save = None;
     let mut auto_install = autoinstall::AutoInstall::default();
+    let mut cleanup = cleanup::Cleanup::new();
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if !msg.hwnd.is_invalid() {
@@ -540,7 +547,11 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 // What was in front and how busy the graphics card was: what clips are judged against.
                 let game = recorder.games.current(Duration::from_secs(60));
                 let gpu = gpu_load.as_mut().map_or("not measured".into(), |g| gpuload::describe(&g.sample()));
-                let step = recorder.performance_note().map(|n| format!(" | {n}")).unwrap_or_default();
+                let step = if recorder.standby() {
+                    " | not recording until a game with auto-clips runs".to_string()
+                } else {
+                    recorder.performance_note().map(|n| format!(" | {n}")).unwrap_or_default()
+                };
                 info!("activity: {game} | graphics card {gpu}{step}");
             }
             WM_TIMER if msg.wParam.0 == settings_timer => {
@@ -569,18 +580,22 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             }
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());
+                recorder.tick_standby();
                 recorder.check_health();
                 recorder.tick_performance();
                 recorder.retry_hotkey();
                 hotkey_ok |= recorder.hotkey_registered();
                 let game = recorder.games.current(autoinstall::QUIET_FOR);
+                update::set_in_game(game != games::DESKTOP);
                 if let Some(version) = auto_install.due(update::available(), &game, recorder.saving()) {
                     if open_studio(&["--install-update".as_ref()]) {
-                        info!("update: installing Klipp {version} by itself (test channel, no game for 3 minutes); the window's updater takes it from here");
+                        info!("update: installing Klipp {version} by itself (no game for 3 minutes); the window's updater takes it from here");
                     } else {
                         warning!("update: couldn't start the window to install Klipp {version}");
                     }
                 }
+                // Deleting old clips, when that's on: between games, on its own thread.
+                cleanup.tick(&recorder.settings().storage, &game, recorder.saving());
             }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {

@@ -31,7 +31,8 @@
   let outPoint = $state(saved.out ?? initial.duration);
   let current = $state(saved.in ?? 0);
   let playing = $state(false);
-  let loop = $state(prefs.loop);
+  // Off when a clip opens; L turns it on.
+  let loop = $state(false);
   let volumes = $state(separate.map((_, i) => saved.volumes?.[i] ?? 1));
   let muted = $state(separate.map((_, i) => saved.muted?.[i] ?? false));
   let solo = $state(separate.map(() => false));
@@ -174,7 +175,7 @@
     outPoint = Math.min(saved.out ?? length, length);
     inPoint = Math.min(inPoint, Math.max(0, outPoint - 0.5));
     seek(inPoint);
-    if (prefs.autoplay) video.play().catch(() => {});
+    video.play().catch(() => {});
   }
 
   function play(from?: number) {
@@ -306,7 +307,6 @@
 
   function toggleLoop() {
     loop = !loop;
-    setPref("loop", loop);
   }
 
   function close() {

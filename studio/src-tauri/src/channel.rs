@@ -36,7 +36,7 @@ pub struct Updates {
     send_logs: bool,
     /// Look for updates by itself.
     checks: bool,
-    /// Test channel only: a newer test build installs itself between games (the recorder's autoinstall).
+    /// A newer version installs itself between games or when Klipp starts (the recorder's autoinstall).
     auto_install: bool,
     /// This copy is a test build ("0.3.5-test.1").
     test_build: bool,
@@ -52,8 +52,15 @@ pub fn read(dir: &Path, version: &str) -> Updates {
         _ if test_build => "test",
         _ => "production",
     };
-    let flag = |key: &str| file.as_ref().and_then(|v| v[key].as_bool()).unwrap_or(true);
-    Updates { channel: channel.into(), send_logs: flag("sendLogs"), checks: flag("checks"), auto_install: flag("autoInstall"), test_build }
+    let flag = |key: &str, default: bool| file.as_ref().and_then(|v| v[key].as_bool()).unwrap_or(default);
+    // Logs go by default on the test channel only (D52).
+    Updates {
+        channel: channel.into(),
+        send_logs: flag("sendLogs", channel == "test"),
+        checks: flag("checks", true),
+        auto_install: flag("autoInstall", true),
+        test_build,
+    }
 }
 
 pub fn write(dir: &Path, version: &str, channel: &str, send_logs: bool, checks: bool, auto_install: bool) -> Result<()> {

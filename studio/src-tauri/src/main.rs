@@ -19,6 +19,7 @@ mod prefs;
 mod relocate;
 mod settings;
 mod setup;
+mod squeeze;
 mod support;
 mod trash;
 
@@ -32,12 +33,14 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use crate::config::Config;
 use crate::export::{ExportRequest, Exports};
 use crate::library::Clip;
+use crate::squeeze::Squeezer;
 use crate::trash::Trash;
 
 struct App {
     config: Config,
     trash: Trash,
     exports: Exports,
+    squeeze: Squeezer,
 }
 
 #[derive(Serialize)]
@@ -199,6 +202,31 @@ fn cancel_export(app: State<App>, id: u64) {
     app.exports.cancel(id);
 }
 
+/// Squeeze Space: what each level would do to the clips (see `squeeze`).
+#[tauri::command]
+async fn squeeze_plan(skip_favorites: bool) -> CmdResult<squeeze::Plan> {
+    let dir = config::load().clips_dir;
+    blocking(move || Ok(squeeze::plan(&dir, skip_favorites))).await
+}
+
+/// Starts squeezing; progress and the end arrive as "squeeze-progress" and "squeeze-done" events.
+#[tauri::command]
+fn start_squeeze(handle: AppHandle, app: State<App>, level: squeeze::Level, skip_favorites: bool) -> CmdResult<()> {
+    app.squeeze.start(handle, config::load().clips_dir, level, skip_favorites).map_err(err)
+}
+
+/// Stops after the clip in progress is put back as it was.
+#[tauri::command]
+fn cancel_squeeze(app: State<App>) {
+    app.squeeze.cancel();
+}
+
+/// Where a running squeeze is, for a dialog opened midway (`null` when none runs).
+#[tauri::command]
+fn squeeze_status(app: State<App>) -> Option<squeeze::Progress> {
+    app.squeeze.status()
+}
+
 #[tauri::command]
 fn copy_to_clipboard(path: String) -> CmdResult<()> {
     clipboard::copy_file(&PathBuf::from(path)).map_err(err)
@@ -235,11 +263,24 @@ fn setup_needed(app: State<App>) -> bool {
     setup::needed(&app.config.settings_path)
 }
 
-/// What this PC can record, for the setup screens.
+/// What this PC can record, for the setup screens (also saves the PC test).
 #[tauri::command]
-async fn system_check() -> CmdResult<Value> {
-    let config = config::load();
-    blocking(move || setup::system_check(&config.clips_dir, &config.log_dir)).await
+async fn system_check(handle: AppHandle) -> CmdResult<Value> {
+    let (config, version) = (config::load(), handle.package_info().version.to_string());
+    blocking(move || setup::system_check(&config.clips_dir, &config.log_dir, &version)).await
+}
+
+/// The last PC test (what recording costs this PC), or null if none was run.
+#[tauri::command]
+fn pc_test() -> Option<Value> {
+    setup::last_pc_test(&config::load().log_dir)
+}
+
+/// Runs the PC test again (about 20 seconds) and returns it.
+#[tauri::command]
+async fn run_pc_test(handle: AppHandle) -> CmdResult<Value> {
+    let (config, version) = (config::load(), handle.package_info().version.to_string());
+    blocking(move || setup::run_pc_test(&config.clips_dir, &config.log_dir, &version)).await
 }
 
 /// The PC's drives, for setup's "Save clips on".
@@ -273,7 +314,7 @@ fn play_sound(device: String, volume: f64, error: bool) -> CmdResult<()> {
     lifecycle::play_sound(&device, volume, error).map_err(err)
 }
 
-/// Flashes an on-screen indicator (Settings → General → On screen).
+/// Flashes an on-screen indicator (Settings → Recording → Visual).
 #[tauri::command]
 fn preview_indicator(kind: String) -> CmdResult<()> {
     lifecycle::preview_indicator(&kind).map_err(err)
@@ -387,10 +428,10 @@ fn install_log(app: State<App>, line: String) -> CmdResult<()> {
     installlog::append(&app.config.log_dir, &line).map_err(err)
 }
 
-/// An export is writing a file (an update would cut it off).
+/// An export is writing a file, or clips are being squeezed (an update would cut it off).
 #[tauri::command]
 fn exporting(app: State<App>) -> bool {
-    app.exports.busy()
+    app.exports.busy() || app.squeeze.busy()
 }
 
 /// Started hidden to install an update and there's none: nothing more to do.
@@ -495,7 +536,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // The Windows folder picker (Settings → Storage).
         .plugin(tauri_plugin_dialog::init())
-        .manage(App { config, trash, exports: Exports::default() })
+        .manage(App { config, trash, exports: Exports::default(), squeeze: Squeezer::default() })
         .setup(move |app| {
             // Let the page load videos and thumbnails from these folders only.
             let scope = app.asset_protocol_scope();
@@ -548,6 +589,10 @@ fn main() {
             read_cached,
             start_export,
             cancel_export,
+            squeeze_plan,
+            start_squeeze,
+            cancel_squeeze,
+            squeeze_status,
             copy_to_clipboard,
             read_settings,
             write_settings,
@@ -560,6 +605,8 @@ fn main() {
             audio_levels,
             setup_needed,
             system_check,
+            pc_test,
+            run_pc_test,
             arriving,
             start_recorder,
             set_autostart,
@@ -580,6 +627,8 @@ fn main() {
     app.run(|app, event| {
         if let RunEvent::Exit = event {
             app.state::<App>().trash.finalize_all();
+            // No ffmpeg left squeezing on its own; the clip in progress stays as it was.
+            app.state::<App>().squeeze.cancel();
         }
     });
 }

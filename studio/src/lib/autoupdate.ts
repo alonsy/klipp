@@ -1,7 +1,8 @@
-// A test build installing the next one by itself (FB-35): the recorder starts
-// `klipp.exe --install-update` between games, without showing the window (or
-// passes it to the open window). The same signed download and quiet installer
-// as the update card, logged step by step in install.log for the developer.
+// Installing the next version by itself (FB-35; normal releases too since
+// IDEA-43): the recorder starts `klipp.exe --install-update` between games or
+// right after it starts, without showing the window (or passes it to the open
+// window). The same signed download and quiet installer as the update card,
+// logged step by step in install.log for the developer.
 import * as api from "./api";
 import { toast } from "./state.svelte";
 
@@ -12,18 +13,18 @@ export async function installByItself() {
   busy = true;
   try {
     if (await api.exporting()) {
-      // Updating closes Klipp, which would cut the export off. The recorder asks again later.
-      await api.installLog("asked to install the next test build, but an export is running; not now");
+      // Updating closes Klipp, which would cut the export (or squeeze) off. The recorder asks again later.
+      await api.installLog("asked to install the next version, but an export or a squeeze is running; not now");
       return;
     }
     const update = await api.checkUpdate(true);
     if (!update) {
-      await api.installLog("asked to install the next test build: nothing newer than this one");
+      await api.installLog("asked to install the next version: nothing newer than this one");
       await api.exitIfHidden();
       return;
     }
     await api.installLog(`installing ${update.version} by itself (this is ${update.currentVersion}): downloading`);
-    toast(`Installing test build ${update.version}. Klipp closes and opens again in a few seconds.`);
+    toast(`Installing ${update.version.includes("-test") ? "test build " : "Klipp "}${update.version}. Klipp closes and opens again in a few seconds.`);
     await update.downloadAndInstall((e) => {
       if (e.event === "Finished") api.installLog(`downloaded ${update.version}; checking its signature, then its installer takes over`);
     });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getVersion } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import ArrivingPill from "./lib/ArrivingPill.svelte";
@@ -11,7 +12,11 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
-  import { library, loadPrefs, openClip, openPage, recorder, refreshRecorder, reload, setArrivals, toast, ui } from "./lib/state.svelte";
+  import { library, loadPrefs, openClip, openPage, prefs, recorder, refreshRecorder, reload, setArrivals, setPref, toast, ui } from "./lib/state.svelte";
+
+  let version = $state("");
+  /** Setup, or the PC test after an update, is done: it isn't shown again for this version. */
+  const tested = () => version && setPref("pcTestShownFor", version);
 
   async function handle(request: api.OpenRequest) {
     if (request.page === "settings") openPage("settings");
@@ -32,16 +37,24 @@
   }
 
   onMount(() => {
-    loadPrefs();
+    const prefsLoaded = loadPrefs();
     refreshRecorder();
-    api.setupNeeded().then((needed) => {
+    const needed = api.setupNeeded();
+    needed.then((needed) => {
       recorder.autoRestart = !needed;
       if (needed) {
         ui.setupRerun = false;
         ui.page = "setup";
       }
     });
-    Promise.all([reload(), api.startupRequest()]).then(([, request]) => handle(request));
+    const request = api.startupRequest();
+    Promise.all([reload(), request]).then(([, request]) => handle(request));
+    // Updated from a version without the PC test (IDEA-45): it shows once,
+    // unless the window was opened for something else (a clip, an update).
+    Promise.all([needed, request, prefsLoaded, getVersion()]).then(([needed, request, , v]) => {
+      version = v;
+      if (!needed && !request.clip && !request.page && !prefs.pcTestShownFor) ui.page = "pctest";
+    });
     api.arriving().then(setArrivals, () => {});
     const offs = [api.onOpenRequest(handle), api.onCloseRequested(() => (ui.closeNotice = true)), api.onArrivals(setArrivals)];
     // Pick up clips saved while Klipp was in the background.
@@ -60,7 +73,9 @@
 </script>
 
 {#if ui.page === "setup"}
-  <Setup rerun={ui.setupRerun} />
+  <Setup rerun={ui.setupRerun} ondone={tested} />
+{:else if ui.page === "pctest"}
+  <Setup pcOnly ondone={tested} />
 {:else if ui.clip}
   {#key ui.clip.path}
     <Editor clip={ui.clip} />

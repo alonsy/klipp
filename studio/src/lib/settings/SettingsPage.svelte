@@ -3,12 +3,11 @@
   import Icon from "../Icon.svelte";
   import { ui } from "../state.svelte";
   import About from "./About.svelte";
+  import Advanced from "./Advanced.svelte";
   import Audio from "./Audio.svelte";
   import AutoClips from "./AutoClips.svelte";
   import General from "./General.svelte";
-  import Playback from "./Playback.svelte";
   import Recording from "./Recording.svelte";
-  import Sounds from "./Sounds.svelte";
   import Storage from "./Storage.svelte";
   import { load, store } from "./store.svelte";
   import Video from "./Video.svelte";
@@ -19,15 +18,16 @@
     { id: "video", name: "Video", icon: "film" },
     { id: "audio", name: "Audio", icon: "mic" },
     { id: "autoclips", name: "Auto-clips", icon: "bolt" },
-    { id: "sounds", name: "Sounds", icon: "bell" },
     { id: "storage", name: "Storage", icon: "drive" },
-    { id: "playback", name: "Playback", icon: "play" },
+    { id: "advanced", name: "Advanced", icon: "gear" },
     { id: "about", name: "About", icon: "info" },
   ];
+  // Pages that moved: the save sound is under Recording now, editor keys under About.
+  const moved: Record<string, string> = { sounds: "recording", playback: "about" };
 
   onMount(load);
 
-  let current = $derived(sections.find((s) => s.id === ui.section) ?? sections[0]);
+  let current = $derived(sections.find((s) => s.id === (moved[ui.section] ?? ui.section)) ?? sections[0]);
 </script>
 
 <section class="settings">
@@ -55,9 +55,8 @@
             {:else if current.id === "video"}<Video />
             {:else if current.id === "audio"}<Audio />
             {:else if current.id === "autoclips"}<AutoClips />
-            {:else if current.id === "sounds"}<Sounds />
             {:else if current.id === "storage"}<Storage />
-            {:else if current.id === "playback"}<Playback />
+            {:else if current.id === "advanced"}<Advanced />
             {:else}<About />{/if}
           </div>
         {/key}

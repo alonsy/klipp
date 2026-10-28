@@ -19,11 +19,12 @@ pub enum Channel {
 
 pub struct Updates {
     pub channel: Channel,
-    /// Test channel only: the log goes to the developer every 15 minutes.
+    /// The log goes to the developer every 15 minutes: on by default on the
+    /// test channel, off on normal releases unless switched on (D52).
     pub send_logs: bool,
     /// Look for updates by itself (klipp.dev first, with the version and the install number).
     pub checks: bool,
-    /// Test channel only: a newer test build installs itself between games (autoinstall).
+    /// A newer version installs itself between games or when Klipp starts (autoinstall).
     pub auto_install: bool,
 }
 
@@ -54,7 +55,7 @@ pub fn read() -> Updates {
         _ if is_test_build() => Channel::Test,
         _ => Channel::Production,
     };
-    let send_logs = file.as_ref().and_then(|v| v["sendLogs"].as_bool()).unwrap_or(true);
+    let send_logs = file.as_ref().and_then(|v| v["sendLogs"].as_bool()).unwrap_or(channel == Channel::Test);
     let checks = file.as_ref().and_then(|v| v["checks"].as_bool()).unwrap_or(true);
     let auto_install = file.as_ref().and_then(|v| v["autoInstall"].as_bool()).unwrap_or(true);
     Updates { channel, send_logs, checks, auto_install }

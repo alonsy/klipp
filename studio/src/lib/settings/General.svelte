@@ -3,14 +3,6 @@
   import { openPage, prefs, recorder, refreshRecorder, setPref, toast, ui } from "../state.svelte";
   import Field from "../ui/Field.svelte";
   import Toggle from "../ui/Toggle.svelte";
-  import { set, store } from "./store.svelte";
-
-  const s = $derived(store.s!);
-
-  /** Shows the pill on screen now, as it will look over a game. */
-  function preview(kind: "on" | "saved" | "failed") {
-    api.previewIndicator(kind).catch((e) => toast(`Couldn't show it: ${e}`));
-  }
 
   const accents = [
     ["#ff5a2e", "Ember"],
@@ -31,41 +23,13 @@
 </script>
 
 <div class="group">
-  <Field title="Start with Windows" hint="Recording starts in the tray when you sign in. The Klipp window opens only when you open it.">
+  <Field title="Start with Windows" hint="Klipp starts in the tray when you sign in, ready to record.">
     <Toggle checked={recorder.autostart} label="Start with Windows" onchange={autostart} />
   </Field>
-  <Field title="Explain closing the window" hint="Closing this window keeps Klipp recording in the tray. Shows a reminder when you close it.">
+  <Field title="Explain closing the window" hint="Closing this window keeps Klipp in the tray. Shows a reminder when you close it.">
     <Toggle checked={prefs.closeNotice} label="Explain closing the window" onchange={(v) => setPref("closeNotice", v)} />
   </Field>
-</div>
-
-<span class="label group-title">On screen</span>
-<div class="group">
-  <Field title="Show &ldquo;Auto-clips ON&rdquo;" hint="When a match starts in CS2, League of Legends or Rocket League, top right under the kill feed. Never in your clips, and it never takes focus from the game.">
-    <button class="ghost preview" onclick={() => preview("on")}>Preview</button>
-    <Toggle checked={s.indicators?.autoclips_on ?? false} label="Show Auto-clips ON" onchange={(v) => set(["indicators", "autoclips_on"], v)} />
-  </Field>
-  <Field title="Show when a clip saves" hint="A small mark when a clip is saved, and a red one when it can't be. Auto-clips follow &ldquo;Also for auto-clips&rdquo; in Sounds.">
-    <button class="ghost preview" onclick={() => preview("saved")}>Saved</button>
-    <button class="ghost preview" onclick={() => preview("failed")}>Failed</button>
-    <Toggle checked={s.indicators?.saves ?? false} label="Show when a clip saves" onchange={(v) => set(["indicators", "saves"], v)} />
-  </Field>
-</div>
-
-<div class="group">
-  <Field title="Run setup again" hint="Checks your PC again and walks through audio, video and saving.">
-    <button
-      onclick={() => {
-        ui.setupRerun = true;
-        openPage("setup");
-      }}>Run setup</button
-    >
-  </Field>
-</div>
-
-<span class="label group-title">Look</span>
-<div class="group">
-  <Field title="Accent color" hint="Used for highlights, multi-kills and the record dot.">
+  <Field title="Accent color">
     <div class="swatches" role="radiogroup" aria-label="Accent color">
       {#each accents as [color, name] (color)}
         <button
@@ -81,8 +45,19 @@
       {/each}
     </div>
   </Field>
-  <Field title="Group clips by session" hint="Clips from one sitting (and one map) are shown together, newest first.">
+  <Field title="Group clips by session" hint="Clips from one sitting (and one map) are shown together.">
     <Toggle checked={prefs.groupSessions} label="Group clips by session" onchange={(v) => setPref("groupSessions", v)} />
+  </Field>
+</div>
+
+<div class="group">
+  <Field title="Run setup diagnostics again" hint="Tests your PC again, shows what Klipp uses on it, and walks through audio, video and saving.">
+    <button
+      onclick={() => {
+        ui.setupRerun = true;
+        openPage("setup");
+      }}>Run again</button
+    >
   </Field>
 </div>
 
@@ -90,12 +65,6 @@
   .swatches {
     display: flex;
     gap: 10px;
-  }
-
-  .preview {
-    padding: 5px 10px;
-    font-size: 12.5px;
-    color: var(--muted);
   }
 
   .swatch {

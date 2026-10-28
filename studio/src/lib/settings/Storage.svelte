@@ -4,13 +4,63 @@
   import type { MovePlan } from "../api";
   import { size } from "../format";
   import Icon from "../Icon.svelte";
+  import SqueezeDialog from "../SqueezeDialog.svelte";
   import { library, reload, toast } from "../state.svelte";
+  import { onMount } from "svelte";
   import Field from "../ui/Field.svelte";
-  import { set } from "./store.svelte";
+  import Toggle from "../ui/Toggle.svelte";
+  import { set, store } from "./store.svelte";
+
+  const st = $derived(store.s!.storage);
+
+  // The drive the clips are on: how full it is, and Klipp's part of it.
+  let drive = $state<api.Drive | null>(null);
+  onMount(() => {
+    api.drives().then((list) => {
+      const dir = library.clipsDir.toUpperCase();
+      drive = list.find((d) => dir.startsWith(d.letter)) ?? null;
+    }, () => {});
+  });
+  const GB = 1e9;
+  const disk = $derived.by(() => {
+    if (!drive || drive.totalGb <= 0) return null;
+    const klipp = total / GB;
+    const free = drive.freeGb;
+    const other = Math.max(0, drive.totalGb - free - klipp);
+    const pct = (gb: number) => (gb / drive!.totalGb) * 100;
+    return { klipp, free, other, total: drive.totalGb, klippPct: pct(klipp), otherPct: pct(other) };
+  });
+
+  const AGES = [0, 7, 14, 30, 60, 90, 180, 365];
+  const SIZES = [0, 10, 25, 50, 100, 200, 500, 1000];
+
+  /** What the auto-delete settings would remove right now (the recorder does the deleting). */
+  const wouldDelete = $derived.by(() => {
+    const days = Number(st.delete_after_days ?? 30);
+    const maxGb = Number(st.max_gb ?? 0);
+    const oldest = [...library.clips].sort((a, b) => a.created - b.created);
+    const gone = new Set<string>();
+    if (days > 0) {
+      const before = Date.now() - days * 86_400_000;
+      for (const c of oldest) if (!c.favorite && c.created < before) gone.add(c.path);
+    }
+    if (maxGb > 0) {
+      let left = oldest.reduce((t, c) => t + (gone.has(c.path) ? 0 : c.sizeBytes), 0);
+      for (const c of oldest) {
+        if (left <= maxGb * GB) break;
+        if (c.favorite || gone.has(c.path)) continue;
+        gone.add(c.path);
+        left -= c.sizeBytes;
+      }
+    }
+    const clips = library.clips.filter((c) => gone.has(c.path));
+    return { n: clips.length, bytes: clips.reduce((t, c) => t + c.sizeBytes, 0) };
+  });
 
   // Changing the folder: pick it, then (if there are clips) move them or not.
   type Change = { kind: "ask"; from: string; to: string; plan: MovePlan } | { kind: "moving"; to: string; done: number; total: number };
   let change = $state<Change | null>(null);
+  let squeezing = $state(false);
 
   async function pick() {
     const to = await open({ directory: true, defaultPath: library.clipsDir, title: "Choose where Klipp saves clips" }).catch(() => null);
@@ -118,26 +168,70 @@
   {/if}
 </div>
 
-<span class="label group-title">Space used</span>
+<span class="label group-title">Space</span>
 <div class="group usage">
-  <div class="total"><span class="big mono">{size(total)}</span><span class="muted">{library.clips.length} clips</span></div>
-  <div class="stack">
-    {#each byGame as [game, g], i (game)}
-      <span class="seg" style="flex: {g.bytes}; opacity: {1 - i * 0.18}" title="{game} · {size(g.bytes)}"></span>
-    {/each}
-  </div>
+  {#if disk}
+    <div class="total">
+      <span class="big mono">{disk.free.toFixed(0)} GB</span><span class="muted">free on {drive?.letter} of {disk.total.toFixed(0)} GB</span>
+    </div>
+    <div class="disk" role="img" aria-label="Klipp's clips {size(total)}, other files {disk.other.toFixed(0)} GB, free {disk.free.toFixed(0)} GB">
+      <span class="klipp" style="width: {Math.max(disk.klippPct, 0.6)}%"></span>
+      <span class="other" style="width: {disk.otherPct}%"></span>
+    </div>
+    <div class="legend">
+      <span><i class="dot"></i>Klipp's clips <b class="mono">{size(total)}</b></span>
+      <span><i class="dot other"></i>Other files <b class="mono">{disk.other.toFixed(0)} GB</b></span>
+      <span><i class="dot free"></i>Free <b class="mono">{disk.free.toFixed(0)} GB</b></span>
+    </div>
+  {:else}
+    <div class="total"><span class="big mono">{size(total)}</span><span class="muted">{library.clips.length} clips</span></div>
+  {/if}
   <ul>
     {#each byGame as [game, g], i (game)}
       <li>
         <span class="dot" style="opacity: {1 - i * 0.18}"></span>
         <span class="game">{game}</span>
-        <span class="muted mono">{g.n} clips</span>
+        <span class="muted mono">{g.n === 1 ? "1 clip" : `${g.n} clips`}</span>
         <span class="mono">{size(g.bytes)}</span>
       </li>
     {/each}
   </ul>
 </div>
 
+<div class="group">
+  <Field title="Squeeze space" hint="Makes your clips smaller by re-encoding them. You pick how much quality to give up.">
+    <button onclick={() => (squeezing = true)} disabled={library.clips.length === 0}>Squeeze space…</button>
+  </Field>
+</div>
+<SqueezeDialog open={squeezing} onclose={() => (squeezing = false)} />
+
+<span class="label group-title">Delete old clips</span>
+<div class="group">
+  <Field title="Delete old clips by themselves" hint="Favorites are never deleted. Deleted clips go to the Recycle Bin.">
+    <Toggle checked={st.auto_delete ?? false} label="Delete old clips by themselves" onchange={(v) => set(["storage", "auto_delete"], v)} />
+  </Field>
+  {#if st.auto_delete}
+    <Field title="Older than">
+      <select value={Number(st.delete_after_days ?? 30)} onchange={(e) => set(["storage", "delete_after_days"], Number(e.currentTarget.value))} aria-label="Delete clips older than">
+        {#each AGES as d (d)}<option value={d}>{d === 0 ? "Any age" : d === 365 ? "1 year" : `${d} days`}</option>{/each}
+      </select>
+    </Field>
+    <Field title="When clips take more than" hint="The oldest go first.">
+      <select value={Number(st.max_gb ?? 0)} onchange={(e) => set(["storage", "max_gb"], Number(e.currentTarget.value))} aria-label="Delete the oldest clips when clips take more than">
+        {#each SIZES as g (g)}<option value={g}>{g === 0 ? "No limit" : g >= 1000 ? "1 TB" : `${g} GB`}</option>{/each}
+      </select>
+    </Field>
+    <p class="preview">
+      {#if Number(st.delete_after_days ?? 30) === 0 && Number(st.max_gb ?? 0) === 0}
+        Pick an age or a size, or nothing is deleted.
+      {:else if wouldDelete.n === 0}
+        Nothing would be deleted right now.
+      {:else}
+        Right now this deletes <b>{wouldDelete.n === 1 ? "1 clip" : `${wouldDelete.n} clips`}</b> ({size(wouldDelete.bytes)}), within the hour.
+      {/if}
+    </p>
+  {/if}
+</div>
 <style>
   .path {
     max-width: 280px;
@@ -213,18 +307,72 @@
     color: var(--muted);
   }
 
-  .stack {
+
+  .disk {
     display: flex;
-    gap: 3px;
-    height: 10px;
-    border-radius: 5px;
+    gap: 2px;
+    height: 12px;
+    border-radius: 6px;
     overflow: hidden;
+    background: color-mix(in srgb, var(--surface-3) 60%, transparent);
+  }
+
+  .disk span {
+    height: 100%;
+    transition: width 0.3s var(--ease);
+  }
+
+  .disk .klipp {
+    background: var(--accent);
+  }
+
+  .disk .other {
     background: var(--surface-3);
   }
 
-  .seg {
-    background: var(--accent);
-    min-width: 4px;
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .legend b {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .legend .dot {
+    display: inline-block;
+  }
+
+  .dot.other {
+    background: var(--surface-3);
+  }
+
+  .dot.free {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+
+  .preview {
+    margin: 0;
+    padding: 0 18px 14px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  .preview b {
+    color: var(--text);
+    font-weight: 600;
   }
 
   ul {

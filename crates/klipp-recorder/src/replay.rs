@@ -162,6 +162,11 @@ impl ReplayBuffer {
         self.entries.front().map_or(0, |e| self.write_pos - e.offset)
     }
 
+    /// Every byte of packet data pushed so far (held or not): the bitrate, over time.
+    pub fn written_bytes(&self) -> u64 {
+        self.write_pos
+    }
+
     /// Memory allocated for packet data, including spare chunks.
     pub fn allocated_bytes(&self) -> u64 {
         ((self.chunks.len() + self.spare.len()) * CHUNK_SIZE) as u64

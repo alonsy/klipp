@@ -5,51 +5,25 @@
   import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
   import { renderMarkdown } from "../markdown";
-  import { library, toast } from "../state.svelte";
-  import Field from "../ui/Field.svelte";
-  import Segmented from "../ui/Segmented.svelte";
-  import Toggle from "../ui/Toggle.svelte";
 
   let version = $state("");
-  let updates = $state<api.UpdateChannel | null>(null);
-  // What switching found: the update card (in the sidebar) offers it.
-  let channelNote = $state("");
+  let shortcuts = $state(false);
   onMount(() => {
     getVersion().then((v) => (version = v), () => {});
-    api.updateChannel().then((u) => (updates = u), () => {});
   });
 
-  const channels = [
-    ["production", "Normal releases"],
-    ["test", "Test builds"],
+  const keys = [
+    [["Space"], "Play / pause"],
+    [["I"], "Start the clip here"],
+    [["O"], "End the clip here"],
+    [["L"], "Loop the trimmed part"],
+    [["←", "→"], "Back / forward 1 s (Shift: 5 s)"],
+    [[",", "."], "Previous / next frame"],
+    [["[", "]"], "Previous / next event"],
+    [["Home", "End"], "Go to the start / end of the trim"],
+    [["F"], "Fullscreen"],
+    [["Esc"], "Back to clips"],
   ] as const;
-
-  async function setChannel(channel: api.UpdateChannel["channel"]) {
-    if (!updates) return;
-    try {
-      await api.setUpdateChannel({ ...updates, channel });
-      updates = { ...updates, channel };
-      channelNote = "Checking…";
-      const found = await api.checkUpdate(true);
-      channelNote = found
-        ? `${found.version.includes("-test") ? "Test build" : "Klipp"} ${found.version} is ready: install it from the card on the left.`
-        : "You have the newest one.";
-      // The sidebar's update card checks again and offers it.
-      window.dispatchEvent(new Event("klipp:check-update"));
-    } catch (e) {
-      channelNote = `Couldn't check for updates: ${e}`;
-    }
-  }
-
-  async function setFlag(change: Partial<Pick<api.UpdateChannel, "sendLogs" | "checks" | "autoInstall">>) {
-    if (!updates) return;
-    try {
-      await api.setUpdateChannel({ ...updates, ...change });
-      updates = { ...updates, ...change };
-    } catch (e) {
-      toast(`Couldn't save that: ${e}`);
-    }
-  }
 
   // Release notes ship with the app (releases/vX.Y.Z.md, the same text as the
   // GitHub release), so they read offline. They're here for the curious;
@@ -87,15 +61,6 @@
     notes.addEventListener("click", onClick);
     return () => notes.removeEventListener("click", onClick);
   });
-
-  async function copyDetails() {
-    try {
-      const ok = await api.copyText(await api.supportDetails());
-      toast(ok ? "Details copied. Paste them into your message or GitHub issue." : "Couldn't copy the details.");
-    } catch (e) {
-      toast(`Couldn't collect the details: ${e}`);
-    }
-  }
 </script>
 
 <div class="hero">
@@ -104,53 +69,19 @@
   {#if version}<span class="label">Version {version}</span>{/if}
 </div>
 
-{#if updates}
-  <span class="label group-title">Updates</span>
-  <div class="group">
-    <Field
-      title="Get"
-      hint={updates.channel === "test"
-        ? "Test builds come first, with fixes that still need checking on more PCs, and may have new problems. Normal releases come here too once they're newer."
-        : "Updates that are ready for everyone."}
-    >
-      <Segmented value={updates.channel} label="Updates" options={channels} onchange={setChannel} />
-    </Field>
-    {#if channelNote}<p class="channel-note">{channelNote}</p>{/if}
-    {#if updates.channel === "test"}
-      <Field
-        title="Send the log to the developer"
-        hint="Every 15 minutes, the new part of recorder.log goes to klipp.dev, so problems can be looked into without asking you for it. Your Windows user name is left out. No clips, pictures or settings are sent."
-      >
-        <Toggle checked={updates.sendLogs} label="Send the log to the developer" onchange={(v) => setFlag({ sendLogs: v })} />
-      </Field>
-      <Field
-        title="Install test builds by themselves"
-        hint="When a new test build is out, Klipp installs it once no game has been in front for a few minutes and no clip is being saved. Recording restarts, so the replay buffer starts over."
-      >
-        <Toggle checked={updates.autoInstall} label="Install test builds by themselves" onchange={(v) => setFlag({ autoInstall: v })} />
-      </Field>
-    {/if}
-    <Field
-      title="Check for updates"
-      hint="Once a day, and when this window opens, Klipp asks klipp.dev whether a newer version is out. It sends the version you have and a random install number, nothing else, so the developer can see how many copies are in use."
-    >
-      <Toggle checked={updates.checks} label="Check for updates" onchange={(v) => setFlag({ checks: v })} />
-    </Field>
-  </div>
-{/if}
-
+<span class="label group-title">Editor</span>
 <div class="group links">
-  <button class="ghost link" onclick={() => api.reveal(library.logDir)}><Icon name="folder" size={17} />Open the log folder<span>recorder.log, cs2.log</span></button>
-  <button class="ghost link" onclick={() => api.openFile(library.settingsPath)}><Icon name="sliders" size={17} />Open the settings file<span>settings.toml</span></button>
-  <button class="ghost link" onclick={() => api.reveal(library.clipsDir)}><Icon name="film" size={17} />Open the clips folder<span>{library.clipsDir}</span></button>
-</div>
-
-<span class="label group-title">Something wrong?</span>
-<div class="group links">
-  <button class="ghost link" onclick={copyDetails}><Icon name="copy" size={17} />Copy details<span>your PC, settings and the recent log</span></button>
-  <button class="ghost link" onclick={() => api.openFile("https://github.com/alonsy/klipp/issues/new/choose")}
-    ><Icon name="warning" size={17} />Report a problem or ask for something<span>GitHub</span></button
-  >
+  <button class="ghost link" aria-expanded={shortcuts} onclick={() => (shortcuts = !shortcuts)}><Icon name="keyboard" size={17} />See shortcuts<span>{shortcuts ? "Hide" : ""}</span></button>
+  {#if shortcuts}
+    <div class="keys">
+      {#each keys as [combo, what] (what)}
+        <div class="key">
+          <span class="combo">{#each combo as k (k)}<kbd>{k}</kbd>{/each}</span>
+          <span>{what}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <span class="label group-title">What's new</span>
@@ -209,6 +140,27 @@
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--faint);
+  }
+
+  .keys {
+    padding: 4px 12px 8px;
+  }
+
+  .key {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    align-items: center;
+    padding: 7px 0;
+    font-size: 13px;
+  }
+
+  .key + .key {
+    border-top: 1px solid var(--line);
+  }
+
+  .combo {
+    display: flex;
+    gap: 4px;
   }
 
   .notes {
@@ -300,13 +252,6 @@
   .md :global(code) {
     font-family: var(--font-mono);
     font-size: 12px;
-  }
-
-  .channel-note {
-    margin: 0;
-    padding: 0 18px 14px;
-    font-size: 12px;
-    color: var(--muted);
   }
 
   .credits {

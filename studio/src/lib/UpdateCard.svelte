@@ -6,7 +6,7 @@
   // card shows the download and then "Installing…", Klipp closes, and it
   // opens again on the new version. Updating restarts the recorder, which
   // clears the replay buffer, so the card says so, and warns while CS2 is running.
-  // On the test channel (Settings → About) test builds come here too, and
+  // On the test channel (Settings → Advanced) test builds come here too, and
   // leaving it offers the latest normal release.
   import type { Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";

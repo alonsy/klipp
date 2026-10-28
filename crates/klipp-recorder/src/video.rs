@@ -107,7 +107,7 @@ impl Drop for VideoPipeline {
 }
 
 /// Output size for an optional target height, keeping the aspect ratio and even dimensions.
-fn output_size(src_w: u32, src_h: u32, height: Option<u32>) -> (u32, u32) {
+pub(crate) fn output_size(src_w: u32, src_h: u32, height: Option<u32>) -> (u32, u32) {
     match height {
         Some(h) if h < src_h => {
             let w = (src_w as u64 * h as u64 / src_h as u64) as u32;

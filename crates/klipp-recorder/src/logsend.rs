@@ -1,8 +1,9 @@
-//! Test channel: sends the recorder's log to the developer (klipp.dev), so a
-//! tester doesn't have to be asked for it. Only on the test channel with
-//! "Send logs" on (Settings → About); every 15 minutes, only what's new since
-//! the last send, with the user's own folder name left out. Nothing else
-//! leaves the PC: no clips, no pictures, no settings file.
+//! Sends the recorder's log to the developer (klipp.dev), so a tester doesn't
+//! have to be asked for it. With "Send logs" on (Settings → Advanced; on by
+//! default on the test channel, off on normal releases, D52); every 15
+//! minutes, only what's new since the last send, with the user's own folder
+//! name left out. Nothing else leaves the PC: no clips, no pictures, no
+//! settings file.
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -31,11 +32,12 @@ pub fn start(log: Option<PathBuf>) {
         let mut last_error = String::new();
         loop {
             let updates = channel::read();
-            if updates.channel == Channel::Test && updates.send_logs {
+            if updates.send_logs {
                 match send_new(&log) {
                     Ok(bytes) => {
                         if bytes > 0 && !said {
-                            info!("log: sending the log to the developer (test channel; turn it off in Settings → About)");
+                            let why = if updates.channel == Channel::Test { "test channel" } else { "switched on" };
+                            info!("log: sending the log to the developer ({why}; turn it off in Settings → Advanced)");
                             said = true;
                         }
                         last_error.clear();

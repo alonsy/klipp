@@ -15,6 +15,20 @@
   let post = $state(Number(store.s!.auto_clip.post_roll_secs));
   let gap = $state(Number(store.s!.auto_clip.merge_gap_secs));
 
+  /** The game whose page is open, or null for the boxes. */
+  let open = $state<string | null>(null);
+
+  // How each game's moments reach Klipp, in a few words (no technical guide):
+  // the long form on a game's page, the short one on its box.
+  const EVENTS = "Recorded via game events · Anti-cheat safe";
+  const EVENTS_SHORT = "Game events · Anti-cheat safe";
+  const games = [
+    { id: "cs2", name: "Counter-Strike 2", icon: "headshot", how: EVENTS, short: EVENTS_SHORT, sees: "Headshots, multi-kills, clutches" },
+    { id: "league", name: "League of Legends", icon: "objective", how: EVENTS, short: EVENTS_SHORT, sees: "Multi-kills, first bloods, steals, aces" },
+    { id: "rocket_league", name: "Rocket League", icon: "goal", how: EVENTS, short: EVENTS_SHORT, sees: "Goals, epic saves, demolitions" },
+  ] as const;
+  const current = $derived(games.find((g) => g.id === open));
+
   const events = [
     ["headshot", "headshot", "Every headshot", "A clip for each headshot kill."],
     ["any_kill", "kill", "Every kill", "Lots of clips; good for practice sessions."],
@@ -41,134 +55,262 @@
   ] as const;
 </script>
 
-<div class="group">
-  <Field title="Save clips automatically" hint="Klipp watches supported games and saves the moments worth keeping, with no hotkey.">
-    <Toggle checked={a.enabled} label="Save clips automatically" onchange={(v) => set(["auto_clip", "enabled"], v)} />
-  </Field>
-</div>
+{#if current}
+  {@const on = s.auto_clip[current.id].enabled}
+  <button class="ghost back" onclick={() => (open = null)}><Icon name="back" size={15} />Auto-clips</button>
+  <div class="game-head">
+    <span class="mark"><Icon event={current.icon} size={26} /></span>
+    <div class="head-text">
+      <span class="game">{current.name}</span>
+      <span class="how"><Icon name="shield" size={13} />{current.how}</span>
+    </div>
+    <Toggle checked={on} label="{current.name} auto-clips" onchange={(v) => set(["auto_clip", current.id, "enabled"], v)} />
+  </div>
 
-<span class="label group-title">Timing</span>
-<div class="group" class:disabled={!a.enabled}>
-  <Field title="Keep before" hint="Seconds before the first event of a clip.">
-    <Slider min={0} max={30} value={pre} label="Keep before" oninput={(v) => (pre = v)} onchange={(v) => set(["auto_clip", "pre_roll_secs"], v)} />
-    <span class="value">{pre} s</span>
-  </Field>
-  <Field title="Keep after" hint="Seconds after the last one.">
-    <Slider min={0} max={15} value={post} label="Keep after" oninput={(v) => (post = v)} onchange={(v) => set(["auto_clip", "post_roll_secs"], v)} />
-    <span class="value">{post} s</span>
-  </Field>
-  <Field title="Join events within" hint="Events this close together become one clip: a 2K followed by a third kill is one 3K clip, not two.">
-    <Slider min={3} max={30} value={gap} label="Join events within" oninput={(v) => (gap = v)} onchange={(v) => set(["auto_clip", "merge_gap_secs"], v)} />
-    <span class="value">{gap} s</span>
-  </Field>
-</div>
+  {#if current.id === "cs2"}
+    <p class="note">Restart CS2 once after turning it on.</p>
+    <div class="group" class:disabled={!a.enabled || !on}>
+      <Field title="Multi-kills" hint="Clip kills in quick succession, starting from this many.">
+        <Segmented
+          value={cs2.multi_kill_min}
+          label="Multi-kills"
+          options={[[0, "Off"], [2, "2K"], [3, "3K"], [4, "4K"], [5, "ACE"]]}
+          onchange={(v) => set(["auto_clip", "cs2", "multi_kill_min"], v)}
+        />
+      </Field>
+      <Field
+        title="What counts as a 2K"
+        hint={cs2.multi_kill_mode === "round"
+          ? "Kills anywhere in the same round, like the scoreboard."
+          : `Kills within ${gap} s of each other: the highlight you'd actually want to watch.`}
+      >
+        <Segmented
+          value={cs2.multi_kill_mode}
+          label="What counts as a multi-kill"
+          options={[["streak", "Close together"], ["round", "Same round"]]}
+          onchange={(v) => set(["auto_clip", "cs2", "multi_kill_mode"], v)}
+        />
+      </Field>
+      {#each events as [key, icon, title, hint] (key)}
+        <Field {title} {hint}>
+          <span class="ev"><Icon event={icon} size={20} /></span>
+          <Toggle checked={cs2[key]} label={title} onchange={(v) => set(["auto_clip", "cs2", key], v)} />
+        </Field>
+      {/each}
+    </div>
+    <p class="note">Round wins, losses and defuses are marked on the timeline of every clip.</p>
+  {:else if current.id === "league"}
+    <div class="group" class:disabled={!a.enabled || !on}>
+      <Field title="Multi-kills" hint="Clip kills the game counts as a multi-kill, starting from this one.">
+        <Segmented
+          value={lol.multi_kill_min}
+          label="League multi-kills"
+          options={[[0, "Off"], [2, "Double"], [3, "Triple"], [4, "Quadra"], [5, "Penta"]]}
+          onchange={(v) => set(["auto_clip", "league", "multi_kill_min"], v)}
+        />
+      </Field>
+      {#each leagueEvents as [key, icon, title, hint] (key)}
+        <Field {title} {hint}>
+          <span class="ev"><Icon event={icon} size={20} /></span>
+          <Toggle checked={lol[key]} label={title} onchange={(v) => set(["auto_clip", "league", key], v)} />
+        </Field>
+      {/each}
+    </div>
+    <p class="note">Assists, objectives and the result are marked on the timeline of every clip.</p>
+  {:else if current.id === "rocket_league"}
+    <p class="note">Restart Rocket League once after turning it on.</p>
+    <div class="group" class:disabled={!a.enabled || !on}>
+      {#each rocketEvents as [key, icon, title, hint] (key)}
+        <Field {title} {hint}>
+          <span class="ev"><Icon event={icon} size={20} /></span>
+          <Toggle checked={rl[key]} label={title} onchange={(v) => set(["auto_clip", "rocket_league", key], v)} />
+        </Field>
+      {/each}
+    </div>
+    <p class="note">Assists, saves and the result are marked on the timeline of every clip.</p>
+  {/if}
+{:else}
+  {#if !a.enabled}
+    <div class="banner">
+      <Icon name="info" size={17} />
+      <span class="grow">Game auto-clips are off, so none of these games are clipped.</span>
+      <button onclick={() => set(["auto_clip", "enabled"], true)}>Turn on</button>
+    </div>
+  {/if}
 
-<div class="game-head">
-  <Icon event="kill" size={22} />
-  <span class="game">Counter-Strike 2</span>
-  <Toggle checked={cs2.enabled} label="Counter-Strike 2 auto-clips" onchange={(v) => set(["auto_clip", "cs2", "enabled"], v)} />
-</div>
-<p class="note">Uses Valve's Game State Integration, which is allowed with VAC. Restart CS2 once after turning it on.</p>
+  <div class="tiles" class:disabled={!a.enabled}>
+    {#each games as g (g.id)}
+      {@const on = s.auto_clip[g.id].enabled}
+      <div class="tile" class:on>
+        <button class="open" onclick={() => (open = g.id)} aria-label="{g.name} settings">
+          <span class="mark"><Icon event={g.icon} size={24} /></span>
+          <span class="name">{g.name}</span>
+          <span class="sees">{g.sees}</span>
+          <span class="how"><Icon name="shield" size={12} />{g.short}</span>
+        </button>
+        <span class="edit" aria-hidden="true"><Icon name="pencil" size={14} /></span>
+        <span class="switch"><Toggle checked={on} label="{g.name} auto-clips" onchange={(v) => set(["auto_clip", g.id, "enabled"], v)} /></span>
+      </div>
+    {/each}
+  </div>
 
-<div class="group" class:disabled={!a.enabled || !cs2.enabled}>
-  <Field title="Multi-kills" hint="Clip kills in quick succession, starting from this many.">
-    <Segmented
-      value={cs2.multi_kill_min}
-      label="Multi-kills"
-      options={[[0, "Off"], [2, "2K"], [3, "3K"], [4, "4K"], [5, "ACE"]]}
-      onchange={(v) => set(["auto_clip", "cs2", "multi_kill_min"], v)}
-    />
-  </Field>
-  <Field
-    title="What counts as a 2K"
-    hint={cs2.multi_kill_mode === "round"
-      ? "Kills anywhere in the same round, like the scoreboard. The clip covers the last kills that were close together."
-      : `Kills within ${gap} s of each other: the highlight you'd actually want to watch.`}
-  >
-    <Segmented
-      value={cs2.multi_kill_mode}
-      label="What counts as a multi-kill"
-      options={[["streak", "Close together"], ["round", "Same round"]]}
-      onchange={(v) => set(["auto_clip", "cs2", "multi_kill_mode"], v)}
-    />
-  </Field>
-  {#each events as [key, icon, title, hint] (key)}
-    <Field {title} {hint}>
-      <span class="ev"><Icon event={icon} size={20} /></span>
-      <Toggle checked={cs2[key]} label={title} onchange={(v) => set(["auto_clip", "cs2", key], v)} />
+  <span class="label group-title">Timing, for every game</span>
+  <div class="group" class:disabled={!a.enabled}>
+    <Field title="Keep before" hint="Seconds before the first moment of a clip.">
+      <Slider min={0} max={30} value={pre} label="Keep before" oninput={(v) => (pre = v)} onchange={(v) => set(["auto_clip", "pre_roll_secs"], v)} />
+      <span class="value">{pre} s</span>
     </Field>
-  {/each}
-</div>
-
-<p class="note">Round wins, losses and defuses are marked on the timeline of every clip, but never saved on their own.</p>
-
-<div class="game-head">
-  <Icon event="objective" size={22} />
-  <span class="game">League of Legends</span>
-  <Toggle checked={lol.enabled} label="League of Legends auto-clips" onchange={(v) => set(["auto_clip", "league", "enabled"], v)} />
-</div>
-<p class="note">Uses Riot's Live Client Data API, which League runs on this PC during a game. Nothing to install.</p>
-
-<div class="group" class:disabled={!a.enabled || !lol.enabled}>
-  <Field title="Multi-kills" hint="Clip kills the game counts as a multi-kill, starting from this one.">
-    <Segmented
-      value={lol.multi_kill_min}
-      label="League multi-kills"
-      options={[[0, "Off"], [2, "Double"], [3, "Triple"], [4, "Quadra"], [5, "Penta"]]}
-      onchange={(v) => set(["auto_clip", "league", "multi_kill_min"], v)}
-    />
-  </Field>
-  {#each leagueEvents as [key, icon, title, hint] (key)}
-    <Field {title} {hint}>
-      <span class="ev"><Icon event={icon} size={20} /></span>
-      <Toggle checked={lol[key]} label={title} onchange={(v) => set(["auto_clip", "league", key], v)} />
+    <Field title="Keep after" hint="Seconds after the last one.">
+      <Slider min={0} max={15} value={post} label="Keep after" oninput={(v) => (post = v)} onchange={(v) => set(["auto_clip", "post_roll_secs"], v)} />
+      <span class="value">{post} s</span>
     </Field>
-  {/each}
-</div>
-
-<p class="note">Assists, objectives and the result are marked on the timeline of every clip.</p>
-
-<div class="game-head">
-  <Icon event="goal" size={22} />
-  <span class="game">Rocket League</span>
-  <Toggle checked={rl.enabled} label="Rocket League auto-clips" onchange={(v) => set(["auto_clip", "rocket_league", "enabled"], v)} />
-</div>
-<p class="note">Uses Psyonix's Stats API, which Klipp turns on in Rocket League's settings file. Restart Rocket League once after turning it on.</p>
-
-<div class="group" class:disabled={!a.enabled || !rl.enabled}>
-  {#each rocketEvents as [key, icon, title, hint] (key)}
-    <Field {title} {hint}>
-      <span class="ev"><Icon event={icon} size={20} /></span>
-      <Toggle checked={rl[key]} label={title} onchange={(v) => set(["auto_clip", "rocket_league", key], v)} />
+    <Field title="Join moments within" hint="Moments this close together become one clip: a 2K followed by a third kill is one 3K clip.">
+      <Slider min={3} max={30} value={gap} label="Join moments within" oninput={(v) => (gap = v)} onchange={(v) => set(["auto_clip", "merge_gap_secs"], v)} />
+      <span class="value">{gap} s</span>
     </Field>
-  {/each}
-</div>
-
-<p class="note">Assists, saves and the result are marked on the timeline of every clip.</p>
-
-<span class="label group-title">Advanced</span>
-<div class="group">
-  <Field title="Timing log" hint="Writes every game update to cs2.log, to check how quickly events arrive.">
-    <Toggle checked={cs2.debug_log} label="Timing log" onchange={(v) => set(["auto_clip", "cs2", "debug_log"], v)} />
-  </Field>
-</div>
+  </div>
+{/if}
 
 <style>
   .disabled {
     opacity: 0.5;
   }
 
+  .grow {
+    flex: 1;
+  }
+
+  .banner {
+    align-items: center;
+  }
+
+  .banner button {
+    padding: 4px 12px;
+    font-size: 12.5px;
+  }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 12px;
+  }
+
+  .tile {
+    position: relative;
+    border-radius: var(--radius);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    transition:
+      border-color 0.15s,
+      transform 0.15s var(--ease);
+  }
+
+  .tile:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+    transform: translateY(-1px);
+  }
+
+  .open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    width: 100%;
+    padding: 16px 16px 14px;
+    border: none;
+    border-radius: inherit;
+    background: none;
+    text-align: left;
+  }
+
+  .open:hover {
+    background: none;
+  }
+
+  .mark {
+    display: inline-flex;
+    padding: 8px;
+    border-radius: 10px;
+    background: var(--surface-3);
+    opacity: 0.55;
+    transition: opacity 0.15s;
+  }
+
+  .tile.on .mark {
+    opacity: 1;
+  }
+
+  .name {
+    margin-top: 4px;
+    font-size: 14.5px;
+    font-weight: 650;
+    color: var(--text);
+  }
+
+  .sees {
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  .how {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--faint);
+  }
+
+  .switch {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+  }
+
+  .edit {
+    position: absolute;
+    top: 50px;
+    right: 16px;
+    color: var(--muted);
+    opacity: 0;
+    transition: opacity 0.15s;
+    pointer-events: none;
+  }
+
+  .tile:hover .edit {
+    opacity: 1;
+  }
+
+  .back {
+    align-self: flex-start;
+    gap: 6px;
+    padding: 4px 10px 4px 6px;
+    margin-bottom: -8px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
   .game-head {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 8px 4px -10px;
+  }
+
+  .head-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
   }
 
   .game {
-    flex: 1;
-    font-size: 16px;
+    font-size: 17px;
     font-weight: 650;
+  }
+
+  .game-head .mark {
+    opacity: 1;
   }
 
   .note {

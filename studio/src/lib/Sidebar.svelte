@@ -74,7 +74,7 @@
     <UpdateCard />
     <LowSpaceCard />
     {#if recorder.running && recorder.problem === "stopped"}
-      <button class="status warn" onclick={() => openPage("settings", "about")} title="About, logs">
+      <button class="status warn" onclick={() => openPage("settings", "advanced")} title="Advanced, logs">
         <span class="pulse"></span>
         <span class="status-text">
           <b>Restarting video…</b>
@@ -115,6 +115,14 @@
           {:else}
             <span>The game kept the graphics card too busy for {recorder.reduced.from}. Cap its frame rate; Klipp tries {recorder.reduced.from} again next start.</span>
           {/if}
+        </span>
+      </button>
+    {:else if recorder.running && !recorder.manual}
+      <button class="status" onclick={() => openPage("settings", "recording")} title="Recording settings">
+        <span class="pulse"></span>
+        <span class="status-text">
+          <b>Auto-clips only</b>
+          <span>Records while a game with auto-clips runs</span>
         </span>
       </button>
     {:else if recorder.running}
