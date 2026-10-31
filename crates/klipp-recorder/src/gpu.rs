@@ -92,11 +92,54 @@ impl Gpu {
         unsafe { self.adapter.as_ref()?.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info) }.ok()?;
         Some((info.CurrentUsage >> 20, info.Budget >> 20))
     }
+
+    /// Whether Windows lets this card schedule its own work ("hardware-accelerated
+    /// GPU scheduling"): (supported, on). It changes how the GPU priority above
+    /// plays out against a game, so the log says which it is.
+    pub fn hardware_scheduling(&self) -> Option<(bool, bool)> {
+        let luid = unsafe { self.adapter.as_ref()?.GetDesc1() }.ok()?.AdapterLuid;
+        let mut open = OpenAdapterFromLuid { luid, adapter: 0 };
+        if unsafe { D3DKMTOpenAdapterFromLuid(&mut open) } != 0 {
+            return None;
+        }
+        let mut caps: u32 = 0;
+        let query = QueryAdapterInfo {
+            adapter: open.adapter,
+            kind: KMTQAITYPE_WDDM_2_7_CAPS,
+            data: &mut caps as *mut u32 as *mut std::ffi::c_void,
+            size: std::mem::size_of::<u32>() as u32,
+        };
+        let status = unsafe { D3DKMTQueryAdapterInfo(&query) };
+        unsafe { D3DKMTCloseAdapter(&CloseAdapter { adapter: open.adapter }) };
+        // D3DKMT_WDDM_2_7_CAPS: bit 0 HwSchSupported, bit 1 HwSchEnabled.
+        (status == 0).then_some((caps & 1 != 0, caps & 2 != 0))
+    }
 }
+
+#[repr(C)]
+struct OpenAdapterFromLuid {
+    luid: windows::Win32::Foundation::LUID,
+    adapter: u32,
+}
+
+#[repr(C)]
+struct QueryAdapterInfo {
+    adapter: u32,
+    kind: u32,
+    data: *mut std::ffi::c_void,
+    size: u32,
+}
+
+#[repr(C)]
+struct CloseAdapter {
+    adapter: u32,
+}
+
+const KMTQAITYPE_WDDM_2_7_CAPS: u32 = 70;
 
 /// When a game fills the card's memory, Windows moves other processes'
 /// textures out to system memory and back again as they're used: every
-/// frame then waits on that, down to a few frames a second (FIX-17). Klipp's
+/// frame then waits on that, down to a few frames a second. Klipp's
 /// few textures are marked to go last.
 pub fn keep_resident(texture: &ID3D11Texture2D) {
     unsafe { texture.SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM.0) };
@@ -105,6 +148,9 @@ pub fn keep_resident(texture: &ID3D11Texture2D) {
 #[link(name = "gdi32")]
 unsafe extern "system" {
     fn D3DKMTSetProcessSchedulingPriorityClass(process: HANDLE, class: i32) -> i32;
+    fn D3DKMTOpenAdapterFromLuid(open: *mut OpenAdapterFromLuid) -> i32;
+    fn D3DKMTQueryAdapterInfo(query: *const QueryAdapterInfo) -> i32;
+    fn D3DKMTCloseAdapter(close: *const CloseAdapter) -> i32;
 }
 
 /// `D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH`. Realtime (5) needs admin rights; high doesn't.
@@ -112,7 +158,7 @@ const SCHEDULING_CLASS_HIGH: i32 = 4;
 
 /// The thread priority above only orders our own work. A game keeping the
 /// card at 100 % still made every conversion and encode wait behind its
-/// frames, down to a few frames a second (FIX-17). The process-wide GPU
+/// frames, down to a few frames a second. The process-wide GPU
 /// scheduling class puts all of Klipp's GPU work, the capture's copies too,
 /// ahead of normal processes. Once per process; best effort.
 fn raise_scheduling_class() {
@@ -168,6 +214,10 @@ fn adapter_for_monitor(monitor: HMONITOR) -> Result<IDXGIAdapter1> {
     bail!("no GPU drives the selected monitor")
 }
 
+/// Input views kept at most: one for a capture that copies into its own
+/// texture, a few for the light capture's rotating buffers.
+const MAX_INPUTS: usize = 8;
+
 /// Converts the captured BGRA frame into the encoder's NV12 textures using the
 /// GPU's fixed-function video processor. It scales too, so lower output
 /// resolutions cost nothing extra.
@@ -176,14 +226,16 @@ pub struct Converter {
     video_context: ID3D11VideoContext,
     enumerator: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
-    input: ID3D11VideoProcessorInputView,
+    /// Input views per source texture: the copying captures always read the
+    /// same one, the light capture Windows' few buffers in turn.
+    inputs: HashMap<usize, ID3D11VideoProcessorInputView>,
     /// Output views per (texture, array slice). The encoder's pool reuses a
     /// small, fixed set of textures, so this stays bounded.
     outputs: HashMap<(usize, u32), ID3D11VideoProcessorOutputView>,
 }
 
 impl Converter {
-    pub fn new(gpu: &Gpu, source: &ID3D11Texture2D, src: (u32, u32), dst: (u32, u32), fps: u32) -> Result<Self> {
+    pub fn new(gpu: &Gpu, src: (u32, u32), dst: (u32, u32), fps: u32) -> Result<Self> {
         let video_device: ID3D11VideoDevice = gpu.device.cast()?;
         let video_context: ID3D11VideoContext = gpu.context.cast()?;
         let rate = DXGI_RATIONAL { Numerator: fps, Denominator: 1 };
@@ -213,33 +265,23 @@ impl Converter {
             let picture = RECT { left: 0, top: 0, right: dst.0 as i32, bottom: dst.1 as i32 };
             video_context.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&picture));
 
-            let input_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
-                FourCC: 0,
-                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
-                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
-                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 },
-                },
-            };
-            let mut input = None;
-            video_device.CreateVideoProcessorInputView(source, &enumerator, &input_desc, Some(&mut input))?;
-            let input = input.context("CreateVideoProcessorInputView returned no view")?;
-
-            Ok(Self { video_device, video_context, enumerator, processor, input, outputs: HashMap::new() })
+            Ok(Self { video_device, video_context, enumerator, processor, inputs: HashMap::new(), outputs: HashMap::new() })
         }
     }
 
-    /// Renders the current source frame into `target` (array slice `slice`).
-    pub fn convert(&mut self, target: &ID3D11Texture2D, slice: u32) -> Result<()> {
+    /// Renders `source` (a captured frame) into `target` (array slice `slice`).
+    pub fn convert(&mut self, source: &ID3D11Texture2D, target: &ID3D11Texture2D, slice: u32) -> Result<()> {
         let key = (target.as_raw() as usize, slice);
         if !self.outputs.contains_key(&key) {
             let view = self.create_output_view(target, slice)?;
             self.outputs.insert(key, view);
         }
+        let input = self.input_view(source)?;
         let output = &self.outputs[&key];
 
         let stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),
-            pInputSurface: ManuallyDrop::new(Some(self.input.clone())),
+            pInputSurface: ManuallyDrop::new(Some(input)),
             ..Default::default()
         };
         let streams = [stream];
@@ -249,6 +291,29 @@ impl Converter {
         unsafe { ManuallyDrop::drop(&mut stream.pInputSurface) };
         result?;
         Ok(())
+    }
+
+    /// The input view for `source`, made the first time it's seen. A view
+    /// keeps its texture alive, so when Windows' buffers were replaced (the
+    /// capture started again) the old ones go once there are too many.
+    fn input_view(&mut self, source: &ID3D11Texture2D) -> Result<ID3D11VideoProcessorInputView> {
+        let key = source.as_raw() as usize;
+        if let Some(view) = self.inputs.get(&key) {
+            return Ok(view.clone());
+        }
+        if self.inputs.len() >= MAX_INPUTS {
+            self.inputs.clear();
+        }
+        let desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+            FourCC: 0,
+            ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 } },
+        };
+        let mut view = None;
+        unsafe { self.video_device.CreateVideoProcessorInputView(source, &self.enumerator, &desc, Some(&mut view))? };
+        let view = view.context("CreateVideoProcessorInputView returned no view")?;
+        self.inputs.insert(key, view.clone());
+        Ok(view)
     }
 
     fn create_output_view(&self, target: &ID3D11Texture2D, slice: u32) -> Result<ID3D11VideoProcessorOutputView> {

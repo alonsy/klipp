@@ -6,10 +6,13 @@
   // card shows the download and then "Installing…", Klipp closes, and it
   // opens again on the new version. Updating restarts the recorder, which
   // clears the replay buffer, so the card says so, and warns while CS2 is running.
-  import { check, type Update } from "@tauri-apps/plugin-updater";
+  // On the test channel (Settings → Advanced) test builds come here too, and
+  // leaving it offers the latest normal release.
+  import type { Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { enter, leave } from "./motion";
   import { recorder, toast } from "./state.svelte";
 
   const RECHECK_MS = 6 * 60 * 60 * 1000;
@@ -23,9 +26,10 @@
     // Development builds aren't released, so there's nothing to compare against.
     if (!import.meta.env.PROD) return;
     const look = () =>
-      check().then(
+      api.checkUpdate().then(
         (u) => {
-          if (u) update = u;
+          // A channel switch can take back an offer that hasn't started downloading.
+          if (progress == null) update = u;
         },
         () => {},
       );
@@ -47,11 +51,17 @@
     return () => clearInterval(timer);
   });
 
+  const isTest = (v: string) => v.includes("-test");
+  // From a test build to a normal release (often a lower number).
+  const leavingTests = $derived(update != null && isTest(update.currentVersion) && !isTest(update.version));
+
   async function install() {
     if (!update) return;
     let total = 0;
     let received = 0;
     progress = 0;
+    const version = update.version;
+    api.installLog(`updating to ${version} from the update card (this is ${update.currentVersion}): downloading`);
     try {
       await update.downloadAndInstall((e) => {
         if (e.event === "Started") total = e.data.contentLength ?? 0;
@@ -61,36 +71,41 @@
         } else if (e.event === "Finished") {
           progress = 1;
           installing = true;
+          api.installLog(`downloaded ${version}; checking its signature, then its installer takes over`);
         }
       });
     } catch (e) {
       progress = null;
       installing = false;
+      api.installLog(`updating to ${version} failed: ${e}`);
       toast(`Couldn't update: ${e}`);
     }
   }
 </script>
 
 {#if update}
-  <div class="update">
+  <div class="update" title={leavingTests ? `Back to normal releases, instead of test build ${update.currentVersion}.` : undefined} in:enter={{ y: 8 }} out:leave={{ y: 4 }}>
     <div class="head">
       <Icon name="bolt" size={16} />
-      <b>Klipp {update.version} is ready</b>
+      <b>{isTest(update.version) ? `Test build ${update.version}` : `Klipp ${update.version}`} is ready</b>
     </div>
+    {#if leavingTests && progress == null}
+      <p class="spare">Back to normal releases, instead of test build {update.currentVersion}.</p>
+    {/if}
     {#if progress == null}
       {#if inGame}
-        <span class="warn">CS2 is running. Updating restarts recording and clears the last {recorder.lengthSecs} seconds, so it's best after your match.</span>
-        <button onclick={install}>Update anyway</button>
+        <p class="warn">CS2 is running. Updating restarts recording and clears the last {recorder.lengthSecs} seconds.</p>
+        <button title="Best after your match" onclick={install}>Update anyway</button>
       {:else}
-        <span>Takes a few seconds. Recording restarts, so the last {recorder.lengthSecs} seconds are cleared.</span>
+        <p>Recording restarts, so the last {recorder.lengthSecs} seconds are cleared.</p>
         <button class="primary" onclick={install}>Update now</button>
       {/if}
     {:else if installing}
-      <span>Installing… Klipp closes and opens again in a few seconds.</span>
+      <p>Installing… Klipp closes and opens again in a few seconds.</p>
       <div class="bar"><div class="fill busy"></div></div>
     {:else}
-      <span class="mono">Downloading… {Math.round(progress * 100)}%</span>
-      <div class="bar"><div class="fill" style="width: {progress * 100}%"></div></div>
+      <p class="mono">Downloading… {Math.round(progress * 100)}%</p>
+      <div class="bar"><div class="fill" style="transform: scaleX({progress})"></div></div>
     {/if}
   </div>
 {/if}
@@ -99,42 +114,54 @@
   .update {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border-radius: 12px;
-    background: var(--accent-soft);
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    animation: in 0.3s var(--ease);
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border-radius: var(--r-sm);
+    background: var(--surface);
   }
 
   .head {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
+    font-size: var(--fs-control);
     color: var(--text);
+  }
+
+  .head b {
+    font-weight: 600;
   }
 
   .head :global(.icon) {
     color: var(--accent);
   }
 
-  span {
-    font-size: 12px;
+  p {
+    margin: 0;
+    font-size: var(--fs-xs);
+    line-height: 1.4;
     color: var(--muted);
   }
 
-  span.warn {
+  p.warn {
     color: var(--text);
   }
 
+  /* In a short window the games come first; this line stays in the card's tooltip. */
+  @media (max-height: 640px) {
+    p.spare {
+      display: none;
+    }
+  }
+
   button {
-    padding: 6px 12px;
-    font-size: 13px;
+    padding: 6px var(--sp-3);
+    font-size: var(--fs-control);
   }
 
   .bar {
     height: 4px;
-    border-radius: 2px;
+    border-radius: var(--r-full);
     background: var(--surface-3);
     overflow: hidden;
   }
@@ -142,7 +169,8 @@
   .fill {
     height: 100%;
     background: var(--accent);
-    transition: width 0.2s linear;
+    transform-origin: left;
+    transition: transform var(--dur) linear;
   }
 
   /* Installing has no progress to report: a sweep instead. */
@@ -157,13 +185,6 @@
     }
     to {
       transform: translateX(290%);
-    }
-  }
-
-  @keyframes in {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
     }
   }
 </style>

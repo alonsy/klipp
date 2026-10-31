@@ -31,7 +31,7 @@ No account, no ads, no telemetry. Your clips stay on your PC.
 ## Features
 
 - **Replay buffer.** The last 10 seconds to 5 minutes are always ready. **F8** (Alt+F8 on laptops) saves them in a blink, from anywhere, even in fullscreen games. Press it a few times in a row and you get one clip with every press marked.
-- **Auto-clips for Counter-Strike 2.** Headshots, 2K to aces, knife and Zeus kills are saved by themselves, using Valve's official Game State Integration. Nothing touches the game, so it's safe with VAC.
+- **Auto-clips for Counter-Strike 2, League of Legends and Rocket League.** Your best moments are saved by themselves, from what each game officially shares: Valve's Game State Integration, Riot's Live Client Data API and Psyonix's Stats API. Klipp never reads a game's memory or injects anything.
 - **Separate audio tracks.** Game, chat and mic can each be their own track, so a loud teammate can be turned down after the fact, or left out when you share. Without an audio mixer, Discord can get its own Chat track (experimental).
 - **A library that reads like a history.** Clips are filed per game and grouped into play sessions by time and map, with event icons and filters.
 - **An editor that stays out of the way.** Waveforms for every track, event markers, trim handles that snap, and trims and levels that are remembered per clip.
@@ -61,7 +61,7 @@ Run **Klipp-Setup.exe**. It installs for your user in a few seconds (no admin ne
 To build it yourself, see [docs/BUILDING.md](docs/BUILDING.md).
 ## Good to know
 
-- **CS2 auto-clips** need one restart of CS2 after installing, so it picks up Klipp's integration file.
+- **CS2 and Rocket League auto-clips** need one restart of the game after installing, so it picks up Klipp's settings.
 - **The save sound** stays out of your clips by itself. With SteelSeries Sonar, Voicemeeter or another audio mixer, play it on your headset instead (**Settings → Sounds**).
 - **Clips** go to `Videos\Klipp` by default, one folder per game. Klipp keeps its notes about them (markers, thumbnails, trims) in a hidden `.klipp` folder there.
 - **Uninstalling** (Windows Settings → Apps) removes Klipp and its startup entry. Your clips and settings stay.
@@ -85,3 +85,5 @@ The save and error sounds are by [@f.inancimen](https://instagram.com/f.inancime
 ## License
 
 [MIT](LICENSE). Klipp uses [FFmpeg](https://ffmpeg.org) under the LGPL 2.1, as separate libraries next to the program.
+
+Klipp isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.

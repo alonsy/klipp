@@ -7,9 +7,12 @@
 mod arrivals;
 mod audio;
 mod autoclip;
+mod autoinstall;
 mod autostart;
 mod cancel;
 mod capture;
+mod channel;
+mod cleanup;
 mod clock;
 mod cs2;
 mod cue;
@@ -19,22 +22,31 @@ mod events;
 mod games;
 mod gpu;
 mod hotkey;
+mod installlog;
+mod gpuload;
+mod league;
 mod log;
+mod logsend;
 mod mmcss;
 mod monitors;
 mod overlay;
+mod perfcheck;
+mod performance;
 mod probe;
 mod process_loopback;
 mod recorder;
 mod replay;
 mod revive;
+mod rocketleague;
 mod save;
 mod selftest;
 mod settings;
 mod state;
 mod stats;
+mod sysinfo;
 mod timeline;
 mod tray;
+mod tuning;
 mod update;
 mod video;
 mod watchdog;
@@ -336,13 +348,15 @@ fn open_path(path: &Path) {
 }
 
 /// Shows an indicator if the settings want this one: "Auto-clips ON" needs
-/// CS2 auto-clips on; auto-clip saves follow "also for auto-clips".
+/// auto-clips on for a game (only those report matches starting); "Clip
+/// saved" covers every save, and the ones that fail.
 fn indicate(indicators: &mut overlay::Indicators, s: &Settings, what: overlay::Indicator) {
     use overlay::{Indicator, Pill};
+    let a = &s.auto_clip;
+    let any_game = a.cs2.enabled || a.league.enabled || a.rocket_league.enabled;
     let pill = match what {
-        Indicator::MatchStarted if s.indicators.autoclips_on && s.auto_clip.enabled && s.auto_clip.cs2.enabled => Pill::AutoClipsOn,
-        Indicator::Saved if s.indicators.saves => Pill::Saved,
-        Indicator::AutoSaved if s.indicators.saves && s.cue.auto_clips => Pill::Saved,
+        Indicator::MatchStarted if s.indicators.autoclips_on && a.enabled && any_game => Pill::AutoClipsOn,
+        Indicator::Saved | Indicator::AutoSaved if s.indicators.saves => Pill::Saved,
         Indicator::Failed if s.indicators.saves => Pill::Failed,
         _ => return,
     };
@@ -359,6 +373,9 @@ const LEND_EVENT: PCWSTR = w!("Local\\KlippLendHotkey");
 const LEND_TIME: Duration = Duration::from_secs(15);
 
 fn tooltip(s: &Settings) -> String {
+    if !s.replay.manual {
+        return "Klipp\nRecords while a game with auto-clips runs".into();
+    }
     format!("Klipp\n{} saves the last {} s", s.replay.hotkey, s.replay.length_secs)
 }
 
@@ -383,6 +400,9 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         return Ok(());
     };
     klipp_media::init_logging();
+    if let Some(dir) = log_path.as_deref().and_then(Path::parent) {
+        installlog::import(dir);
+    }
 
     let settings_path = match args.settings {
         Some(p) => p,
@@ -392,6 +412,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         warning!("settings: {e:#}; using defaults until the file is fixed");
         Settings::default()
     });
+    // A new version checks the video settings before it records.
+    let settings = perfcheck::run(&settings_path, settings);
     MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
     overlay::set_main_thread();
     let mut indicators = overlay::Indicators::default();
@@ -402,7 +424,9 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let mut recorder = Recorder::start(settings)?;
     let mut tray = Tray::create(&tooltip(recorder.settings()))?;
+    tray.set_performance(recorder.settings().video.performance);
     update::start();
+    logsend::start(log_path.clone());
     let mut hotkey_ok = recorder.hotkey_registered();
     if !hotkey_ok {
         let hk = &recorder.settings().replay.hotkey;
@@ -416,17 +440,24 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let settings_timer = unsafe { SetTimer(None, 0, 1_000, None) };
     let games_timer = unsafe { SetTimer(None, 0, 2_000, None) };
     let autoclip_timer = unsafe { SetTimer(None, 0, 250, None) };
+    let saves = if recorder.settings().replay.manual {
+        format!("{} saves the last {} s", recorder.settings().replay.hotkey, recorder.settings().replay.length_secs)
+    } else {
+        "auto-clips only (manual clipping is off)".to_string()
+    };
     info!(
-        "recording: {} saves the last {} s to {} | settings {} | log {}",
-        recorder.settings().replay.hotkey,
-        recorder.settings().replay.length_secs,
+        "recording: {saves} to {} | settings {} | log {}",
         recorder.settings().storage.clips_dir().display(),
         settings_path.display(),
         log_path.as_deref().map_or("(none)".into(), |p| p.display().to_string())
     );
+    sysinfo::log_summary(recorder.settings());
 
     let mut prev = (Instant::now(), stats::sample());
+    let mut gpu_load = gpuload::GpuLoad::start();
     let mut pending_save = None;
+    let mut auto_install = autoinstall::AutoInstall::default();
+    let mut cleanup = cleanup::Cleanup::new();
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if !msg.hwnd.is_invalid() {
@@ -490,6 +521,18 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                         open_url("https://github.com/alonsy/klipp/releases/latest");
                     }
                 }
+                // Saved like any setting: the watcher applies it within a second.
+                Some(c @ (Command::PerformanceOff | Command::PerformanceOn | Command::PerformancePlus)) => {
+                    let mode = match c {
+                        Command::PerformanceOn => settings::Performance::On,
+                        Command::PerformancePlus => settings::Performance::Plus,
+                        _ => settings::Performance::Off,
+                    };
+                    match Settings::save_performance(&settings_path, mode) {
+                        Ok(()) => tray.set_performance(mode),
+                        Err(e) => warning!("performance mode: couldn't change the setting: {e:#}"),
+                    }
+                }
                 Some(Command::ReAddIcon) => tray.add(),
                 Some(Command::ThemeChanged) => tray.refresh_theme(),
                 Some(Command::Quit) => {
@@ -501,6 +544,15 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             WM_TIMER if msg.wParam.0 == stats_timer => {
                 log_stats(&recorder.shared, prev);
                 prev = (Instant::now(), stats::sample());
+                // What was in front and how busy the graphics card was: what clips are judged against.
+                let game = recorder.games.current(Duration::from_secs(60));
+                let gpu = gpu_load.as_mut().map_or("not measured".into(), |g| gpuload::describe(&g.sample()));
+                let step = if recorder.standby() {
+                    " | not recording until a game with auto-clips runs".to_string()
+                } else {
+                    recorder.performance_note().map(|n| format!(" | {n}")).unwrap_or_default()
+                };
+                info!("activity: {game} | graphics card {gpu}{step}");
             }
             WM_TIMER if msg.wParam.0 == settings_timer => {
                 if lend_event.is_some_and(|e| unsafe { WaitForSingleObject(e, 0) } == WAIT_OBJECT_0) {
@@ -511,6 +563,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                         Ok(s) if s != *recorder.settings() => {
                             recorder.apply(s);
                             tray.set_tooltip(&tooltip(recorder.settings()));
+                            tray.set_performance(recorder.settings().video.performance);
                             let ok = recorder.hotkey_registered();
                             if hotkey_ok && !ok {
                                 tray.notify("Hotkey unavailable", &format!("{} is used by another app.", recorder.settings().replay.hotkey));
@@ -527,9 +580,22 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             }
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());
+                recorder.tick_standby();
                 recorder.check_health();
+                recorder.tick_performance();
                 recorder.retry_hotkey();
                 hotkey_ok |= recorder.hotkey_registered();
+                let game = recorder.games.current(autoinstall::QUIET_FOR);
+                update::set_in_game(game != games::DESKTOP);
+                if let Some(version) = auto_install.due(update::available(), &game, recorder.saving()) {
+                    if open_studio(&["--install-update".as_ref()]) {
+                        info!("update: installing Klipp {version} by itself (no game for 3 minutes); the window's updater takes it from here");
+                    } else {
+                        warning!("update: couldn't start the window to install Klipp {version}");
+                    }
+                }
+                // Deleting old clips, when that's on: between games, on its own thread.
+                cleanup.tick(&recorder.settings().storage, &game, recorder.saving());
             }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {
@@ -580,7 +646,7 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
     };
     let steps = shared.steps.take();
     info!(
-        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | capture resizes {}, restarts {} | ms avg/max: frame {:.1}/{:.0}, convert {:.1}/{:.0}, encode {:.1}/{:.0} | VRAM {} of {} MB",
+        "stats: CPU {cpu:.2}% | RAM {:.1} MB, commit {:.1} MB | buffer {seconds:.1} s, {:.1} MB held / {:.1} MB allocated | frames {} (new {}, late {}, skipped {}) | captured {} | capture resizes {}, restarts {} | ms avg/max: frame {:.1}/{:.0}, convert {:.1}/{:.0}, encode {:.1}/{:.0} (send {:.1}/{:.0}, receive {:.1}/{:.0}) | encoder queue max {}, dropped {} | VRAM {} of {} MB",
         mb(s.private_working_set),
         mb(s.commit),
         held as f64 / 1048576.0,
@@ -589,6 +655,7 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         shared.new_frames.load(Ordering::Relaxed),
         shared.late_frames.load(Ordering::Relaxed),
         shared.skipped_ticks.load(Ordering::Relaxed),
+        shared.captured.load(Ordering::Relaxed),
         shared.capture_resizes.load(Ordering::Relaxed),
         shared.capture_restarts.load(Ordering::Relaxed),
         steps.wait.0,
@@ -597,6 +664,12 @@ fn log_stats(shared: &Shared, (prev_time, prev_stats): (Instant, stats::ProcessS
         steps.convert.1,
         steps.encode.0,
         steps.encode.1,
+        steps.send.0,
+        steps.send.1,
+        steps.receive.0,
+        steps.receive.1,
+        steps.queue_max,
+        steps.dropped,
         shared.vram_used_mb.load(Ordering::Relaxed),
         shared.vram_budget_mb.load(Ordering::Relaxed),
     );

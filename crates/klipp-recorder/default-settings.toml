@@ -7,6 +7,9 @@
 length_secs = 60
 # A key, with or without modifiers (Ctrl, Alt, Shift, Win), e.g. "F8", "Alt+F8", "Ctrl+Shift+S".
 hotkey = "F8"
+# Manual clipping. Off: no hotkey, and Klipp records only while a game it
+# auto-clips is running.
+manual = true
 
 [video]
 codec = "av1"            # "av1" (smaller files) or "h264" (plays everywhere)
@@ -17,9 +20,15 @@ max_bitrate_mbps = 40    # ceiling that keeps the buffer's RAM predictable
 monitor = ""             # "" records the main display; pick another in Settings → Video
 # "auto" uses Desktop Duplication on Windows 10 (where the other method draws a
 # yellow border around the screen) and Windows Graphics Capture on Windows 11.
-# "wgc" or "duplication" forces one.
+# "wgc" or "duplication" forces one; "light" does the least work on the
+# graphics card (for weaker ones).
 capture = "auto"
 gpu = ""                 # "" encodes on the card that drives the screen
+# Performance mode. "on": while a game keeps the graphics card busy, Klipp
+# records at a lower frame rate and bitrate, and goes back up when it has room.
+# "plus": that, and the lightest capture and encoding. "off": always as set above.
+performance = "off"
+fast_encoder = false     # the encoder's fastest preset (Performance+ always uses it)
 
 [audio]
 # One track per source, plus a "Mix" track of all of them that players use by default.
@@ -36,20 +45,24 @@ sources = [
 [storage]
 # Where clips are saved. Empty means your Videos folder (Videos\Klipp).
 clips_dir = ''
+# Delete old clips by itself. Favorites are never deleted.
+auto_delete = false
+delete_after_days = 30   # clips older than this go (0: no age limit)
+max_gb = 0               # the oldest go while clips take more than this (0: no limit)
 
 [cue]
 # Sound played when a clip is saved. Klipp keeps it out of your clips; with an
 # audio mixer like SteelSeries Sonar or Voicemeeter, play it on your headset.
-enabled = true
-auto_clips = true        # also play it when an auto-clip is saved
+enabled = true           # for clips saved with the hotkey
+auto_clips = true        # for auto-clips (a failed save sounds if either is on)
 volume = 0.6
 device = ""              # "" plays on the Windows default; your headset is best
 
 [indicators]
 # Small marks on top of the game, top right under the kill feed. They're never
 # in your clips and never take focus from the game.
-autoclips_on = false     # "Auto-clips ON" when a CS2 match starts
-saves = false            # a mark when a clip is saved (or can't be); auto-clips follow cue.auto_clips
+autoclips_on = false     # "Auto-clips ON" when a match starts in a game Klipp auto-clips
+saves = false            # a mark when a clip is saved (or can't be)
 
 [auto_clip]
 # Clips saved automatically from game events. Changes apply instantly.
@@ -73,8 +86,32 @@ mvp = false
 port = 52741             # local port CS2 sends game state to
 debug_log = false        # log every game-state update to cs2.log (for timing checks)
 
+[auto_clip.league]
+# Uses the Live Client Data API that League of Legends runs on this PC during
+# a game. Nothing to install. Multi-kills are counted the game's way.
+enabled = true
+multi_kill_min = 2       # clip double kills and up (5 = only pentakills, 0 = off)
+any_kill = false         # every kill
+first_blood = true       # your first blood
+death = false
+steal = true             # a Baron, Dragon or Herald you stole
+objective = false        # every objective you took part in (always marked)
+ace = true               # your team killed all five, with you in the fight
+
+[auto_clip.rocket_league]
+# Uses Psyonix's Stats API. Klipp turns it on in Rocket League's TAStatsAPI.ini
+# (restart Rocket League once after the first run).
+enabled = true
+goal = true              # your goals
+assist = false           # your assists (always marked)
+save = false             # your saves (always marked)
+epic_save = true
+demolition = true        # cars you demolished
+
 # Different timing for specific events. Event names: kill, headshot, 2k, 3k,
-# 4k, ace, multikill (all of 2k to ace), knife, zeus, death, mvp. For example:
+# 4k, ace, multikill (all of 2k to ace or penta), knife, zeus, death, mvp,
+# penta, firstblood, steal, objective, teamace, assist, goal, save, epicsave,
+# demolition. For example:
 # [auto_clip.timing.ace]
 # pre_roll_secs = 20
 

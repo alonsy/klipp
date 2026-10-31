@@ -18,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::autostart;
+use crate::settings::Performance;
 
 /// Thread message posted for menu choices; `wParam` is a `Command`.
 pub const WM_TRAY_COMMAND: u32 = WM_APP + 1;
@@ -41,6 +42,10 @@ pub enum Command {
     ThemeChanged = 10,
     /// A newer Klipp is out (see `update`).
     Update = 11,
+    /// Performance mode off, on or plus (see `settings::Performance`).
+    PerformanceOff = 12,
+    PerformanceOn = 13,
+    PerformancePlus = 14,
 }
 
 impl Command {
@@ -57,6 +62,9 @@ impl Command {
             Self::OpenLastClip,
             Self::ThemeChanged,
             Self::Update,
+            Self::PerformanceOff,
+            Self::PerformanceOn,
+            Self::PerformancePlus,
         ]
         .into_iter()
         .find(|c| *c as usize == w)
@@ -67,6 +75,8 @@ impl Command {
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 /// Whether recording is paused, for the menu's wording.
 static PAUSED: AtomicBool = AtomicBool::new(false);
+/// Performance mode's command, for the menu's tick.
+static PERFORMANCE: AtomicU32 = AtomicU32::new(Command::PerformanceOff as u32);
 
 pub struct Tray {
     hwnd: HWND,
@@ -134,6 +144,16 @@ impl Tray {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
         }
+    }
+
+    /// Which performance mode the menu ticks.
+    pub fn set_performance(&self, mode: Performance) {
+        let command = match mode {
+            Performance::Off => Command::PerformanceOff,
+            Performance::On => Command::PerformanceOn,
+            Performance::Plus => Command::PerformancePlus,
+        };
+        PERFORMANCE.store(command as u32, Ordering::Relaxed);
     }
 
     pub fn set_tooltip(&mut self, tooltip: &str) {
@@ -243,6 +263,18 @@ unsafe fn show_menu(hwnd: HWND) {
         item(Command::OpenLastClip, w!("Open last clip"), MF_ENABLED);
         item(Command::SaveClip, w!("Save clip now"), if paused { MF_GRAYED } else { MF_ENABLED });
         item(Command::TogglePause, if paused { w!("Resume recording") } else { w!("Pause recording") }, MF_ENABLED);
+        if let Ok(modes) = CreatePopupMenu() {
+            let now = PERFORMANCE.load(Ordering::Relaxed);
+            for (c, text) in [
+                (Command::PerformanceOff, w!("Off")),
+                (Command::PerformanceOn, w!("Performance: lighter in busy games")),
+                (Command::PerformancePlus, w!("Performance+: also the lightest capture")),
+            ] {
+                let check = if c as u32 == now { MF_CHECKED } else { MF_UNCHECKED };
+                let _ = AppendMenuW(modes, MF_STRING | check, c as usize, text);
+            }
+            let _ = AppendMenuW(menu, MF_POPUP, modes.0 as usize, w!("Performance mode"));
+        }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         item(Command::OpenClips, w!("Open clips folder"), MF_ENABLED);
         item(Command::OpenSettings, w!("Settings"), MF_ENABLED);

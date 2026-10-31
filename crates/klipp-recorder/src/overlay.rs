@@ -38,7 +38,7 @@ pub const WM_INDICATOR: u32 = WM_APP + 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Indicator {
-    /// A CS2 match started.
+    /// A match started in a game with auto-clips (CS2, League, Rocket League).
     MatchStarted = 1,
     /// A hotkey clip was saved.
     Saved = 2,

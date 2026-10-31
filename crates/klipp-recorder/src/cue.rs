@@ -27,6 +27,16 @@ pub enum Sound {
     Error,
 }
 
+/// Manual clips and auto-clips each have their own switch; a failed save
+/// sounds if either is on.
+fn wanted(cfg: &settings::Cue, sound: &Sound) -> bool {
+    match sound {
+        Sound::Saved => cfg.enabled,
+        Sound::AutoSaved => cfg.auto_clips,
+        Sound::Error => cfg.enabled || cfg.auto_clips,
+    }
+}
+
 /// Decoded audio, interleaved f32.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clip {
@@ -72,7 +82,7 @@ impl CuePlayer {
                     sound = s;
                 }
                 let cfg = shared.lock().unwrap().clone();
-                if !cfg.enabled || (matches!(sound, Sound::AutoSaved) && !cfg.auto_clips) {
+                if !wanted(&cfg, &sound) {
                     continue;
                 }
                 let clip = if matches!(sound, Sound::Error) { &error } else { &chime };

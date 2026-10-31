@@ -1,6 +1,8 @@
 // Calls into Klipp's Rust side.
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Update } from "@tauri-apps/plugin-updater";
+import type { PcSnapshot, PcTest } from "./pctest";
 
 export interface ClipEvent {
   kind: string;
@@ -95,7 +97,10 @@ export interface RecorderStatus {
   /** Another app holds the save key. */
   hotkeyTaken: boolean;
   /** Recording at a lower frame rate than set, because the graphics card couldn't keep up. */
-  reduced: { to: number; from: number } | null;
+  /** `learned`: earlier sessions made it the rate to start at (see the recorder's tuning). */
+  reduced: { to: number; from: number; learned?: boolean } | null;
+  /** The check after an update lowered the video settings ("1440p at 120 fps" → "1080p at 60 fps"). */
+  adjusted: { from: string; to: string; version: string } | null;
 }
 export const recorderStatus = () => invoke<RecorderStatus>("recorder_status");
 
@@ -154,18 +159,56 @@ export interface SystemCheck {
   /** Has a battery: setup suggests Alt+F8, which needs no Fn on laptop keyboards. */
   laptop: boolean;
   cs2: boolean;
+  /** The recording path measured at each candidate, best first (older recorders leave it out). */
+  performance?: { height: number; fps: number; codec: string; busy: number; smooth: boolean }[];
+  /** The best candidate that runs smoothly with room left for a game. */
+  recommended?: { height: number; fps: number } | null;
+  /** League of Legends is installed; Rocket League has run on this PC. */
+  league?: boolean;
+  rocketLeague?: boolean;
   error: string | null;
   clipsDir: string;
   freeGb: number | null;
+  /** The PC before the check (newer recorders, which also measure what each run cost: see PcTest). */
+  system?: PcSnapshot;
 }
 
 /** "Copy details": the PC, setup's last check, key settings and the end of the log. */
 export const supportDetails = () => invoke<string>("support_details");
 
+/** Normal releases ("production"), or test builds too ("test"); updates.json. */
+export interface UpdateChannel {
+  channel: "production" | "test";
+  /** Test channel: the recorder sends its log to the developer. */
+  sendLogs: boolean;
+  /** Look for updates by itself (klipp.dev, with the version and a random install number). */
+  checks: boolean;
+  /** Test channel: a newer test build installs itself between games. */
+  autoInstall: boolean;
+  /** This copy is a test build ("0.3.5-test.1"). */
+  testBuild: boolean;
+}
+export const updateChannel = () => invoke<UpdateChannel>("update_channel");
+export const setUpdateChannel = (u: Pick<UpdateChannel, "channel" | "sendLogs" | "checks" | "autoInstall">) => invoke<void>("set_update_channel", u);
+/** A line for install.log, which the recorder sends with its log: what updating did. */
+export const installLog = (line: string) => invoke<void>("install_log", { line }).catch(() => {});
+/** An export is writing a file, or clips are being squeezed. */
+export const exporting = () => invoke<boolean>("exporting");
+/** Quits if the window was never shown (started only to install an update). */
+export const exitIfHidden = () => invoke<void>("exit_if_hidden");
+
+/** The update the chosen channel offers, ready to download and install. `whenOff`: check even with checks off (asked for). */
+export async function checkUpdate(whenOff = false): Promise<Update | null> {
+  const { channel, checks } = await updateChannel();
+  if (!checks && !whenOff) return null;
+  const metadata = await invoke<ConstructorParameters<typeof Update>[0] | null>("check_update", { channel });
+  return metadata ? new Update(metadata) : null;
+}
+
 /** Plays the save sound (or the error sound) once, as a real save would. */
 export const playSound = (device: string, volume: number, error = false) => invoke<void>("play_sound", { device, volume, error });
 
-/** Flashes an on-screen indicator now (Settings → General → On screen). */
+/** Flashes an on-screen indicator now (Settings → Recording → Visual). */
 export const previewIndicator = (kind: "on" | "saved" | "failed") => invoke<void>("preview_indicator", { kind });
 
 /** CS2 is running (updating now would clear the replay buffer mid-game). */
@@ -208,6 +251,10 @@ export async function copyText(text: string): Promise<boolean> {
 /** A fresh install that still needs setup. */
 export const setupNeeded = () => invoke<boolean>("setup_needed");
 export const systemCheck = () => invoke<SystemCheck>("system_check");
+/** The last PC test (what recording costs this PC; setup runs it), or null. */
+export const pcTest = () => invoke<PcTest | null>("pc_test");
+/** Runs the PC test again (about 20 seconds; Klipp keeps recording meanwhile) and returns it. */
+export const runPcTest = () => invoke<PcTest>("run_pc_test");
 export const startRecorder = () => invoke<void>("start_recorder");
 export const setAutostart = (enabled: boolean) => invoke<void>("set_autostart", { enabled });
 /** Closes the window (the recorder keeps going). */
@@ -268,6 +315,87 @@ export async function onExport(handlers: ExportEvents): Promise<() => void> {
       handlers.done(e.payload.id, e.payload.path, e.payload.sizeBytes),
     ),
     listen<{ id: number; error: string }>("export-failed", (e) => handlers.failed(e.payload.id, e.payload.error)),
+  ]);
+  return () => offs.forEach((off) => off());
+}
+
+/** Squeeze Space: how hard clips are re-encoded, mildest first. */
+export type SqueezeLevel = "low" | "mid" | "high" | "ultra";
+
+/** What squeezing every clip at one level would do. */
+export interface SqueezeLevelPlan {
+  level: SqueezeLevel;
+  /** What it does (0: unchanged): videos taller than this are scaled down, faster ones slowed to this. */
+  maxHeight: number;
+  maxFps: number;
+  /** Clips it would squeeze. */
+  clips: number;
+  /** Skipped: squeezed before as hard or harder, or twice already. */
+  already: number;
+  /** Skipped: small enough already. */
+  small: number;
+  /** What those clips take now, and about what they'd take after. */
+  bytesBefore: number;
+  bytesAfter: number;
+}
+
+export interface SqueezePlan {
+  /** The graphics card encoder ("av1_nvenc"), or null when this PC has none. */
+  encoder: string | null;
+  /** Clips in scope and what they take. */
+  clips: number;
+  bytes: number;
+  /** Left out: favorites (when skipped), clips saved in the last 10 minutes, files that can't be read. */
+  favorites: number;
+  recent: number;
+  unreadable: number;
+  /** Low, Mid, High, Ultra. */
+  levels: SqueezeLevelPlan[];
+}
+
+export interface SqueezeProgress {
+  level: SqueezeLevel;
+  /** Clips finished and to do in all. */
+  done: number;
+  total: number;
+  /** The clip being squeezed (file name without extension). */
+  current: string;
+  /** The whole run, 0 to 1. */
+  fraction: number;
+  savedBytes: number;
+}
+
+export interface SqueezeSummary {
+  level: SqueezeLevel | null;
+  squeezed: number;
+  skipped: number;
+  failed: number;
+  savedBytes: number;
+  cancelled: boolean;
+  /** Why it couldn't start at all. */
+  error: string | null;
+  /** "<clip>: <why>" for the first few clips that failed (they stay as they were). */
+  errors: string[];
+}
+
+export const squeezePlan = (skipFavorites: boolean) => invoke<SqueezePlan>("squeeze_plan", { skipFavorites });
+/** Starts squeezing in the background; follow it with `onSqueeze`. */
+export const startSqueeze = (level: SqueezeLevel, skipFavorites: boolean) => invoke<void>("start_squeeze", { level, skipFavorites });
+/** Stops after putting the clip in progress back as it was. */
+export const cancelSqueeze = () => invoke<void>("cancel_squeeze");
+/** Where a running squeeze is, or null when none runs. */
+export const squeezeStatus = () => invoke<SqueezeProgress | null>("squeeze_status");
+
+export interface SqueezeEvents {
+  progress: (p: SqueezeProgress) => void;
+  done: (s: SqueezeSummary) => void;
+}
+
+/** Subscribes to squeeze events; returns a function that unsubscribes. */
+export async function onSqueeze(handlers: SqueezeEvents): Promise<() => void> {
+  const offs: UnlistenFn[] = await Promise.all([
+    listen<SqueezeProgress>("squeeze-progress", (e) => handlers.progress(e.payload)),
+    listen<SqueezeSummary>("squeeze-done", (e) => handlers.done(e.payload)),
   ]);
   return () => offs.forEach((off) => off());
 }

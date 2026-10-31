@@ -6,10 +6,12 @@
 //! and closing this leaves it recording.
 
 mod arrivals;
+mod channel;
 mod clipboard;
 mod config;
 mod export;
 mod ffmpeg;
+mod installlog;
 mod library;
 mod lifecycle;
 mod meta;
@@ -17,6 +19,7 @@ mod prefs;
 mod relocate;
 mod settings;
 mod setup;
+mod squeeze;
 mod support;
 mod trash;
 
@@ -30,12 +33,14 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use crate::config::Config;
 use crate::export::{ExportRequest, Exports};
 use crate::library::Clip;
+use crate::squeeze::Squeezer;
 use crate::trash::Trash;
 
 struct App {
     config: Config,
     trash: Trash,
     exports: Exports,
+    squeeze: Squeezer,
 }
 
 #[derive(Serialize)]
@@ -48,13 +53,17 @@ struct Paths {
 
 /// What Klipp was opened for: `klipp.exe <clip.mp4>` opens the clip in the
 /// editor, `klipp.exe --settings` opens settings, `klipp.exe --update` (the
-/// tray's "Update to Klipp x.y.z") checks for the update right away.
+/// tray's "Update to Klipp x.y.z") checks for the update right away, and
+/// `klipp.exe --install-update` (a test build's recorder, between games)
+/// installs it without showing the window.
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct OpenRequest {
     clip: Option<String>,
     page: Option<String>,
 }
+
+const INSTALL_UPDATE: &str = "--install-update";
 
 impl OpenRequest {
     fn from_args(args: impl IntoIterator<Item = String>) -> Self {
@@ -64,6 +73,8 @@ impl OpenRequest {
                 r.page = Some("settings".into());
             } else if a == "--update" {
                 r.page = Some("update".into());
+            } else if a == INSTALL_UPDATE {
+                r.page = Some("install-update".into());
             } else if a.to_lowercase().ends_with(".mp4") && PathBuf::from(&a).is_file() {
                 r.clip = Some(a);
             }
@@ -86,6 +97,9 @@ struct RecorderStatus {
     /// Recording at a lower frame rate than set ({ to, from }), because the
     /// graphics card couldn't keep up; until the recorder restarts.
     reduced: Option<Value>,
+    /// What the check after an update changed in the video settings
+    /// ({ from, to, version }), because the saved ones weren't smooth.
+    adjusted: Option<Value>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -188,6 +202,31 @@ fn cancel_export(app: State<App>, id: u64) {
     app.exports.cancel(id);
 }
 
+/// Squeeze Space: what each level would do to the clips (see `squeeze`).
+#[tauri::command]
+async fn squeeze_plan(skip_favorites: bool) -> CmdResult<squeeze::Plan> {
+    let dir = config::load().clips_dir;
+    blocking(move || Ok(squeeze::plan(&dir, skip_favorites))).await
+}
+
+/// Starts squeezing; progress and the end arrive as "squeeze-progress" and "squeeze-done" events.
+#[tauri::command]
+fn start_squeeze(handle: AppHandle, app: State<App>, level: squeeze::Level, skip_favorites: bool) -> CmdResult<()> {
+    app.squeeze.start(handle, config::load().clips_dir, level, skip_favorites).map_err(err)
+}
+
+/// Stops after the clip in progress is put back as it was.
+#[tauri::command]
+fn cancel_squeeze(app: State<App>) {
+    app.squeeze.cancel();
+}
+
+/// Where a running squeeze is, for a dialog opened midway (`null` when none runs).
+#[tauri::command]
+fn squeeze_status(app: State<App>) -> Option<squeeze::Progress> {
+    app.squeeze.status()
+}
+
 #[tauri::command]
 fn copy_to_clipboard(path: String) -> CmdResult<()> {
     clipboard::copy_file(&PathBuf::from(path)).map_err(err)
@@ -224,11 +263,24 @@ fn setup_needed(app: State<App>) -> bool {
     setup::needed(&app.config.settings_path)
 }
 
-/// What this PC can record, for the setup screens.
+/// What this PC can record, for the setup screens (also saves the PC test).
 #[tauri::command]
-async fn system_check() -> CmdResult<Value> {
-    let config = config::load();
-    blocking(move || setup::system_check(&config.clips_dir, &config.log_dir)).await
+async fn system_check(handle: AppHandle) -> CmdResult<Value> {
+    let (config, version) = (config::load(), handle.package_info().version.to_string());
+    blocking(move || setup::system_check(&config.clips_dir, &config.log_dir, &version)).await
+}
+
+/// The last PC test (what recording costs this PC), or null if none was run.
+#[tauri::command]
+fn pc_test() -> Option<Value> {
+    setup::last_pc_test(&config::load().log_dir)
+}
+
+/// Runs the PC test again (about 20 seconds) and returns it.
+#[tauri::command]
+async fn run_pc_test(handle: AppHandle) -> CmdResult<Value> {
+    let (config, version) = (config::load(), handle.package_info().version.to_string());
+    blocking(move || setup::run_pc_test(&config.clips_dir, &config.log_dir, &version)).await
 }
 
 /// The PC's drives, for setup's "Save clips on".
@@ -262,7 +314,7 @@ fn play_sound(device: String, volume: f64, error: bool) -> CmdResult<()> {
     lifecycle::play_sound(&device, volume, error).map_err(err)
 }
 
-/// Flashes an on-screen indicator (Settings → General → On screen).
+/// Flashes an on-screen indicator (Settings → Recording → Visual).
 #[tauri::command]
 fn preview_indicator(kind: String) -> CmdResult<()> {
     lifecycle::preview_indicator(&kind).map_err(err)
@@ -323,7 +375,13 @@ fn recorder_status() -> RecorderStatus {
     let problem = health["problem"].as_str().map(String::from);
     let reduced = health["reduced"].is_object().then(|| health["reduced"].clone());
     let hotkey_taken = report("hotkey.json")["works"] == false;
-    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken, reduced }
+    let tuning = report("tuning.json");
+    let adjusted = tuning["adjusted"].is_object().then(|| {
+        let mut a = tuning["adjusted"].clone();
+        a["version"] = tuning["version"].clone();
+        a
+    });
+    RecorderStatus { running, autostart: lifecycle::autostart_enabled(), problem, hotkey_taken, reduced, adjusted }
 }
 
 /// Setup's Test button, step 1: a running recorder lends its save key.
@@ -352,6 +410,43 @@ async fn audio_levels(handle: AppHandle) -> CmdResult<()> {
 #[tauri::command]
 async fn test_hotkey(key: String) -> CmdResult<String> {
     blocking(move || lifecycle::test_hotkey(&key)).await
+}
+
+#[tauri::command]
+fn update_channel(handle: AppHandle, app: State<App>) -> channel::Updates {
+    channel::read(&app.config.settings_dir(), &handle.package_info().version.to_string())
+}
+
+#[tauri::command]
+fn set_update_channel(handle: AppHandle, app: State<App>, channel: String, send_logs: bool, checks: bool, auto_install: bool) -> CmdResult<()> {
+    channel::write(&app.config.settings_dir(), &handle.package_info().version.to_string(), &channel, send_logs, checks, auto_install).map_err(err)
+}
+
+/// A line for install.log (see `installlog`): what the updater is doing.
+#[tauri::command]
+fn install_log(app: State<App>, line: String) -> CmdResult<()> {
+    installlog::append(&app.config.log_dir, &line).map_err(err)
+}
+
+/// An export is writing a file, or clips are being squeezed (an update would cut it off).
+#[tauri::command]
+fn exporting(app: State<App>) -> bool {
+    app.exports.busy() || app.squeeze.busy()
+}
+
+/// Started hidden to install an update and there's none: nothing more to do.
+#[tauri::command]
+fn exit_if_hidden(handle: AppHandle) {
+    let visible = handle.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(true));
+    if !visible {
+        handle.exit(0);
+    }
+}
+
+/// The update the channel offers (see `channel`), for the window's update card.
+#[tauri::command]
+async fn check_update(webview: tauri::Webview, app: State<'_, App>, channel: String) -> CmdResult<Option<channel::Metadata>> {
+    channel::check(&webview, &app.config.settings_dir(), &channel).await.map_err(err)
 }
 
 #[tauri::command]
@@ -431,14 +526,17 @@ fn main() {
         // Opening Klipp again (Start menu, tray) focuses this window instead
         // and passes on what it was opened for.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            show_main(app);
+            // Installing an update between games doesn't bring the window to the front.
+            if !args.iter().any(|a| a == INSTALL_UPDATE) {
+                show_main(app);
+            }
             let _ = app.emit("open-request", OpenRequest::from_args(args.into_iter().skip(1)));
         }))
         // New versions from GitHub releases, signed with Klipp's key (see tauri.conf.json).
         .plugin(tauri_plugin_updater::Builder::new().build())
         // The Windows folder picker (Settings → Storage).
         .plugin(tauri_plugin_dialog::init())
-        .manage(App { config, trash, exports: Exports::default() })
+        .manage(App { config, trash, exports: Exports::default(), squeeze: Squeezer::default() })
         .setup(move |app| {
             // Let the page load videos and thumbnails from these folders only.
             let scope = app.asset_protocol_scope();
@@ -449,6 +547,10 @@ fn main() {
             arrivals::watch(app.handle().clone());
             if let Some(w) = app.get_webview_window("main") {
                 neutral_border(&w);
+                // Hidden until here (tauri.conf.json), and for good when only installing an update.
+                if !std::env::args().any(|a| a == INSTALL_UPDATE) {
+                    let _ = w.show();
+                }
             }
             Ok(())
         })
@@ -466,6 +568,12 @@ fn main() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            update_channel,
+            set_update_channel,
+            install_log,
+            exporting,
+            exit_if_hidden,
+            check_update,
             paths,
             startup_request,
             list_clips,
@@ -481,6 +589,10 @@ fn main() {
             read_cached,
             start_export,
             cancel_export,
+            squeeze_plan,
+            start_squeeze,
+            cancel_squeeze,
+            squeeze_status,
             copy_to_clipboard,
             read_settings,
             write_settings,
@@ -493,6 +605,8 @@ fn main() {
             audio_levels,
             setup_needed,
             system_check,
+            pc_test,
+            run_pc_test,
             arriving,
             start_recorder,
             set_autostart,
@@ -513,6 +627,8 @@ fn main() {
     app.run(|app, event| {
         if let RunEvent::Exit = event {
             app.state::<App>().trash.finalize_all();
+            // No ffmpeg left squeezing on its own; the clip in progress stays as it was.
+            app.state::<App>().squeeze.cancel();
         }
     });
 }

@@ -4,7 +4,7 @@ import type { Arrival, Clip } from "./api";
 
 export type Kind = "all" | "auto" | "manual" | "favorites";
 export type Sort = "newest" | "oldest" | "longest" | "largest";
-export type Page = "clips" | "settings" | "setup";
+export type Page = "clips" | "settings" | "setup" | "pctest";
 
 export const library = $state({
   clips: [] as Clip[],
@@ -34,13 +34,22 @@ export const ui = $state({
   closeNotice: false,
   /** Setup was opened from Settings (it can be cancelled), not on a fresh install. */
   setupRerun: false,
+  /** The clip whose thumbnail grows into the player and back (see `isHero`). */
+  hero: null as string | null,
 });
+
+/** For the shell transition: this clip's picture carries over between library and editor. */
+export const isHero = (path: string) => ui.hero === path;
+
+/**
+ * Thumbnails made after the list was read aren't in `clip.thumb` yet. The editor
+ * needs them at once, for the picture the hero grows into.
+ */
+export const shownThumbs = new Map<string, string>();
 
 /** The studio's own preferences, with defaults. */
 export const prefs = $state({
   closeNotice: true,
-  autoplay: true,
-  loop: false,
   accent: "#ff5a2e",
   groupSessions: true,
   /** The editor's listening volume (not the clip's levels). */
@@ -49,6 +58,14 @@ export const prefs = $state({
   copyAfterExport: true,
   /** Leave the voice tracks (chat, microphone) out of exports. */
   exportWithoutVoices: false,
+  /** The version whose settings change (the check after an update) was already told. */
+  adjustToldFor: "",
+  /** Settings → Audio shows every track (Multi Device Track Mode). */
+  audioMultiDevice: false,
+  /** Settings → Audio switched to Sonar's tracks by itself once. */
+  sonarSwitched: false,
+  /** The version the PC test screen was shown for after an update (it shows once). */
+  pcTestShownFor: "",
 });
 
 /** Clips on their way, and clips that just landed (briefly highlighted). */
@@ -74,18 +91,21 @@ export const recorder = $state({
   autostart: false,
   hotkey: "F8",
   lengthSecs: 60,
+  /** Manual clipping on: the hotkey works and Klipp records all the time. */
+  manual: true,
   /** From the recorder's watchdog: "stopped" (video restarting), "blind" (a still picture) or "slow" (can't keep up). */
   problem: null as "stopped" | "blind" | "slow" | null,
   /** Another app holds the save key. */
   hotkeyTaken: false,
   /** Recording at a lower frame rate than set until the recorder restarts (the card couldn't keep up). */
-  reduced: null as { to: number; from: number } | null,
+  reduced: null as { to: number; from: number; learned?: boolean } | null,
   /** Restart the recorder if it stops while this window is open (not before setup is done). */
   autoRestart: false,
 });
 
 let wasRunning = false;
 let lastRestart = 0;
+let adjustTold = false;
 
 export async function loadPrefs() {
   try {
@@ -124,11 +144,25 @@ export async function refreshRecorder() {
     recorder.problem = status.problem;
     recorder.hotkeyTaken = status.hotkeyTaken;
     recorder.reduced = status.reduced;
+    tellAdjusted(status.adjusted);
     recorder.hotkey = settings.replay?.hotkey ?? recorder.hotkey;
     recorder.lengthSecs = settings.replay?.length_secs ?? recorder.lengthSecs;
+    recorder.manual = settings.replay?.manual ?? true;
   } catch {
     // Keep what we had.
   }
+}
+
+/** Once per version: the recorder's check after the update lowered the video settings. */
+function tellAdjusted(a: api.RecorderStatus["adjusted"]) {
+  if (!a || adjustTold || prefs.adjustToldFor === a.version) return;
+  adjustTold = true;
+  setPref("adjustToldFor", a.version);
+  toast(
+    `After the update, Klipp tested your graphics card: ${a.from} wasn't smooth, so it records ${a.to} now.`,
+    { label: "Video settings", run: () => openPage("settings", "video") },
+    12000,
+  );
 }
 
 export async function reload() {
@@ -155,7 +189,13 @@ export const libraryView = { scrollTop: 0, opened: null as string | null };
 
 export function openClip(c: Clip) {
   libraryView.opened = c.path;
+  ui.hero = c.path;
   ui.clip = c;
+}
+
+/** A clip's saved trim and levels, for the next time it's opened. */
+export function setClipEdit(path: string, edit: Clip["edit"]) {
+  for (const c of [ui.clip, ...library.clips]) if (c?.path === path) c.edit = edit;
 }
 
 export function openPage(page: Page, section?: string) {

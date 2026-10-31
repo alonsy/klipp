@@ -1,130 +1,82 @@
 <script lang="ts">
   // Where a clip will appear: shown from the hotkey press (or the moment an
-  // auto-clip qualifies) until the file lands in the library.
+  // auto-clip qualifies) until the file lands in the library. It's drawn like
+  // the card it turns into, so the clip seems to develop in place. Its outro stays
+  // local: a global one keeps the whole library in the page while the editor comes
+  // in, and two heroes on screen cancel the view transition.
   import type { Arrival } from "./api";
   import { eventName } from "./format";
   import Icon from "./Icon.svelte";
+  import { DUR, enter, leave, spring } from "./motion";
 
   let { arrival, w }: { arrival: Arrival; w: number } = $props();
 
-  let detail = $derived(
-    arrival.kind === "auto" && arrival.label
-      ? `${eventName(arrival.label)} · ${arrival.game}`
-      : arrival.presses > 1
-        ? `Saved ${arrival.presses} times so far`
-        : arrival.game,
-  );
+  let name = $derived(arrival.kind === "auto" && arrival.label ? eventName(arrival.label, arrival.game) : "Manual clip");
+  let detail = $derived(arrival.kind !== "auto" && arrival.presses > 1 ? `Saved ${arrival.presses} times so far` : arrival.game);
 </script>
 
-<div class="sk" style="width: {w}px" aria-live="polite">
-  <div class="thumb">
-    <div class="shine"></div>
-    <div class="center">
-      <span class="icon"><Icon event={arrival.label ?? "manual"} size={22} /></span>
-      <span class="title">A clip is arriving</span>
+<div
+  class="sk"
+  style="width: {w}px"
+  aria-live="polite"
+  aria-label="A clip is arriving"
+  role="status"
+  in:enter|global={{ x: -16, y: 0, duration: DUR.spring, easing: spring }}
+  out:leave
+>
+  <div class="thumb skeleton">
+    <span class="spinner" aria-hidden="true"></span>
+    <div class="meta">
+      <span class="name"><Icon event={arrival.label ?? "manual"} size={16} />{name}</span>
       <span class="detail">{detail}</span>
     </div>
-  </div>
-  <div class="info">
-    <span class="bar"></span>
-    <span class="bar short"></span>
   </div>
 </div>
 
 <style>
   .sk {
     flex-shrink: 0;
-    animation: appear 0.3s var(--ease);
   }
 
   .thumb {
-    position: relative;
     aspect-ratio: 16 / 9;
-    border-radius: var(--radius);
-    background: var(--surface);
-    border: 1px dashed var(--line-strong);
-    overflow: hidden;
+    border-radius: var(--r-md);
+    outline: 1px solid var(--accent-soft);
+    outline-offset: -1px;
   }
 
-  /* A soft band sweeping across, like a placeholder loading. */
-  .shine {
+  .spinner {
     position: absolute;
-    inset: 0;
-    background: linear-gradient(100deg, transparent 20%, rgba(244, 242, 236, 0.06) 50%, transparent 80%);
-    background-size: 220% 100%;
-    animation: sweep 1.6s linear infinite;
+    top: var(--sp-3);
+    right: var(--sp-3);
+    color: var(--accent);
   }
 
-  .center {
+  .meta {
     position: absolute;
-    inset: 0;
+    left: var(--sp-3);
+    right: var(--sp-3);
+    bottom: 9px;
     display: flex;
     flex-direction: column;
+  }
+
+  .name {
+    display: flex;
     align-items: center;
-    justify-content: center;
     gap: 6px;
-    text-align: center;
-    padding: 0 12px;
-  }
-
-  .icon {
-    display: grid;
-    place-items: center;
-    width: 42px;
-    height: 42px;
-    margin-bottom: 4px;
-    border-radius: 50%;
-    background: var(--accent-soft);
-    animation: breathe 1.6s ease-in-out infinite;
-  }
-
-  .title {
+    height: 20px;
     font-weight: 600;
+    font-size: var(--fs-control);
   }
 
   .detail {
-    font-size: 12px;
+    height: 20px;
+    line-height: 20px;
+    font-size: var(--fs-sm);
     color: var(--muted);
-  }
-
-  .info {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    padding: 13px 2px 0;
-  }
-
-  .bar {
-    height: 10px;
-    width: 55%;
-    border-radius: 5px;
-    background: var(--surface);
-  }
-
-  .bar.short {
-    width: 35%;
-  }
-
-  @keyframes sweep {
-    from {
-      background-position: 120% 0;
-    }
-    to {
-      background-position: -120% 0;
-    }
-  }
-
-  @keyframes breathe {
-    50% {
-      transform: scale(1.08);
-      background: color-mix(in srgb, var(--accent) 26%, transparent);
-    }
-  }
-
-  @keyframes appear {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

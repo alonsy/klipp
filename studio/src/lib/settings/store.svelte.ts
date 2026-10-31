@@ -22,15 +22,22 @@ export async function load() {
 
 /** Saves one setting, e.g. set(["auto_clip", "cs2", "headshot"], true). */
 export async function set(key: string[], value: unknown) {
+  await setMany([{ key, value }]);
+}
+
+/** Saves several settings in one write, so recording restarts once (a video preset). */
+export async function setMany(changes: { key: string[]; value: unknown }[]) {
   if (store.s) {
-    let t = store.s;
-    for (const k of key.slice(0, -1)) t = t[k] ??= {};
-    t[key[key.length - 1]] = value;
+    for (const { key, value } of changes) {
+      let t = store.s;
+      for (const k of key.slice(0, -1)) t = t[k] ??= {};
+      t[key[key.length - 1]] = value;
+    }
   }
   try {
-    await api.writeSettings([{ key, value }]);
-    if (key[0] === "storage") setTimeout(reload, 300);
-    if (key[0] === "replay") setTimeout(refreshRecorder, 1500);
+    await api.writeSettings(changes);
+    if (changes.some((c) => c.key[0] === "storage" && c.key[1] === "clips_dir")) setTimeout(reload, 300);
+    if (changes.some((c) => c.key[0] === "replay")) setTimeout(refreshRecorder, 1500);
   } catch (e) {
     toast(`Couldn't save: ${e}`);
   }

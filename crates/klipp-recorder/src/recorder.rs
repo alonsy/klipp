@@ -19,8 +19,10 @@ use crate::cue::{CuePlayer, Sound};
 use crate::events::{EventKind, GameEvent};
 use crate::games::GameTracker;
 use crate::hotkey::Hotkey;
+use crate::league::{self, LeagueIntegration};
 use crate::log::{info, warning};
 use crate::replay::{Clip, ReplayBuffer};
+use crate::rocketleague::{self, RocketLeagueIntegration};
 use crate::save::{ClipKind, SaveJob, Saver};
 use crate::settings::Settings;
 use crate::state::Shared;
@@ -30,7 +32,7 @@ use crate::video::VideoPipeline;
 pub const HOTKEY_SAVE: i32 = 1;
 
 /// The frame rate Klipp drops to when the graphics card can't keep up with a
-/// higher one (FIX-17): half of 120, the same as the default.
+/// higher one: half of 120, the same as the default.
 const REDUCED_FPS: u32 = 60;
 
 /// Audio is mixed ~100 ms behind real time and AAC adds a little delay. A clip
@@ -49,10 +51,16 @@ pub struct Recorder {
     /// The save key is lent to the Klipp window's key test until then.
     hotkey_lent_until: Option<Instant>,
     paused: bool,
+    /// Manual clipping is off and no game Klipp auto-clips is running, so
+    /// nothing is recorded; see `tick_standby`.
+    standby: bool,
     pub games: GameTracker,
     cs2: Option<Cs2Integration>,
-    events_tx: Sender<GameEvent>,
-    events_rx: Receiver<GameEvent>,
+    league: Option<LeagueIntegration>,
+    rocket_league: Option<RocketLeagueIntegration>,
+    /// Events from every game integration, with the game's name.
+    events_tx: Sender<(String, GameEvent)>,
+    events_rx: Receiver<(String, GameEvent)>,
     autoclip: AutoClipper,
     /// Hotkey presses close together, collected into one clip.
     burst: Option<Burst>,
@@ -62,8 +70,18 @@ pub struct Recorder {
     auto_arrivals: BTreeMap<i64, u64>,
     watchdog: crate::watchdog::Watchdog,
     /// Recording at this frame rate instead of the set one, for the rest of
-    /// the session, because the card couldn't keep up (FIX-17).
+    /// the session, because the card couldn't keep up.
     fps_cap: Option<u32>,
+    /// What earlier sessions learned about this PC (see `tuning`).
+    tuning: crate::tuning::Tuning,
+    /// When this session started, to count sessions that couldn't keep up.
+    session: String,
+    /// Performance mode's steps, and its look at the graphics card while a
+    /// game is in front (see `performance`).
+    perf: crate::performance::Governor,
+    perf_load: Option<crate::gpuload::GpuLoad>,
+    /// The video's (frames, late, skipped) at the last look.
+    perf_seen: (u64, u64, u64),
 }
 
 /// A clip saved with the hotkey that more presses can still extend. Each
@@ -79,11 +97,44 @@ struct Burst {
     arrival: u64,
 }
 
+/// The game's name in log lines: "cs2", "league", "rocket league".
+fn log_tag(game: &str) -> String {
+    match game {
+        cs2::GAME_NAME => "cs2".into(),
+        league::GAME_NAME => "league".into(),
+        _ => game.to_lowercase(),
+    }
+}
+
 /// Buffer window and byte cap for the current settings: the worst case at the
 /// bitrate ceiling, plus room for one extra GOP.
 fn buffer_limits(s: &Settings) -> (i64, u64) {
     let secs = s.replay.length_secs as u64;
     (secs as i64 * clock::SECOND, s.video.max_bitrate_mbps as u64 * 1_000_000 / 8 * (secs + 2))
+}
+
+/// The programs of the games Klipp auto-clips, with auto-clips on for them.
+fn autoclipped_exes(s: &Settings) -> Vec<&'static str> {
+    let a = &s.auto_clip;
+    let games = [(a.cs2.enabled, "cs2.exe"), (a.league.enabled, "league of legends.exe"), (a.rocket_league.enabled, "rocketleague.exe")];
+    if !a.enabled {
+        return Vec::new();
+    }
+    games.into_iter().filter(|&(on, _)| on).map(|(_, exe)| exe).collect()
+}
+
+/// Klipp records: always with manual clipping on, otherwise only while a
+/// game it auto-clips is running (`running`: lowercase program names).
+fn wanted(s: &Settings, running: impl FnOnce() -> Vec<String>) -> bool {
+    if s.replay.manual {
+        return true;
+    }
+    let exes = autoclipped_exes(s);
+    !exes.is_empty() && running().iter().any(|name| exes.contains(&name.as_str()))
+}
+
+fn running_programs() -> Vec<String> {
+    crate::games::processes().into_iter().map(|(_, _, name)| name).collect()
 }
 
 impl Recorder {
@@ -106,17 +157,37 @@ impl Recorder {
             hotkey_registered: false,
             hotkey_lent_until: None,
             paused: false,
+            standby: false,
             games: GameTracker::default(),
             cs2: None,
+            league: None,
+            rocket_league: None,
             events_tx,
             events_rx,
             burst: None,
             watchdog: crate::watchdog::Watchdog::default(),
             fps_cap: None,
+            tuning: crate::tuning::Tuning::load(),
+            session: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string(),
+            perf: crate::performance::Governor::default(),
+            perf_load: None,
+            perf_seen: (0, 0, 0),
         };
+        r.set_game_rules();
         crate::watchdog::clear_health();
-        r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
-        r.start_audio();
+        let fps = r.settings.video.fps;
+        if let Some(cap) = r.tuning.fps_cap.filter(|&cap| cap < fps) {
+            info!("video: games kept this graphics card too busy for {fps} fps in earlier sessions; recording at {cap} fps (Klipp tries {fps} again after its next update, or with new video settings)");
+            r.fps_cap = Some(cap);
+            r.watchdog.set_reduced(Some((cap, fps)), true);
+        }
+        if wanted(&r.settings, running_programs) {
+            r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
+            r.start_audio();
+        } else {
+            r.standby = true;
+            info!("recording: manual clipping is off, so Klipp records only while a game it auto-clips is running; none is yet");
+        }
         r.register_hotkey();
         r.start_integrations();
         Ok(r)
@@ -126,9 +197,47 @@ impl Recorder {
         &self.settings
     }
 
-    /// False if another app holds the configured hotkey.
+    /// False if another app holds the configured hotkey (there's none to hold
+    /// with manual clipping off).
     pub fn hotkey_registered(&self) -> bool {
-        self.hotkey_registered
+        self.hotkey_registered || !self.settings.replay.manual
+    }
+
+    /// Not recording because manual clipping is off and no game it auto-clips is running.
+    pub fn standby(&self) -> bool {
+        self.standby
+    }
+
+    /// With manual clipping off, starts recording when a game Klipp
+    /// auto-clips starts and stops when it's closed (every couple of seconds).
+    pub fn tick_standby(&mut self) {
+        let wanted = wanted(&self.settings, running_programs);
+        if wanted != self.standby {
+            return;
+        }
+        self.standby = !wanted;
+        if self.paused {
+            return;
+        }
+        if wanted {
+            match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
+                Ok(v) => self.video = Some(v),
+                Err(e) => warning!("video failed to start: {e:#}"),
+            }
+            self.start_audio();
+            info!("recording: a game Klipp auto-clips is running; recording");
+        } else {
+            self.flush_burst();
+            self.video = None;
+            self.audio = None;
+            self.shared.buffer.lock().unwrap().clear();
+            info!("recording: manual clipping is off and no game Klipp auto-clips is running; recording stops until one is");
+        }
+    }
+
+    /// A clip is on its way (see arrivals): not the moment to restart for an update.
+    pub fn saving(&self) -> bool {
+        !self.arrivals.is_empty()
     }
 
     pub fn paused(&self) -> bool {
@@ -149,7 +258,7 @@ impl Recorder {
             skipped: self.shared.skipped_ticks.load(Relaxed),
             blind: self.shared.capture_blind.load(Relaxed),
         };
-        if self.paused {
+        if self.paused || self.standby {
             self.watchdog.reset(counts);
             return;
         }
@@ -157,7 +266,7 @@ impl Recorder {
             self.restart_video();
         }
         // A game keeping the card too busy for this frame rate leaves clips
-        // stuttering or as a slideshow (FIX-17). Half the rate halves Klipp's
+        // stuttering or as a slideshow. Half the rate halves Klipp's
         // work on the card; it lasts until Klipp restarts or the video
         // settings change, and the window says so.
         let fps = self.settings.video.fps;
@@ -166,8 +275,81 @@ impl Recorder {
             self.fps_cap = Some(REDUCED_FPS);
             self.restart_video();
             self.watchdog.reset(counts);
-            self.watchdog.set_reduced(Some((REDUCED_FPS, fps)));
+            let learned = self.tuning.overloaded(&self.session, REDUCED_FPS);
+            if learned {
+                info!("video: the second session this graphics card couldn't keep up at {fps} fps; Klipp starts at {REDUCED_FPS} fps from now on");
+            }
+            self.watchdog.set_reduced(Some((REDUCED_FPS, fps)), learned);
         }
+    }
+
+    /// Performance mode's look at the card, every couple of seconds: while a
+    /// game is in front, a step down when it stays busy (or Klipp falls
+    /// behind), a step up when it has room; full again outside games.
+    pub fn tick_performance(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counts = (self.shared.frames.load(Relaxed), self.shared.late_frames.load(Relaxed), self.shared.skipped_ticks.load(Relaxed));
+        let (frames, late, skipped) = (counts.0.saturating_sub(self.perf_seen.0), counts.1.saturating_sub(self.perf_seen.1), counts.2.saturating_sub(self.perf_seen.2));
+        self.perf_seen = counts;
+        let on = self.settings.video.performance != crate::settings::Performance::Off && !self.paused && self.video.is_some();
+        let game = self.games.current(Duration::from_secs(5));
+        if !on || game == crate::games::DESKTOP {
+            // Nothing to count outside games.
+            self.perf_load = None;
+            if self.perf.reset().is_some() {
+                self.set_performance_step(0, if on { "the game is closed or in the background" } else { "performance mode is off" });
+            }
+            return;
+        }
+        // More than one frame in twenty late or left out.
+        let behind = (late + skipped) * 20 > frames + skipped;
+        let busy = match &mut self.perf_load {
+            Some(load) => load.sample().into_iter().find(|e| e.kind == "3D").map_or(0.0, |e| e.total),
+            // The first look only starts counting.
+            None => {
+                self.perf_load = crate::gpuload::GpuLoad::start();
+                return;
+            }
+        };
+        let before = self.perf.level();
+        let sample = crate::performance::Sample { in_game: true, busy, behind };
+        if let Some(level) = self.perf.update(Instant::now(), sample) {
+            let why = if level > before {
+                format!("{game} keeps the graphics card {busy:.0}% busy{}", if behind { " and Klipp's frames fell behind" } else { "" })
+            } else {
+                format!("the graphics card has room again ({busy:.0}% busy)")
+            };
+            self.set_performance_step(level, &why);
+        }
+    }
+
+    /// Tells the running video what performance mode asks, and logs it.
+    fn set_performance_step(&self, level: usize, why: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (stride, fps, bitrate) = crate::performance::at(level, self.video_settings().fps, self.settings.video.max_bitrate_mbps * 1_000_000);
+        self.shared.perf_stride.store(stride, Relaxed);
+        self.shared.perf_max_bitrate.store(if level == 0 { 0 } else { bitrate }, Relaxed);
+        let last = crate::performance::STEPS.len() - 1;
+        let step = if level == 0 { "full".to_string() } else { format!("step {level} of {last}") };
+        info!("performance: {why}; recording {} ({step})", self.step_words(fps, bitrate));
+    }
+
+    /// "30 fps, up to 20 Mbit/s"; AMF keeps its bitrate while recording.
+    fn step_words(&self, fps: u32, bitrate: u32) -> String {
+        if self.shared.bitrate_adjustable.load(std::sync::atomic::Ordering::Relaxed) {
+            format!("{fps} fps, up to {} Mbit/s", bitrate / 1_000_000)
+        } else {
+            format!("{fps} fps (this encoder keeps its bitrate while recording)")
+        }
+    }
+
+    /// Performance mode's step for the activity line, when it isn't full.
+    pub fn performance_note(&self) -> Option<String> {
+        let level = self.perf.level();
+        (level > 0).then(|| {
+            let (_, fps, bitrate) = crate::performance::at(level, self.video_settings().fps, self.settings.video.max_bitrate_mbps * 1_000_000);
+            format!("performance step {level}: {}", self.step_words(fps, bitrate))
+        })
     }
 
     /// The video settings in effect: the user's, with the frame rate capped
@@ -204,6 +386,8 @@ impl Recorder {
             self.audio = None;
             self.shared.buffer.lock().unwrap().clear();
             info!("recording paused; buffer cleared");
+        } else if self.standby {
+            info!("recording resumed; it starts once a game Klipp auto-clips runs");
         } else {
             match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                 Ok(v) => self.video = Some(v),
@@ -219,14 +403,15 @@ impl Recorder {
         let old = std::mem::replace(&mut self.settings, new);
         let limits_changed = old.replay.length_secs != self.settings.replay.length_secs
             || old.video.max_bitrate_mbps != self.settings.video.max_bitrate_mbps;
-        let hotkey_changed = old.replay.hotkey != self.settings.replay.hotkey;
+        let hotkey_changed = old.replay.hotkey != self.settings.replay.hotkey || old.replay.manual != self.settings.replay.manual;
         let video_changed = old.video != self.settings.video;
         // Also when moving the save sound changes whether a track leaves it out.
         let audio_changed = old.audio != self.settings.audio || old.audio_sources() != self.settings.audio_sources();
-        let integrations_changed = old.auto_clip.enabled != self.settings.auto_clip.enabled
-            || old.auto_clip.cs2.enabled != self.settings.auto_clip.cs2.enabled
-            || old.auto_clip.cs2.port != self.settings.auto_clip.cs2.port
-            || old.auto_clip.cs2.debug_log != self.settings.auto_clip.cs2.debug_log;
+        let (was, is) = (&old.auto_clip, &self.settings.auto_clip);
+        let all_changed = was.enabled != is.enabled;
+        let cs2_changed = all_changed || was.cs2.enabled != is.cs2.enabled || was.cs2.port != is.cs2.port || was.cs2.debug_log != is.cs2.debug_log;
+        let league_changed = all_changed || was.league.enabled != is.league.enabled;
+        let rocket_league_changed = all_changed || was.rocket_league.enabled != is.rocket_league.enabled;
 
         if limits_changed {
             let (window, max_bytes) = buffer_limits(&self.settings);
@@ -239,12 +424,22 @@ impl Recorder {
         }
         self.cue.handle().update(&self.settings.cue);
         self.autoclip.set_rules(self.settings.autoclip_rules());
-        if integrations_changed {
+        self.set_game_rules();
+        // Each restarts on its own, so a CS2 change doesn't interrupt a League game.
+        if cs2_changed {
             self.cs2 = None;
-            self.start_integrations();
+            self.start_cs2();
         }
-        // While paused nothing is running; resuming uses the new settings.
-        if (video_changed || audio_changed) && !self.paused {
+        if league_changed {
+            self.league = None;
+            self.start_league();
+        }
+        if rocket_league_changed {
+            self.rocket_league = None;
+            self.start_rocket_league();
+        }
+        // While paused or standing by nothing is running; starting again uses the new settings.
+        if (video_changed || audio_changed) && !self.paused && !self.standby {
             // New streams can't continue a clip from the old ones.
             self.flush_burst();
             if video_changed {
@@ -258,7 +453,11 @@ impl Recorder {
             if video_changed {
                 // New video settings get a fresh try at their own frame rate.
                 self.fps_cap = None;
-                self.watchdog.set_reduced(None);
+                self.tuning.forget();
+                self.watchdog.set_reduced(None, false);
+                if self.perf.reset().is_some() {
+                    self.set_performance_step(0, "new video settings");
+                }
                 match VideoPipeline::start(self.video_settings(), self.shared.clone()) {
                     Ok(v) => self.video = Some(v),
                     Err(e) => warning!("video failed to restart with the new settings: {e:#}"),
@@ -330,11 +529,11 @@ impl Recorder {
     /// and hotkey clips once the presses have stopped.
     /// Call regularly (a few times a second) from the message loop.
     pub fn tick_autoclip(&mut self) {
-        while let Ok(e) = self.events_rx.try_recv() {
+        while let Ok((game, e)) = self.events_rx.try_recv() {
             let detail = if e.detail.is_empty() { String::new() } else { format!(" ({})", e.detail) };
-            info!("cs2: {}{detail}", e.kind.label());
+            info!("{}: {}{detail}", log_tag(&game), e.kind.label_in(&game));
             // Always recorded (for markers in manual clips); clips only when enabled.
-            self.autoclip.on_event(cs2::GAME_NAME, e);
+            self.autoclip.on_event(&game, e);
         }
         let now = clock::now() - AUDIO_CATCH_UP;
         let gap = self.settings.autoclip_rules().merge_gap;
@@ -371,7 +570,7 @@ impl Recorder {
         let active = !self.paused && self.settings.auto_clip.enabled;
         let pending = if active { self.autoclip.pending() } else { Vec::new() };
         for (key, game, reason) in &pending {
-            let label = Some(reason.label());
+            let label = Some(reason.label_in(game));
             match self.auto_arrivals.get(key) {
                 Some(&id) => self.arrivals.update(id, |a| a.label = label),
                 None => {
@@ -419,16 +618,18 @@ impl Recorder {
     ) {
         info!(
             "saving {game} clip{}... ({:.1} MB copied out of the buffer)",
-            reason.map_or(String::new(), |r| format!(" ({})", r.label())),
+            reason.map_or(String::new(), |r| format!(" ({})", r.label_in(&game))),
             clip.data.len() as f64 / 1e6,
         );
-        // The map, if CS2 reported one during this clip (or just before it).
+        // The map, if the game reported one during this clip (or just before it).
         let start = clip.start_time;
-        let context = (game == cs2::GAME_NAME)
-            .then(|| self.cs2.as_ref().map(|c| c.context.lock().unwrap().clone()))
-            .flatten()
-            .filter(|c| c.seen >= start - 30 * clock::SECOND)
-            .unwrap_or_default();
+        let context = match game.as_str() {
+            cs2::GAME_NAME => self.cs2.as_ref().map(|c| c.context.lock().unwrap().clone()),
+            league::GAME_NAME => self.league.as_ref().map(|l| l.context.lock().unwrap().clone()),
+            _ => None,
+        }
+        .filter(|c| c.seen >= start - 30 * clock::SECOND)
+        .unwrap_or_default();
         if let Some(saver) = &self.saver {
             saver.submit(SaveJob {
                 clip,
@@ -463,6 +664,12 @@ impl Recorder {
     }
 
     fn start_integrations(&mut self) {
+        self.start_cs2();
+        self.start_league();
+        self.start_rocket_league();
+    }
+
+    fn start_cs2(&mut self) {
         let a = &self.settings.auto_clip;
         if !(a.enabled && a.cs2.enabled) {
             return;
@@ -473,8 +680,44 @@ impl Recorder {
         }
     }
 
+    fn start_league(&mut self) {
+        let a = &self.settings.auto_clip;
+        if !(a.enabled && a.league.enabled) {
+            return;
+        }
+        match LeagueIntegration::start(self.events_tx.clone()) {
+            Ok(i) => self.league = Some(i),
+            Err(e) => warning!("league: integration failed to start: {e:#}"),
+        }
+    }
+
+    fn start_rocket_league(&mut self) {
+        let a = &self.settings.auto_clip;
+        if !(a.enabled && a.rocket_league.enabled) {
+            return;
+        }
+        match RocketLeagueIntegration::start(self.events_tx.clone()) {
+            Ok(i) => self.rocket_league = i,
+            Err(e) => warning!("rocket league: integration failed to start: {e:#}"),
+        }
+    }
+
+    /// League's and Rocket League's own rules, with the shared timing.
+    fn set_game_rules(&mut self) {
+        let base = self.settings.autoclip_rules();
+        let a = &self.settings.auto_clip;
+        self.autoclip.set_game_rules(league::GAME_NAME, league::rules(&base, &a.league));
+        self.autoclip.set_game_rules(rocketleague::GAME_NAME, rocketleague::rules(&base, &a.rocket_league));
+    }
+
     fn register_hotkey(&mut self) {
         let text = self.settings.replay.hotkey.clone();
+        if !self.settings.replay.manual {
+            // Nothing to warn about in the window: the key is off on purpose.
+            crate::hotkey::write_state(&text, true);
+            info!("hotkey: manual clipping is off; {text} does nothing");
+            return;
+        }
         if self.try_hotkey() {
             info!("hotkey: {text} saves clips");
         } else {
@@ -495,7 +738,7 @@ impl Recorder {
     /// A key another app held may be free now (it closed, or let go of it),
     /// and a lent key comes back. Call every few seconds.
     pub fn retry_hotkey(&mut self) {
-        if self.hotkey_registered || self.hotkey_lent_until.is_some_and(|t| Instant::now() < t) {
+        if !self.settings.replay.manual || self.hotkey_registered || self.hotkey_lent_until.is_some_and(|t| Instant::now() < t) {
             return;
         }
         let lent = self.hotkey_lent_until.take().is_some();
@@ -525,6 +768,8 @@ impl Drop for Recorder {
         // A hotkey clip still collecting presses is written before quitting.
         self.flush_burst();
         self.cs2 = None;
+        self.league = None;
+        self.rocket_league = None;
         self.video = None;
         self.audio = None;
         // Finishes any queued clips (and their sounds) before the cue player stops.

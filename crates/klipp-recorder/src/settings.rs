@@ -37,7 +37,7 @@ pub struct Settings {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Indicators {
-    /// "Auto-clips ON" when a CS2 match starts.
+    /// "Auto-clips ON" when a match starts in a game Klipp auto-clips.
     pub autoclips_on: bool,
     /// A mark when a clip is saved, or can't be.
     pub saves: bool,
@@ -52,6 +52,8 @@ pub struct AutoClip {
     /// Events closer together than this end up in the same clip.
     pub merge_gap_secs: f32,
     pub cs2: Cs2,
+    pub league: League,
+    pub rocket_league: RocketLeague,
     /// Per-event overrides, keyed by event name.
     pub timing: BTreeMap<String, Timing>,
 }
@@ -64,6 +66,8 @@ impl Default for AutoClip {
             post_roll_secs: 4.0,
             merge_gap_secs: 12.0,
             cs2: Cs2::default(),
+            league: League::default(),
+            rocket_league: RocketLeague::default(),
             timing: BTreeMap::new(),
         }
     }
@@ -112,6 +116,56 @@ impl Default for Cs2 {
     }
 }
 
+/// League of Legends. Multi-kills are always counted the game's way.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct League {
+    pub enabled: bool,
+    pub multi_kill_min: u8,
+    pub any_kill: bool,
+    pub first_blood: bool,
+    pub death: bool,
+    /// A Baron, Dragon or Herald you stole.
+    pub steal: bool,
+    /// Every objective you took part in (they're always marked).
+    pub objective: bool,
+    /// Your team killed the whole enemy team, with you in the fight.
+    pub ace: bool,
+}
+
+impl Default for League {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            multi_kill_min: 2,
+            any_kill: false,
+            first_blood: true,
+            death: false,
+            steal: true,
+            objective: false,
+            ace: true,
+        }
+    }
+}
+
+/// Rocket League. Assists and saves are always markers; these make them clips too.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RocketLeague {
+    pub enabled: bool,
+    pub goal: bool,
+    pub assist: bool,
+    pub save: bool,
+    pub epic_save: bool,
+    pub demolition: bool,
+}
+
+impl Default for RocketLeague {
+    fn default() -> Self {
+        Self { enabled: true, goal: true, assist: false, save: false, epic_save: true, demolition: true }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Timing {
@@ -120,18 +174,25 @@ pub struct Timing {
 }
 
 /// Event names allowed under `[auto_clip.timing]`.
-const TIMING_EVENTS: &[&str] = &["kill", "headshot", "2k", "3k", "4k", "ace", "multikill", "knife", "zeus", "death", "mvp"];
+const TIMING_EVENTS: &[&str] = &[
+    "kill", "headshot", "2k", "3k", "4k", "ace", "multikill", "knife", "zeus", "death", "mvp", "penta", "firstblood", "steal", "objective",
+    "teamace", "assist", "goal", "save", "epicsave", "demolition",
+];
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Replay {
     pub length_secs: u32,
     pub hotkey: String,
+    /// Manual clipping: the hotkey works anywhere, so Klipp records all the
+    /// time. Off: no hotkey, and Klipp records only while a game it
+    /// auto-clips is running (`recorder::wanted`).
+    pub manual: bool,
 }
 
 impl Default for Replay {
     fn default() -> Self {
-        Self { length_secs: 60, hotkey: "F8".into() }
+        Self { length_secs: 60, hotkey: "F8".into(), manual: true }
     }
 }
 
@@ -165,6 +226,25 @@ pub enum CaptureMethod {
     Wgc,
     /// DXGI Desktop Duplication.
     Duplication,
+    /// The least work on the graphics card: Windows Graphics Capture's own
+    /// pictures go straight to the encoder's conversion, no copy, about as
+    /// many as are recorded (`capture`). Desktop Duplication on Windows 10.
+    Light,
+}
+
+/// Performance mode: how much Klipp steps back while a game is in front.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Performance {
+    /// The video settings, always.
+    #[default]
+    Off,
+    /// In games, a lower frame rate and bitrate while the graphics card is
+    /// busy, back up when it has room (`performance`).
+    On,
+    /// That, recorded the lightest way this PC has: the light capture and the
+    /// encoder's fastest preset.
+    Plus,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -181,6 +261,9 @@ pub struct Video {
     /// Part of a graphics card's name to encode on instead of the one that
     /// drives the screen ("" = that one). For testing.
     pub gpu: String,
+    pub performance: Performance,
+    /// The encoder's fastest preset (Performance+ always uses it).
+    pub fast_encoder: bool,
 }
 
 impl Default for Video {
@@ -194,6 +277,8 @@ impl Default for Video {
             monitor: String::new(),
             capture: CaptureMethod::Auto,
             gpu: String::new(),
+            performance: Performance::Off,
+            fast_encoder: false,
         }
     }
 }
@@ -230,11 +315,23 @@ impl Default for Audio {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Storage {
     /// Empty means Videos\Klipp; use `clips_dir()` for the actual folder.
     pub clips_dir: PathBuf,
+    /// Deletes old clips by itself (`cleanup`); favorites are never deleted.
+    pub auto_delete: bool,
+    /// Clips older than this many days go (0: no age limit).
+    pub delete_after_days: u32,
+    /// The oldest clips go while the clips take more than this many GB (0: no limit).
+    pub max_gb: u32,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Self { clips_dir: PathBuf::new(), auto_delete: false, delete_after_days: 30, max_gb: 0 }
+    }
 }
 
 impl Storage {
@@ -312,13 +409,17 @@ impl Settings {
         clamp_to("video.quality", &mut self.video.quality, 1, 51, &mut w);
         clamp_to("video.max_bitrate_mbps", &mut self.video.max_bitrate_mbps, 5, 150, &mut w);
         clamp_to("cue.volume", &mut self.cue.volume, 0.0, 1.0, &mut w);
+        clamp_to("storage.delete_after_days", &mut self.storage.delete_after_days, 0, 3650, &mut w);
+        clamp_to("storage.max_gb", &mut self.storage.max_gb, 0, 100_000, &mut w);
         let a = &mut self.auto_clip;
         clamp_to("auto_clip.pre_roll_secs", &mut a.pre_roll_secs, 0.0, 120.0, &mut w);
         clamp_to("auto_clip.post_roll_secs", &mut a.post_roll_secs, 0.0, 60.0, &mut w);
         clamp_to("auto_clip.merge_gap_secs", &mut a.merge_gap_secs, 1.0, 60.0, &mut w);
-        if a.cs2.multi_kill_min == 1 || a.cs2.multi_kill_min > 5 {
-            w.push(format!("auto_clip.cs2.multi_kill_min {} should be 0 (off) or 2-5; using 2", a.cs2.multi_kill_min));
-            a.cs2.multi_kill_min = 2;
+        for (game, min) in [("cs2", &mut a.cs2.multi_kill_min), ("league", &mut a.league.multi_kill_min)] {
+            if *min == 1 || *min > 5 {
+                w.push(format!("auto_clip.{game}.multi_kill_min {min} should be 0 (off) or 2-5; using 2"));
+                *min = 2;
+            }
         }
         a.timing.retain(|name, _| {
             let known = TIMING_EVENTS.contains(&name.as_str());
@@ -346,6 +447,23 @@ impl Settings {
         w
     }
 
+    /// Writes `video.performance` into settings.toml (the tray's Performance
+    /// mode menu), keeping everything else; the recorder applies it as any change.
+    pub fn save_performance(path: &Path, mode: Performance) -> Result<()> {
+        let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut doc: toml_edit::DocumentMut = text.parse().context("settings.toml")?;
+        if !doc.contains_table("video") {
+            doc["video"] = toml_edit::table();
+        }
+        let value = match mode {
+            Performance::Off => "off",
+            Performance::On => "on",
+            Performance::Plus => "plus",
+        };
+        doc["video"]["performance"] = toml_edit::value(value);
+        fs::write(path, doc.to_string()).with_context(|| format!("writing {}", path.display()))
+    }
+
     pub fn video_settings(&self) -> VideoSettings {
         let v = &self.video;
         VideoSettings {
@@ -363,8 +481,10 @@ impl Settings {
             quality: v.quality,
             max_mbps: v.max_bitrate_mbps,
             monitor: v.monitor.clone(),
-            capture: v.capture,
+            // Performance+ records the lightest way there is.
+            capture: if v.performance == Performance::Plus { CaptureMethod::Light } else { v.capture },
             gpu: v.gpu.clone(),
+            light_encoder: v.performance == Performance::Plus || v.fast_encoder,
         }
     }
 
@@ -379,9 +499,20 @@ impl Settings {
             knife_or_zeus_kill: a.cs2.knife_or_zeus_kill,
             death: a.cs2.death,
             mvp: a.cs2.mvp,
+            victory: false,
+            first_blood: false,
+            steal: false,
+            objective: false,
+            team_ace: false,
+            goal: false,
+            assist: false,
+            save: false,
+            epic_save: false,
+            demolition: false,
             pre_roll: ticks(a.pre_roll_secs),
             post_roll: ticks(a.post_roll_secs),
             merge_gap: ticks(a.merge_gap_secs),
+            lateness: 0,
             timing: a.timing.iter().map(|(k, t)| (k.clone(), (t.pre_roll_secs.map(ticks), t.post_roll_secs.map(ticks)))).collect(),
         }
     }
@@ -402,7 +533,7 @@ impl Settings {
                     Kind::Discord => Programs::Discord,
                     Kind::Loopback if discord && Some(i) == first_loopback => Programs::AllButDiscord,
                     // The save sound plays on this device: the same name ("" is the Windows default for both).
-                    Kind::Loopback if self.cue.enabled && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()) => Programs::AllButKlipp,
+                    Kind::Loopback if (self.cue.enabled || self.cue.auto_clips) && s.device.trim().eq_ignore_ascii_case(self.cue.device.trim()) => Programs::AllButKlipp,
                     _ => Programs::Device,
                 },
             })

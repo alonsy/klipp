@@ -88,8 +88,15 @@ fn describe_check(out: &mut String, check: &Value) {
         let _ = writeln!(out, "{line}");
     }
     let ram = check["ramMb"].as_u64().unwrap_or(0);
-    let cs2 = if check["cs2"] == true { "found" } else { "not found" };
-    let _ = writeln!(out, "Memory: {} GB · CS2: {cs2}", (ram + 512) / 1024);
+    let found = |key: &str| if check[key] == true { "found" } else { "not found" };
+    let _ = writeln!(
+        out,
+        "Memory: {} GB · CS2: {} · League: {} · Rocket League: {}",
+        (ram + 512) / 1024,
+        found("cs2"),
+        found("league"),
+        found("rocketLeague")
+    );
 }
 
 fn describe_settings(out: &mut String, s: &Value) {
@@ -117,7 +124,15 @@ fn describe_settings(out: &mut String, s: &Value) {
         .collect();
     let _ = writeln!(out, "Audio: {}", if sources.is_empty() { "none".into() } else { sources.join(", ") });
     let auto = |v: &Value| if v == &Value::Bool(true) { "on" } else { "off" };
-    let _ = writeln!(out, "Auto-clips: {} (CS2 {})", auto(&s["auto_clip"]["enabled"]), auto(&s["auto_clip"]["cs2"]["enabled"]));
+    let a = &s["auto_clip"];
+    let _ = writeln!(
+        out,
+        "Auto-clips: {} (CS2 {}, League {}, Rocket League {})",
+        auto(&a["enabled"]),
+        auto(&a["cs2"]["enabled"]),
+        auto(&a["league"]["enabled"]),
+        auto(&a["rocket_league"]["enabled"])
+    );
 }
 
 /// "Windows 11 24H2 (build 26200)".

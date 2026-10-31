@@ -15,17 +15,20 @@
   .toggle {
     position: relative;
     flex-shrink: 0;
-    width: 40px;
+    width: 38px;
     height: 22px;
     padding: 0;
-    border-radius: 11px;
-    border: 1px solid var(--line-strong);
+    border-radius: var(--r-full);
     background: var(--surface-3);
-    transition: background 0.18s;
+    transition: background var(--dur) var(--ease-out);
   }
 
   .toggle:hover:not(:disabled) {
-    background: #484846;
+    background: var(--surface-4);
+  }
+
+  .toggle:active {
+    transform: none;
   }
 
   .toggle:disabled {
@@ -33,25 +36,39 @@
     cursor: not-allowed;
   }
 
-  .toggle.on {
-    background: var(--accent);
-    border-color: var(--accent);
+  /* Bone, not accent: a page of switches shouldn't shout. */
+  .toggle.on,
+  .toggle.on:hover:not(:disabled) {
+    background: var(--text);
   }
 
   .knob {
     position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 16px;
-    height: 16px;
+    top: 3px;
+    left: 3px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
     background: var(--text);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-    transition: transform 0.18s var(--ease);
+    box-shadow: var(--shadow-1);
+    transition:
+      transform var(--dur-spring) var(--spring),
+      background var(--dur) var(--ease-out);
   }
 
   .on .knob {
-    transform: translateX(18px);
+    transform: translateX(16px);
     background: var(--on-accent);
+    box-shadow: none;
+  }
+
+  /* A press squashes the knob towards where it's going. */
+  .toggle:active:not(:disabled) .knob {
+    transform: scaleX(1.25);
+    transition-duration: var(--dur-fast);
+  }
+
+  .toggle.on:active:not(:disabled) .knob {
+    transform: translateX(16px) scaleX(1.25);
   }
 </style>

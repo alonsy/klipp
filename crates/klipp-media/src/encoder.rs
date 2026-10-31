@@ -70,6 +70,9 @@ pub struct VideoEncoderConfig {
     pub quality: u8,
     /// Hard bitrate ceiling in bits/s. Keeps the replay buffer's size predictable.
     pub max_bitrate: u32,
+    /// The encoder's fastest preset: less work on the card for a little less
+    /// quality per bit (Performance+).
+    pub light: bool,
 }
 
 /// Quick Sync takes its own frame type: a Quick Sync device made from our
@@ -185,6 +188,7 @@ pub struct VideoEncoder {
     pkt: *mut ff::AVPacket,
     /// Intel only.
     qsv: Option<Qsv>,
+    vendor: Vendor,
 }
 
 // SAFETY: the encoder is only used from one thread at a time; FFmpeg codec
@@ -200,7 +204,7 @@ impl VideoEncoder {
                 bail!("{name:?} is not available in this FFmpeg build");
             }
             // Built first so Drop cleans up whatever was allocated if a later step fails.
-            let mut enc = Self { ctx: ff::avcodec_alloc_context3(codec), frames: ptr::null_mut(), pkt: ff::av_packet_alloc(), qsv: None };
+            let mut enc = Self { ctx: ff::avcodec_alloc_context3(codec), frames: ptr::null_mut(), pkt: ff::av_packet_alloc(), qsv: None, vendor: cfg.vendor };
             if enc.ctx.is_null() || enc.pkt.is_null() {
                 bail!("out of memory while creating the encoder");
             }
@@ -227,8 +231,7 @@ impl VideoEncoder {
             // A keyframe every second, so a saved clip starts within 1 s of the requested time.
             c.gop_size = fps;
             c.max_b_frames = 0;
-            c.rc_max_rate = cfg.max_bitrate as i64;
-            c.rc_buffer_size = cfg.max_bitrate.saturating_mul(2).min(i32::MAX as u32) as i32;
+            set_rates(c, cfg.vendor, cfg.max_bitrate);
             c.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
             c.color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709;
             c.color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
@@ -239,33 +242,34 @@ impl VideoEncoder {
             match cfg.vendor {
                 Vendor::Nvidia => {
                     // Constant quality, capped at the ceiling.
-                    c.bit_rate = 0;
-                    set_opt(c.priv_data, "preset", "p4")?;
+                    set_opt(c.priv_data, "preset", if cfg.light { "p1" } else { "p4" })?;
                     set_opt(c.priv_data, "tune", "hq")?;
                     set_opt(c.priv_data, "rc", "vbr")?;
                     set_opt(c.priv_data, "cq", &cfg.quality.to_string())?;
                     // Each NVENC surface holds an output buffer in system RAM (~9.5 MB at
                     // 1440p). With 2, every frame waited for the one before it to finish
                     // encoding, so a card busy with a game set the recorder's pace, down to
-                    // a few frames a second (FIX-17). FFmpeg's default of 4 keeps three
+                    // a few frames a second. FFmpeg's default of 4 keeps three
                     // in flight, and a slow frame makes the next ones late, not lost.
                     set_opt(c.priv_data, "surfaces", "4")?;
                 }
                 Vendor::Amd => {
                     // Quality-defined variable bitrate (AMD's constant quality), peaking at the ceiling.
-                    c.bit_rate = cfg.max_bitrate as i64 * 3 / 5;
                     set_opt(c.priv_data, "usage", "transcoding")?;
-                    set_opt(c.priv_data, "quality", "balanced")?;
+                    set_opt(c.priv_data, "quality", if cfg.light { "speed" } else { "balanced" })?;
                     set_opt(c.priv_data, "rc", "qvbr")?;
                     set_opt(c.priv_data, "qvbr_quality_level", &amf_quality_level(cfg.quality).to_string())?;
                     set_opt(c.priv_data, "bf", "0")?;
-                    // Frames in flight; each holds GPU and system memory. We drain every frame.
-                    set_opt(c.priv_data, "async_depth", "2")?;
+                    // Frames in flight; each holds GPU and system memory. With 2, handing
+                    // over a frame waited for the one before it to finish: 12.9 ms of
+                    // each 16.7 on an RX 6650 XT at 1080p60 on the desktop, and late
+                    // frames in games (a tester's log, 2026-10-25). 4, as NVENC.
+                    set_opt(c.priv_data, "async_depth", "4")?;
                 }
                 Vendor::Intel => {
                     // Plain variable bitrate: the mode every Quick Sync generation and
                     // codec supports (AV1 has no quality-defined mode on all of them).
-                    c.bit_rate = cfg.max_bitrate as i64 * 3 / 5;
+                    // Already the fastest preset, light or not.
                     set_opt(c.priv_data, "preset", "veryfast")?;
                     set_opt(c.priv_data, "async_depth", "2")?;
                 }
@@ -281,9 +285,34 @@ impl VideoEncoder {
         HwFrame::alloc(self.frames)
     }
 
+    /// The texture pool, for a thread other than the encoder's to take frames from.
+    pub fn frame_pool(&self) -> Result<FramePool> {
+        let r = unsafe { ff::av_buffer_ref(self.frames) };
+        if r.is_null() {
+            bail!("out of memory while sharing the texture pool");
+        }
+        Ok(FramePool(r))
+    }
+
     /// Encodes `frame` as frame number `pts` and passes every finished packet to `sink`.
     /// The same frame may be sent again with a later `pts` to repeat it.
     pub fn encode(&mut self, frame: &mut HwFrame, pts: i64, sink: &mut dyn FnMut(&mut Packet) -> Result<()>) -> Result<()> {
+        self.send(frame, pts)?;
+        self.drain(sink)
+    }
+
+    /// A new bitrate ceiling for the frames sent from now on (Performance
+    /// mode lowers it while a game keeps the card busy). NVENC takes it with
+    /// its next frame (20 to 6 Mbit/s within a second, on noise); FFmpeg
+    /// passes it to Quick Sync the same way (not measured yet); AMF keeps the
+    /// one it opened with.
+    pub fn set_max_bitrate(&mut self, max_bitrate: u32) {
+        unsafe { set_rates(&mut *self.ctx, self.vendor, max_bitrate) };
+    }
+
+    /// The first half of `encode`: hands the frame to the encoder. With a GPU
+    /// encoder this is where the wait for the card to finish drawing it shows.
+    pub fn send(&mut self, frame: &mut HwFrame, pts: i64) -> Result<()> {
         unsafe {
             let f = frame.as_ptr();
             (*f).pts = pts;
@@ -300,7 +329,7 @@ impl VideoEncoder {
                 }
             }
         }
-        self.drain(sink)
+        Ok(())
     }
 
     /// Flushes the encoder; call once after the last frame.
@@ -314,7 +343,8 @@ impl VideoEncoder {
         StreamInfo::from_codec(self.ctx)
     }
 
-    fn drain(&mut self, sink: &mut dyn FnMut(&mut Packet) -> Result<()>) -> Result<()> {
+    /// The second half of `encode`: passes every finished packet to `sink`.
+    pub fn drain(&mut self, sink: &mut dyn FnMut(&mut Packet) -> Result<()>) -> Result<()> {
         loop {
             let ret = unsafe { ff::avcodec_receive_packet(self.ctx, self.pkt) };
             if ret == AVERROR_EAGAIN || ret == ff::AVERROR_EOF {
@@ -328,6 +358,25 @@ impl VideoEncoder {
     }
 }
 
+/// The encoder's texture pool, held by another thread: frames are taken here
+/// and handed to the encoder (FFmpeg's pools are thread-safe).
+pub struct FramePool(*mut ff::AVBufferRef);
+
+// SAFETY: a reference to an FFmpeg frames context; taking buffers from it is locked inside FFmpeg.
+unsafe impl Send for FramePool {}
+
+impl FramePool {
+    pub fn alloc(&self) -> Result<HwFrame> {
+        HwFrame::alloc(self.0)
+    }
+}
+
+impl Drop for FramePool {
+    fn drop(&mut self) {
+        unsafe { ff::av_buffer_unref(&mut self.0) };
+    }
+}
+
 impl Drop for VideoEncoder {
     fn drop(&mut self) {
         unsafe {
@@ -338,6 +387,18 @@ impl Drop for VideoEncoder {
             ff::av_packet_free(&mut self.pkt);
         }
     }
+}
+
+/// The ceiling, the rate-control buffer (two seconds of it) and the target:
+/// none on NVENC (constant quality up to the ceiling), three fifths of the
+/// ceiling on AMF and Quick Sync.
+fn set_rates(c: &mut ff::AVCodecContext, vendor: Vendor, max_bitrate: u32) {
+    c.rc_max_rate = max_bitrate as i64;
+    c.rc_buffer_size = max_bitrate.saturating_mul(2).min(i32::MAX as u32) as i32;
+    c.bit_rate = match vendor {
+        Vendor::Nvidia => 0,
+        Vendor::Amd | Vendor::Intel => max_bitrate as i64 * 3 / 5,
+    };
 }
 
 fn set_opt(obj: *mut std::ffi::c_void, name: &str, value: &str) -> Result<()> {

@@ -15,7 +15,9 @@ Klipp is young. Here's where it's going, and what won't change on the way.
 - Updates inside the app, in one click, installed quietly in the background.
 - Always-on replay buffer with a save hotkey you can test in setup; presses close together become one clip.
 - Recording that looks after itself: when the screen sleeps or the graphics driver resets, it picks the picture up again.
-- Counter-Strike 2 auto-clips (headshots, multi-kills, knife and Zeus kills) through Valve's Game State Integration.
+- Auto-clips through what games officially share: Counter-Strike 2 (Game State Integration), League of Legends (Live Client Data API) and Rocket League (Stats API).
+- A PC test, video presets and a Performance mode that keep Klipp out of your game's way.
+- Squeeze space, and old clips that tidy themselves up if you want them to.
 - Separate audio tracks (Discord on its own, experimental), a session-grouped library, an editor with waveforms, and exports for sharing, with or without voices.
 - Optional indicators on top of your game ("Auto-clips ON", clip saved), never in your clips.
 - The save sound stays out of your clips by itself.
@@ -45,7 +47,6 @@ Local-only stays the default. The cloud is opt-in, and turning it off leaves eve
 ### Smaller things
 
 - Switching from SteelSeries Moments in one step, clips and settings included.
-- Storage limits that tidy up old clips you didn't favorite.
 - Screenshots, and stitching several clips into one.
 
 ## Ideas welcome

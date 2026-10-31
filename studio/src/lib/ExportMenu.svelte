@@ -1,12 +1,16 @@
 <script lang="ts">
-  // The Export button in the editor's play bar, and the options it opens:
+  // The Export button in the editor's top strip, and the options it opens:
   // share (fits a size limit), a lossless trimmed copy, or high quality.
+  // While exporting, and when done, the panel shows only that.
   import { onMount } from "svelte";
   import * as api from "./api";
   import type { ExportMode } from "./api";
   import { size } from "./format";
   import Icon from "./Icon.svelte";
+  import { DUR, leave, unfold } from "./motion";
   import { prefs, reload, setPref, toast } from "./state.svelte";
+  import { swallowPress } from "./ui/clicks";
+  import Segmented from "./ui/Segmented.svelte";
   import Toggle from "./ui/Toggle.svelte";
 
   interface Props {
@@ -41,7 +45,11 @@
   let open = $state(false);
   let root: HTMLDivElement;
   let busy = $state<{ id: number; mode: ExportMode; fraction: number } | null>(null);
-  let result = $state<{ path: string; sizeBytes: number; mode: ExportMode } | null>(null);
+  let result = $state<{ path: string; sizeBytes: number; mode: ExportMode; copied: boolean } | null>(null);
+  /** The button says Done for a moment, for when the panel is closed. */
+  let justDone = $state(false);
+  let doneTimer = 0;
+  let percent = $derived(busy ? Math.round(busy.fraction * 100) : 0);
 
   onMount(() => {
     let off = () => {};
@@ -54,13 +62,19 @@
           if (busy?.id !== id) return;
           const mode = busy.mode;
           busy = null;
-          result = { path: out, sizeBytes, mode };
+          result = { path: out, sizeBytes, mode, copied: false };
+          justDone = true;
+          clearTimeout(doneTimer);
+          doneTimer = window.setTimeout(() => (justDone = false), 2600);
           if (mode === "trim") reload();
           const what = { share: `Ready to share (${size(sizeBytes)})`, trim: "Trimmed copy saved to your library", quality: `Exported (${size(sizeBytes)})` }[mode];
           const copyNow = () => api.copyToClipboard(out).then(() => toast("Copied. Paste it with Ctrl+V."), (e) => toast(`Couldn't copy: ${e}`));
           if (prefs.copyAfterExport) {
             await api.copyToClipboard(out).then(
-              () => toast(`${what} and copied. Paste it with Ctrl+V.`),
+              () => {
+                if (result?.path === out) result.copied = true;
+                toast(`${what} and copied. Paste it with Ctrl+V.`);
+              },
               () => toast(what, { label: "Copy", run: copyNow }),
             );
           } else {
@@ -75,7 +89,10 @@
         },
       })
       .then((unlisten) => (off = unlisten));
-    return () => off();
+    return () => {
+      off();
+      clearTimeout(doneTimer);
+    };
   });
 
   async function start(mode: ExportMode) {
@@ -91,7 +108,9 @@
   }
 
   function outside(e: PointerEvent) {
-    if (open && !root.contains(e.target as Node)) open = false;
+    if (!open || root.contains(e.target as Node)) return;
+    open = false;
+    swallowPress(e);
   }
 
   /** E opens it; Escape closes it (before the editor sees Escape). */
@@ -107,6 +126,7 @@
   }
 
   let names = $derived<Record<ExportMode, string>>({ trim: "Saving trimmed copy", quality: "Exporting", share: `Fitting it under ${targetMb} MB` });
+  const doneNames: Record<ExportMode, string> = { share: "Ready to share", trim: "Trimmed copy saved", quality: "Exported" };
   const targets = [
     [10, "10 MB"],
     [50, "50 MB"],
@@ -114,87 +134,97 @@
   ] as const;
 </script>
 
-<svelte:window onpointerdown={outside} onkeydowncapture={key} />
+<svelte:window onpointerdowncapture={outside} onkeydowncapture={key} />
 
 <div class="export" bind:this={root}>
   <button
     class="primary trigger"
     class:busy={!!busy}
-    style="--p: {busy ? busy.fraction * 100 : 0}%"
+    class:quiet={open && !busy}
     aria-expanded={open}
     title="Export or share this clip (E)"
     onclick={() => (open = !open)}
   >
     {#if busy}
-      <span class="spinner"></span><span class="mono">{Math.round(busy.fraction * 100)}%</span>
+      <span class="veil" style="transform: scaleX({1 - (busy?.fraction ?? 0)})"></span>
+      <span class="face mono">{percent}%</span>
+    {:else if justDone}
+      <span class="face done-face"><Icon name="check" size={15} />Done</span>
     {:else}
-      <Icon name="send" size={16} />Export
+      <span class="face"><Icon name="send" size={15} />Export</span>
     {/if}
   </button>
 
   {#if open}
-  <div class="panel" role="dialog" aria-label="Export">
-  <div class="head">
-    <span class="label">Export</span>
-    <span class="len mono">{(outPoint - inPoint).toFixed(1)} s</span>
-  </div>
+    <div class="panel" role="dialog" aria-label="Export" in:unfold out:leave={{ y: -4 }}>
+      <div class="options" class:covered={busy || result} inert={!!(busy || result)}>
+        <div class="share">
+          <Segmented value={targetMb} options={targets} label="Size limit" onchange={(v) => (targetMb = v)} />
+          <button class="primary big" disabled={!!busy} title="Fits under the size limit, so chat apps take it as is" onclick={() => start("share")}><Icon name="send" size={16} />Share</button>
+        </div>
 
-  <div class="share">
-    <button class="primary big" disabled={!!busy} onclick={() => start("share")}><Icon name="send" size={17} />Export to share</button>
-    <div class="targets" role="radiogroup" aria-label="Size limit">
-      {#each targets as [mb, name] (mb)}
-        <button role="radio" aria-checked={targetMb === mb} class:on={targetMb === mb} disabled={!!busy} onclick={() => (targetMb = mb)}>{name}</button>
-      {/each}
-    </div>
-    <span class="note">Fits under the size limit, so chat apps take it as is.</span>
-  </div>
+        <div class="others">
+          <button class="ghost" disabled={!!busy} onclick={() => start("trim")} title="Same quality, every audio track kept, saved next to the original">
+            <Icon name="scissors" size={16} />Save trimmed copy
+          </button>
+          <button class="ghost" disabled={!!busy} onclick={() => start("quality")} title="High quality H.264 with your track levels, plays everywhere">
+            <Icon name="export" size={16} />Export high quality
+          </button>
+        </div>
 
-  <div class="others">
-    <button disabled={!!busy} onclick={() => start("trim")} title="Same quality, every audio track kept, saved next to the original">
-      <Icon name="scissors" size={16} />Save trimmed copy
-    </button>
-    <button disabled={!!busy} onclick={() => start("quality")} title="High quality H.264 with your track levels, plays everywhere">
-      <Icon name="export" size={16} />Export high quality
-    </button>
-  </div>
+        <div class="toggles">
+          {#if voiceNames.length > 0}
+            <div class="copy">
+              <div class="copy-text">
+                <span class="copy-title">Without voices</span>
+                <span class="copy-hint">
+                  {prefs.exportWithoutVoices ? `Leaves ${voiceList} out. A trimmed copy keeps every track.` : `${voiceList} ${voiceNames.length > 1 ? "stay" : "stays"} in.`}
+                </span>
+              </div>
+              <Toggle checked={prefs.exportWithoutVoices} label="Without voices" onchange={(v) => setPref("exportWithoutVoices", v)} />
+            </div>
+          {/if}
 
-  {#if voiceNames.length > 0}
-    <div class="copy">
-      <div class="copy-text">
-        <span class="copy-title">Without voices</span>
-        <span class="copy-hint">
-          {prefs.exportWithoutVoices ? `Leaves ${voiceList} out. A trimmed copy keeps every track.` : `${voiceList} ${voiceNames.length > 1 ? "stay" : "stays"} in.`}
-        </span>
+          <div class="copy" title={prefs.copyAfterExport ? "Replaces what you have copied now, ready for Ctrl+V" : "Your clipboard is left alone"}>
+            <div class="copy-text">
+              <span class="copy-title">Copy when done</span>
+            </div>
+            <Toggle checked={prefs.copyAfterExport} label="Copy to clipboard when done" onchange={(v) => setPref("copyAfterExport", v)} />
+          </div>
+        </div>
       </div>
-      <Toggle checked={prefs.exportWithoutVoices} label="Without voices" onchange={(v) => setPref("exportWithoutVoices", v)} />
-    </div>
-  {/if}
 
-  <div class="copy">
-    <div class="copy-text">
-      <span class="copy-title">Copy to clipboard when done</span>
-      <span class="copy-hint">{prefs.copyAfterExport ? "Replaces what you have copied now, ready for Ctrl+V." : "Your clipboard is left alone."}</span>
+      {#if busy}
+        <div class="status" in:unfold={{ duration: DUR.slow }} out:leave>
+          <div class="ring-box">
+            <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+              <circle class="ring-track" cx="50" cy="50" r="44" pathLength="100" />
+              <circle class="ring-fill" cx="50" cy="50" r="44" pathLength="100" style="stroke-dashoffset: {100 - busy.fraction * 100}" />
+            </svg>
+            <!-- Keeps turning when an encoder sits on one percent for a while. -->
+            <svg class="ring comet" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" pathLength="100" /></svg>
+            <span class="ring-num mono">{percent}%</span>
+          </div>
+          <span class="s-title">{names[busy.mode]}…</span>
+          <button class="ghost cancel" onclick={() => busy && api.cancelExport(busy.id)}>Cancel</button>
+        </div>
+      {:else if result}
+        <div class="status" in:unfold={{ duration: DUR.slow }} out:leave>
+          <button class="ghost icon again" onclick={() => (result = null)} aria-label="Back to export options" title="Back"><Icon name="back" size={16} /></button>
+          <div class="mark">
+            <span class="burst"></span>
+            <span class="tick"><Icon name="check" size={30} /></span>
+          </div>
+          <span class="s-title">{doneNames[result.mode]}</span>
+          <span class="file" title={result.path}>{result.path.split("\\").pop()} <span class="mono">· {size(result.sizeBytes)}</span></span>
+          {#if result.copied}<span class="pasted">Copied. Paste it with Ctrl+V.</span>{/if}
+          <div class="after">
+            <button onclick={() => result && api.copyToClipboard(result.path).then(() => toast("Copied. Paste it anywhere with Ctrl+V."))}><Icon name="copy" size={15} />Copy</button>
+            <button onclick={() => result && api.reveal(result.path)}><Icon name="folder" size={15} />Show in folder</button>
+          </div>
+        </div>
+      {/if}
     </div>
-    <Toggle checked={prefs.copyAfterExport} label="Copy to clipboard when done" onchange={(v) => setPref("copyAfterExport", v)} />
-  </div>
-
-  {#if busy}
-    <div class="progress">
-      <div class="p-label"><span>{names[busy.mode]}…</span><span class="mono">{Math.round(busy.fraction * 100)}%</span></div>
-      <div class="track"><div class="fill" style="width: {busy.fraction * 100}%"></div></div>
-      <button class="ghost cancel" onclick={() => busy && api.cancelExport(busy.id)}>Cancel</button>
-    </div>
-  {:else if result}
-    <div class="result">
-      <Icon name="check" size={16} />
-      <span class="file" title={result.path}>{result.path.split("\\").pop()} <span class="mono">· {size(result.sizeBytes)}</span></span>
-      <button class="ghost icon" title="Copy" onclick={() => result && api.copyToClipboard(result.path).then(() => toast("Copied. Paste it anywhere with Ctrl+V."))}>
-        <Icon name="copy" size={16} />
-      </button>
-      <button class="ghost icon" title="Show in folder" onclick={() => result && api.reveal(result.path)}><Icon name="folder" size={16} /></button>
-    </div>
-  {/if}
-  </div>
   {/if}
 </div>
 
@@ -204,207 +234,300 @@
   }
 
   .trigger {
-    min-width: 108px;
+    position: relative;
+    min-width: 96px;
+    height: 32px;
+    padding: 0 var(--sp-4);
+    border: none;
+    overflow: hidden;
   }
 
-  /* While exporting, the button fills up with its progress. */
-  .trigger.busy {
-    background: linear-gradient(90deg, var(--accent) var(--p), color-mix(in srgb, var(--accent) 40%, var(--surface-2)) var(--p));
+  /* The accent passes into the panel while it's open: one primary at a time. */
+  .trigger.quiet {
+    background: var(--surface-3);
+    color: var(--text);
   }
 
-  .spinner {
-    width: 13px;
-    height: 13px;
-    border-radius: 50%;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    animation: spin 0.8s linear infinite;
+  .face {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    animation: fade var(--dur) var(--ease-out);
   }
 
-  @keyframes spin {
+  .done-face {
+    animation: rise var(--dur-spring) var(--spring);
+  }
+
+  /* While exporting, a veil draws back from the left and the button lights up with it. */
+  .veil {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--on-accent) 30%, transparent);
+    transform-origin: right;
+    transition: transform var(--dur) linear;
+  }
+
+  .trigger.busy::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--text) 26%, transparent) 50%, transparent 70%);
+    transform: translateX(-100%);
+    animation: sheen 1.6s linear infinite;
+  }
+
+  @keyframes sheen {
     to {
-      transform: rotate(360deg);
+      transform: translateX(100%);
     }
   }
 
   .panel {
     position: absolute;
-    bottom: calc(100% + 12px);
-    left: 50%;
+    top: calc(100% + var(--sp-2));
+    right: 0;
     z-index: 30;
+    width: 296px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-3);
+    transform-origin: top right;
+  }
+
+  .options {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    width: 320px;
-    padding: 16px;
-    border-radius: 16px;
-    background: var(--surface);
-    border: 1px solid var(--line-strong);
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-    transform: translateX(-50%);
-    animation: pop 0.16s var(--ease);
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+    transition:
+      opacity var(--dur-fast) var(--ease-out),
+      transform var(--dur) var(--ease-out);
   }
 
-  @keyframes pop {
-    from {
-      opacity: 0;
-      transform: translate(-50%, 6px) scale(0.98);
-    }
-  }
-
-  .head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-  }
-
-  .len {
-    font-size: 12px;
-    color: var(--muted);
+  /* Still there, keeping the panel's size, so nothing jumps when the status takes over. */
+  .options.covered {
+    opacity: 0;
+    transform: scale(0.97);
   }
 
   .share {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border-radius: 12px;
-    background: var(--surface-2);
-    border: 1px solid var(--line);
+    gap: var(--sp-2);
+  }
+
+  .share :global(.segmented) {
+    display: grid;
   }
 
   .big {
     width: 100%;
-    padding: 10px 14px;
-  }
-
-  .targets {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 4px;
-    padding: 3px;
-    border-radius: 9px;
-    background: var(--bg);
-  }
-
-  .targets button {
-    padding: 5px 0;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .targets button.on {
-    background: var(--surface-3);
-    color: var(--text);
-  }
-
-  .note {
-    font-size: 11px;
-    line-height: 1.45;
-    color: var(--faint);
+    height: 38px;
   }
 
   .others {
     display: flex;
     flex-direction: column;
-    gap: 6px;
   }
 
   .others button {
     justify-content: flex-start;
+    gap: var(--sp-3);
+    padding: 7px var(--sp-2);
+  }
+
+  .toggles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-2) var(--sp-1);
+    background: linear-gradient(var(--line), var(--line)) top / 100% 1px no-repeat;
   }
 
   .copy {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 2px 0;
-    border-top: 1px solid var(--line);
+    gap: var(--sp-3);
   }
 
   .copy-text {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
     flex: 1;
     min-width: 0;
   }
 
   .copy-title {
-    font-size: 13px;
+    font-size: var(--fs-control);
     font-weight: 550;
   }
 
   .copy-hint {
-    font-size: 11.5px;
+    font-size: var(--fs-xs);
     line-height: 1.4;
     color: var(--muted);
   }
 
-  .progress {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 6px 8px;
-    align-items: center;
-  }
-
-  .p-label {
-    grid-column: 1 / -1;
+  .status {
+    position: absolute;
+    inset: 0;
     display: flex;
-    justify-content: space-between;
-    color: var(--muted);
-    font-size: 13px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+    padding: var(--sp-4);
+    text-align: center;
+    transform-origin: center;
   }
 
-  .track {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--surface-2);
-    overflow: hidden;
+  .ring-box {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 104px;
+    height: 104px;
+    margin-bottom: var(--sp-2);
   }
 
-  .fill {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.15s linear;
+  .ring {
+    position: absolute;
+    inset: 0;
+    transform: rotate(-90deg);
+    fill: none;
+    stroke-width: 5;
+    stroke-linecap: round;
+  }
+
+  .ring-track {
+    stroke: var(--surface-3);
+  }
+
+  .ring-fill {
+    stroke: var(--accent);
+    stroke-dasharray: 100;
+    transition: stroke-dashoffset var(--dur) linear;
+  }
+
+  .comet {
+    animation: orbit 1.8s linear infinite;
+  }
+
+  .comet circle {
+    stroke: var(--text);
+    stroke-opacity: 0.55;
+    stroke-width: 2;
+    stroke-dasharray: 5 95;
+  }
+
+  @keyframes orbit {
+    to {
+      transform: rotate(270deg);
+    }
+  }
+
+  .ring-num {
+    font-size: var(--fs-lg);
+    font-weight: 600;
+  }
+
+  .s-title {
+    font-size: var(--fs-base);
+    font-weight: 600;
   }
 
   .cancel {
-    padding: 3px 8px;
-    font-size: 12px;
-  }
-
-  .result {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 4px 6px 10px;
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--good) 10%, transparent);
-    color: var(--good);
-  }
-
-  .file {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text);
-    font-size: 12px;
-  }
-
-  .file .mono {
+    height: 28px;
+    padding: 0 var(--sp-3);
     color: var(--muted);
+    font-size: var(--fs-sm);
   }
 
-  .result button.icon {
+  .again {
+    position: absolute;
+    top: var(--sp-2);
+    left: var(--sp-2);
     width: 28px;
     height: 28px;
     color: var(--muted);
+  }
+
+  /* The check lands with a small spring, and a ring leaves it. */
+  .mark {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    margin-bottom: var(--sp-2);
+  }
+
+  .tick,
+  .burst {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+  }
+
+  .tick {
+    display: grid;
+    place-items: center;
+    background: var(--good);
+    color: var(--on-accent);
+    animation: land var(--dur-spring) var(--spring) both;
+  }
+
+  .burst {
+    background: var(--good-soft);
+    animation: burst calc(var(--dur-spring) * 1.5) var(--ease-out) both;
+  }
+
+  @keyframes land {
+    from {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+  }
+
+  @keyframes burst {
+    from {
+      opacity: 1;
+      transform: scale(0.8);
+    }
+    to {
+      opacity: 0;
+      transform: scale(2.2);
+    }
+  }
+
+  .file {
+    max-width: 100%;
+    color: var(--muted);
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file .mono {
+    font-size: var(--fs-xs);
+  }
+
+  .pasted {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+  }
+
+  .after {
+    display: flex;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+  }
+
+  .after button {
+    gap: 6px;
+    padding: 6px var(--sp-3);
+    font-size: var(--fs-control);
   }
 </style>
