@@ -31,6 +31,8 @@ export interface Clip {
   sizeBytes: number;
   favorite: boolean;
   tracks: string[];
+  /** Which tracks after Mix carry voices. Empty on older clips. */
+  voices: boolean[];
   events: ClipEvent[];
   map: string;
   mode: string;
@@ -323,6 +325,8 @@ export interface ExportRequest {
   /** Per separate track, 1 = unchanged, 0 = muted. */
   volumes: number[];
   mixVolume: number;
+  /** 0.5 = half speed. A trimmed copy stays at 1. */
+  speed: number;
 }
 
 export const startExport = (request: ExportRequest) => invoke<number>("start_export", { request });

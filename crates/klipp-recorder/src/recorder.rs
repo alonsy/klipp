@@ -737,10 +737,12 @@ impl Recorder {
         .filter(|c| c.seen >= start - 30 * clock::SECOND)
         .unwrap_or_default();
         if let Some(saver) = &self.saver {
+            let voices = if tracks.is_empty() { Vec::new() } else { self.settings.audio.sources.iter().map(|s| s.voice()).collect() };
             saver.submit(SaveJob {
                 clip,
                 streams,
                 tracks,
+                voices,
                 camera,
                 clips_dir: self.settings.storage.clips_dir(),
                 game,

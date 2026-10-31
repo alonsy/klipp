@@ -55,6 +55,8 @@ pub struct SaveJob {
     pub streams: Vec<StreamInfo>,
     /// Names of the audio tracks, in order (e.g. Mix, Game, Chat, Mic).
     pub tracks: Vec<String>,
+    /// Which separate tracks, the ones after Mix, carry voices.
+    pub voices: Vec<bool>,
     /// Content Creator Mode: the camera's buffer stream id and track, written
     /// after the audio tracks as a second video track ("Camera").
     pub camera: Option<(u8, StreamInfo)>,
@@ -92,6 +94,9 @@ struct ClipInfo<'a> {
     mode: &'a str,
     duration_secs: f64,
     tracks: &'a [String],
+    /// Which tracks after Mix carry voices: their names can be anything.
+    #[serde(skip_serializing_if = "<[bool]>::is_empty")]
+    voices: &'a [bool],
     events: Vec<EventInfo<'a>>,
     /// The clip has a camera track (Content Creator Mode).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -245,6 +250,7 @@ fn write_info(path: &Path, job: &SaveJob, seconds: f64, camera: bool) -> Result<
         mode: &job.mode,
         duration_secs: (seconds * 1000.0).round() / 1000.0,
         tracks: &job.tracks,
+        voices: &job.voices,
         events,
         camera,
     };

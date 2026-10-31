@@ -29,6 +29,8 @@ pub struct Clip {
     pub size_bytes: u64,
     pub favorite: bool,
     pub tracks: Vec<String>,
+    /// Which tracks after Mix carry voices. Empty on older clips.
+    pub voices: Vec<bool>,
     pub events: Vec<Event>,
     /// e.g. "de_mirage" and "competitive", when the game reported them.
     pub map: String,
@@ -110,6 +112,7 @@ fn read_clip(clips_dir: &Path, path: &Path, game: &str) -> Option<Clip> {
         size_bytes: meta.len(),
         favorite: info["favorite"].as_bool().unwrap_or(false),
         tracks: info["tracks"].as_array().map(|t| t.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
+        voices: info["voices"].as_array().map(|v| v.iter().map(|b| b.as_bool().unwrap_or(false)).collect()).unwrap_or_default(),
         events,
         map: text("map"),
         mode: text("mode"),

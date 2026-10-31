@@ -300,6 +300,14 @@ pub struct Source {
     pub kind: Kind,
 }
 
+impl Source {
+    /// It carries voices, whatever the track is called: a microphone, Discord
+    /// or a device for chat.
+    pub fn voice(&self) -> bool {
+        self.kind != Kind::Loopback || self.device.to_lowercase().contains("chat")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Audio {

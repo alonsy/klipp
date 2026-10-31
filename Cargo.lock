@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "klipp"
-version = "0.4.0-test.1"
+version = "0.4.0-test.2"
 dependencies = [
  "anyhow",
  "semver",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-media"
-version = "0.4.0-test.1"
+version = "0.4.0-test.2"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-next",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-recorder"
-version = "0.4.0-test.1"
+version = "0.4.0-test.2"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "klipp-voice"
-version = "0.4.0-test.1"
+version = "0.4.0-test.2"
 dependencies = [
  "anyhow",
  "sherpa-onnx",

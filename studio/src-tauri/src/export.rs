@@ -45,6 +45,8 @@ pub struct ExportRequest {
     /// Empty when the clip only has the premixed track; then `mix_volume` applies.
     pub volumes: Vec<f32>,
     pub mix_volume: f32,
+    /// Share and Quality come out this much faster (0.5 = half speed). Trim stays at 1.
+    pub speed: f64,
 }
 
 #[derive(Serialize, Clone)]
@@ -175,6 +177,22 @@ pub(crate) fn audio_filter_from(input: usize, audio_streams: usize, volumes: &[f
     Some(f)
 }
 
+/// `audio`, ending in `[aout]`, played at `speed`. The pitch follows, like the
+/// editor's preview.
+fn audio_at_speed(audio: String, speed: f64) -> String {
+    if speed == 1.0 {
+        return audio;
+    }
+    let plain = audio.strip_suffix("[aout]").unwrap_or(&audio);
+    format!("{plain},aresample=48000,asetrate={:.0},aresample=48000[aout]", 48_000.0 * speed)
+}
+
+/// The frame rate worth keeping at `speed`: a slowed clip has fewer frames for
+/// each second, and repeating them only costs bits. Not under 30, for players.
+fn frames_at_speed(fps: f64, speed: f64) -> f64 {
+    (fps * speed.min(1.0)).max(30.0).min(fps)
+}
+
 /// The share export never needs more than this (kbps).
 const MAX_SHARE_KBPS: f64 = 12_000.0;
 /// A high quality copy of a 1080p clip on encoders that work to a bitrate (kbps).
@@ -239,15 +257,15 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
     let stem = src.file_stem().context("no file name")?.to_string_lossy().into_owned();
     // Progress of one ffmpeg run, mapped into a slice of the overall bar.
     let progress = |base: f64, span: f64| move |f: f64| on_progress((base + f * span).min(1.0));
-    let seek = |args: &mut Vec<String>| {
+    let seek = |args: &mut Vec<String>, length: f64| {
         args.extend(["-ss".into(), format!("{:.3}", req.start), "-i".into(), src.to_string_lossy().into_owned()]);
-        args.extend(["-t".into(), format!("{duration:.3}")]);
+        args.extend(["-t".into(), format!("{length:.3}")]);
     };
 
     if req.mode == Mode::Trim {
         let out = unique(&src.with_file_name(format!("{stem}_trim.mp4")));
         let mut args = Vec::new();
-        seek(&mut args);
+        seek(&mut args, duration);
         // Video and audio only: the chapter track can't be copied, but ffmpeg
         // rewrites the chapters themselves for the trimmed range.
         args.extend(["-map", "0:v", "-map", "0:a", "-c", "copy", "-movflags", "+faststart"].map(String::from));
@@ -256,14 +274,19 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
         return Ok(out);
     }
 
+    let speed = req.speed.clamp(0.25, 2.0);
+    // How long the export runs, which is what a size limit has to fit.
+    let length = duration / speed;
     let probe = probe(&src)?;
-    let audio = audio_filter(probe.audio_streams, &req.volumes, req.mix_volume);
+    let frames = frames_at_speed(probe.fps, speed);
+    let audio = audio_filter(probe.audio_streams, &req.volumes, req.mix_volume).map(|a| audio_at_speed(a, speed));
     let dir = clips_dir.join(EXPORTS_DIR);
     fs::create_dir_all(&dir)?;
     let base_args = |height: u32, fps: f64, video: &[String], audio_kbps: u32| {
         let mut args = Vec::new();
-        seek(&mut args);
-        let mut graph = format!("[0:v:0]scale=-2:{height}:flags=lanczos,fps={fps}[vout]");
+        seek(&mut args, length);
+        let slow = if speed == 1.0 { String::new() } else { format!("setpts=PTS/{speed},") };
+        let mut graph = format!("[0:v:0]{slow}scale=-2:{height}:flags=lanczos,fps={fps}[vout]");
         if let Some(a) = &audio {
             graph = format!("{graph};{a}");
         }
@@ -280,7 +303,7 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
     if req.mode == Mode::Quality {
         let out = unique(&dir.join(format!("{stem}_export.mp4")));
         let video = video_args(encoder, QUALITY_KBPS_1080P * probe.height as f64 / 1080.0, Aim::Quality);
-        run_ffmpeg(base_args(probe.height, probe.fps, &video, 192), &out, duration, slot, progress(0.0, 1.0))?;
+        run_ffmpeg(base_args(probe.height, frames, &video, 192), &out, length, slot, progress(0.0, 1.0))?;
         return Ok(out);
     }
 
@@ -293,11 +316,11 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
     for attempt in 0..3 {
         // Short clips would get a huge budget the encoder overshoots; past this
         // 1080p60 looks no better, so they come out small on the first try.
-        let video_kbps = (target_bytes * 8.0 * budget / duration / 1000.0 - audio_kbps as f64).clamp(150.0, MAX_SHARE_KBPS);
+        let video_kbps = (target_bytes * 8.0 * budget / length / 1000.0 - audio_kbps as f64).clamp(150.0, MAX_SHARE_KBPS);
         let (height, fps) = size_ladder(video_kbps, &probe);
         let video = video_args(encoder, video_kbps, if attempt == 0 { Aim::Size } else { Aim::SmallerSize });
         let span = 1.0 / (attempt + 1) as f64;
-        run_ffmpeg(base_args(height, fps, &video, audio_kbps), &out, duration, slot, progress(1.0 - span, span))?;
+        run_ffmpeg(base_args(height, fps.min(frames), &video, audio_kbps), &out, length, slot, progress(1.0 - span, span))?;
         if fs::metadata(&out)?.len() as f64 <= target_bytes {
             return Ok(out);
         }

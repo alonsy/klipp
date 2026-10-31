@@ -58,7 +58,7 @@
   let previewMuted = $state(false);
   let previewLevel = $derived(previewMuted ? 0 : previewVolume);
   let volumeIcon = $derived(previewLevel === 0 ? "mute" : previewLevel < 0.5 ? "volumeLow" : "volume");
-  /** How fast you watch it here, as a step of SPEEDS. Never exported; each clip opens at 1×. */
+  /** How fast it plays here, as a step of SPEEDS, and exports with it. Each clip opens at 1×. */
   let speedStep = $state(NORMAL);
   let speed = $derived(SPEEDS[speedStep]);
   // Fullscreen shows its own small controls, hidden while the mouse rests.
@@ -515,7 +515,7 @@
         </div>
       {/if}
     </div>
-    <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} volumes={exportVolumes} mixVolume={masterLevel} />
+    <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} voices={clip.voices ?? []} volumes={exportVolumes} mixVolume={masterLevel} {speed} />
     <WindowControls />
   </header>
 

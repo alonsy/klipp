@@ -19,14 +19,21 @@
     outPoint: number;
     /** Names of the clip's separate tracks, in the order of `volumes`. */
     tracks: string[];
+    /** Which of `tracks` the recorder knows carry voices; empty on older clips. */
+    voices: boolean[];
     volumes: number[];
     mixVolume: number;
+    /** The speed it plays at in the editor. */
+    speed: number;
   }
-  let { path, inPoint, outPoint, tracks, volumes, mixVolume }: Props = $props();
+  let { path, inPoint, outPoint, tracks, voices, volumes, mixVolume, speed }: Props = $props();
 
-  /** Tracks that carry voices: chat apps and microphones, by the names Klipp and Sonar give them. */
+  /** Off exports at 1×, for a clip only slowed down to look at. */
+  let keepSpeed = $state(true);
+
+  /** Tracks that carry voices: what the recorder knows from the device, or a name that says so. */
   const VOICE = /chat|mic|voice|discord|party|team/i;
-  let voiceTracks = $derived(tracks.map((t) => VOICE.test(t)));
+  let voiceTracks = $derived(tracks.map((t, i) => voices[i] || VOICE.test(t)));
   let voiceNames = $derived(tracks.filter((_, i) => voiceTracks[i]));
   /** "Chat and Mic" */
   let voiceList = $derived(voiceNames.length > 1 ? `${voiceNames.slice(0, -1).join(", ")} and ${voiceNames.at(-1)}` : (voiceNames[0] ?? ""));
@@ -103,7 +110,8 @@
     } catch {
       // Not important.
     }
-    const id = await api.startExport({ path, start: inPoint, end: outPoint, mode, targetMb, volumes: outVolumes, mixVolume });
+    const outSpeed = keepSpeed && mode !== "trim" ? speed : 1;
+    const id = await api.startExport({ path, start: inPoint, end: outPoint, mode, targetMb, volumes: outVolumes, mixVolume, speed: outSpeed });
     busy = { id, mode, fraction: 0 };
   }
 
@@ -173,6 +181,16 @@
         </div>
 
         <div class="toggles">
+          {#if speed !== 1}
+            <div class="copy">
+              <div class="copy-text">
+                <span class="copy-title">Export at {speed}×</span>
+                <span class="copy-hint">A trimmed copy stays at 1×.</span>
+              </div>
+              <Toggle checked={keepSpeed} label="Export at {speed}×" onchange={(v) => (keepSpeed = v)} />
+            </div>
+          {/if}
+
           {#if voiceNames.length > 0}
             <div class="copy">
               <div class="copy-text">
