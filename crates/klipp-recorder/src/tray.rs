@@ -42,10 +42,12 @@ pub enum Command {
     ThemeChanged = 10,
     /// A newer Klipp is out (see `update`).
     Update = 11,
+    /// The folder with the HUD pictures, when there is one.
+    OpenHudTest = 12,
     /// Performance mode off, on or plus (see `settings::Performance`).
-    PerformanceOff = 12,
-    PerformanceOn = 13,
-    PerformancePlus = 14,
+    PerformanceOff = 13,
+    PerformanceOn = 14,
+    PerformancePlus = 15,
 }
 
 impl Command {
@@ -62,6 +64,7 @@ impl Command {
             Self::OpenLastClip,
             Self::ThemeChanged,
             Self::Update,
+            Self::OpenHudTest,
             Self::PerformanceOff,
             Self::PerformanceOn,
             Self::PerformancePlus,
@@ -75,6 +78,7 @@ impl Command {
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 /// Whether recording is paused, for the menu's wording.
 static PAUSED: AtomicBool = AtomicBool::new(false);
+static HUD_FOLDER: AtomicBool = AtomicBool::new(false);
 /// Performance mode's command, for the menu's tick.
 static PERFORMANCE: AtomicU32 = AtomicU32::new(Command::PerformanceOff as u32);
 
@@ -247,6 +251,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
+/// Whether the menu offers the folder with the HUD pictures.
+pub fn show_hud_folder(show: bool) {
+    HUD_FOLDER.store(show, Ordering::Relaxed);
+}
+
 unsafe fn show_menu(hwnd: HWND) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
@@ -277,6 +286,9 @@ unsafe fn show_menu(hwnd: HWND) {
         }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         item(Command::OpenClips, w!("Open clips folder"), MF_ENABLED);
+        if HUD_FOLDER.load(Ordering::Relaxed) {
+            item(Command::OpenHudTest, w!("Open HUD test folder"), MF_ENABLED);
+        }
         item(Command::OpenSettings, w!("Settings"), MF_ENABLED);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let check = if autostart::is_enabled() { MF_CHECKED } else { MF_UNCHECKED };

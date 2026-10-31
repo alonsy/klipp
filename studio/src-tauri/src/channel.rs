@@ -4,7 +4,7 @@
 //!
 //! Checks ask klipp.dev first: it answers with the same manifests as GitHub
 //! and counts active installs from the random install number it's sent
-//! (D43). GitHub directly if klipp.dev can't be reached.
+//!. GitHub directly if klipp.dev can't be reached.
 
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -53,7 +53,7 @@ pub fn read(dir: &Path, version: &str) -> Updates {
         _ => "production",
     };
     let flag = |key: &str, default: bool| file.as_ref().and_then(|v| v[key].as_bool()).unwrap_or(default);
-    // Logs go by default on the test channel only (D52).
+    // Logs go by default on the test channel only.
     Updates {
         channel: channel.into(),
         send_logs: flag("sendLogs", channel == "test"),

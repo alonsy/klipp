@@ -161,7 +161,7 @@ impl MonitorCapture {
         // Pictures up to twice the recording rate. At exactly the rate, a
         // screen's refresh steps (6.06 ms at 165 Hz) push most game frames
         // just short of the interval, so every other one was skipped: 34 new
-        // pictures a second at 60 fps on a tester's PC in CS2 (FIX-17). The
+        // pictures a second at 60 fps on a tester's PC in CS2. The
         // video loop takes the newest at each tick. The light capture asks
         // for a quarter more than the rate: at 60 fps that's every third
         // refresh at 165 Hz (55 a second), every second one at 144 Hz.

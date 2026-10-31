@@ -4,6 +4,7 @@
   // the front, when the clips folder changes, and every few minutes.
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { enter, leave } from "./motion";
   import { library, openPage } from "./state.svelte";
 
   const LOW_GB = 5;
@@ -22,49 +23,54 @@
     };
   });
 
-  const drive = $derived(/^[a-z]:/i.test(library.clipsDir) ? library.clipsDir.slice(0, 2).toUpperCase() : "the clips drive");
+  const drive = $derived(/^[a-z]:/i.test(library.clipsDir) ? `drive ${library.clipsDir[0].toUpperCase()}` : "the clips drive");
 </script>
 
 {#if freeGb != null && freeGb < LOW_GB}
-  <div class="low">
+  <div class="low" in:enter={{ y: 8 }} out:leave={{ y: 4 }}>
     <div class="head">
       <Icon name="warning" size={16} />
       <b>Almost out of space</b>
     </div>
-    <span>{freeGb} GB free on {drive}. Clips can't be saved once it's full.</span>
+    <p>{freeGb} GB free on {drive}. Clips can't be saved once it's full.</p>
     <button onclick={() => openPage("settings", "storage")}>Storage settings</button>
   </div>
 {/if}
 
 <style>
   .low {
-    --warn: #f2c84b;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--warn) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border-radius: var(--r-sm);
+    background: var(--warn-soft);
   }
 
   .head {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
+    font-size: var(--fs-control);
+  }
+
+  .head b {
+    font-weight: 600;
   }
 
   .head :global(.icon) {
     color: var(--warn);
   }
 
-  span {
-    font-size: 12px;
+  p {
+    margin: 0;
+    font-size: var(--fs-xs);
+    line-height: 1.4;
     color: var(--muted);
   }
 
   button {
-    padding: 6px 12px;
-    font-size: 13px;
+    padding: 6px var(--sp-3);
+    font-size: var(--fs-control);
   }
 </style>

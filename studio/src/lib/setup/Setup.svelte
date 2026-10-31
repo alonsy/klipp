@@ -3,7 +3,7 @@
   // video and saving choices with the best ones preselected, and starts
   // recording with them. Also reachable from Settings ("Run setup diagnostics
   // again"), and shown once after an update as just the PC test and video
-  // (`pcOnly`, IDEA-45).
+  // (`pcOnly`).
   import { onMount, untrack } from "svelte";
   import * as api from "../api";
   import type { AudioDevice, Drive, SystemCheck } from "../api";
@@ -12,6 +12,7 @@
   import { DISCORD, routerInstalled } from "../discordTrack";
   import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
+  import { DUR, easeOut, enter, leave, pageIn, pageOut, reduced } from "../motion";
   import { recommendPreset, type PcTest } from "../pctest";
   import { matchPreset, PRESETS, presetValues, type PresetId } from "../presets";
   import SystemMeters from "../SystemMeters.svelte";
@@ -35,6 +36,8 @@
   // The component lives for one run of setup, so the first step is fixed.
   let step = $state<Step>(untrack(() => (pcOnly ? "check" : "welcome")));
   let index = $derived(steps.findIndex((s) => s.id === step));
+  /** The way steps travel: 1 forward, -1 back. */
+  let dir = $state(1);
 
   let check = $state<SystemCheck | null>(null);
   let checkError = $state("");
@@ -46,9 +49,14 @@
   /** Setup run again with a different drive than the current clips folder's. */
   const driveChanged = $derived(rerun && !!drive && !library.clipsDir.toUpperCase().startsWith(drive));
   let finishing = $state(false);
+  /** Recording has started: the last beat before the library. */
+  let finished = $state(false);
   /** The save key test's result, shown under the key. */
   let keyNote = $state("");
   let keyBad = $state(false);
+  let keyPhase = $state<"idle" | "ready" | "press" | "works" | "failed">("idle");
+  /** The video step shows the fine-tuning instead of the presets. */
+  let tune = $state(false);
 
   // Choices, preselected once the check is done.
   let c = $state({
@@ -171,6 +179,8 @@
   const refresh = $derived(check?.monitor?.refreshHz ?? 60);
   const screen = $derived({ height: nativeH, refreshHz: refresh });
   const preset = $derived(matchPreset(c, screen));
+  /** The preset the check chose, marked among the others. */
+  let picked = $state<PresetId | null>(null);
 
   /** The check measured what recording costs this PC (newer recorders): it is the PC test. */
   function asPcTest(r: SystemCheck | null): PcTest | null {
@@ -200,7 +210,8 @@
   function recommend(r: SystemCheck) {
     // Newer recorders measure what recording costs (the PC test); older ones only say what ran smoothly.
     const test = asPcTest(r);
-    applyPreset(test ? recommendPreset(test, { height: r.monitor?.height ?? 1080, refreshHz: r.monitor?.refreshHz ?? 60 }) : recommendedPreset(r));
+    picked = test ? recommendPreset(test, { height: r.monitor?.height ?? 1080, refreshHz: r.monitor?.refreshHz ?? 60 }) : recommendedPreset(r);
+    applyPreset(picked);
     c.codec = encodes("av1", heightOf(c.resolution)) ? "av1" : "h264";
     c.cs2 = r.cs2;
     // F8 on desktops; laptops often need Fn for F keys, and Alt+F8 is easy to reach with it.
@@ -224,11 +235,55 @@
   const perMinute = $derived(Math.round((60 * mbps) / 8));
 
   function next() {
+    dir = 1;
     if (index < steps.length - 1) step = steps[index + 1].id;
   }
   function back() {
+    dir = -1;
     if (index > 0) step = steps[index - 1].id;
   }
+
+  // The PC test on screen. The probe says nothing until it's done, so the ring
+  // follows how long it usually takes (about 20 s, counted from when it started
+  // behind Welcome), never quite arrives, and sweeps home when the answer comes.
+  const startedAt = performance.now();
+  const estimate = (ms: number) => Math.min(0.96, 1 - Math.exp(-ms / 9000));
+  /** The ring, 0 to 1. */
+  let meter = $state(0);
+  /** The answer is in and the ring has landed: the result shows. */
+  let revealed = $state(false);
+  const SWEEP = DUR.slow * 2;
+
+  $effect(() => {
+    if (step !== "check" || revealed || checkError) return;
+    const done = !!check;
+    const from = done ? untrack(() => meter) : 0;
+    const start = performance.now();
+    // Frames stop while the window is covered; the timer lands it anyway.
+    const land = done ? setTimeout(() => ((meter = 1), (revealed = true)), reduced() ? 0 : SWEEP + DUR.base) : 0;
+    let frame = requestAnimationFrame(function draw(now) {
+      meter = done ? from + (1 - from) * easeOut(Math.min(1, (now - start) / SWEEP)) : estimate(now - startedAt);
+      frame = requestAnimationFrame(draw);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(land);
+    };
+  });
+
+  const testPhase = $derived(
+    check ? "Done"
+    : meter < 0.15 ? "Finding your graphics card"
+    : meter < 0.4 ? "Trying its video encoders"
+    : meter < 0.8 ? "Recording a few seconds at each setting"
+    : "Measuring what it costs",
+  );
+
+  const presetName = $derived(PRESETS.find((p) => p.id === preset)?.name ?? "Custom");
+  const sizeName = (r: string) => (r === "native" ? `${nativeH}p` : r);
+  const games = $derived(
+    [check?.cs2 && "Counter-Strike 2", check?.league && "League of Legends", check?.rocketLeague && "Rocket League"].filter(Boolean).join(", "),
+  );
 
   function sources() {
     if (c.sonar) {
@@ -289,6 +344,9 @@
       await api.startRecorder();
       setTimeout(refreshRecorder, 1500);
       await reload();
+      // A moment to say it's running, then the library.
+      finished = true;
+      await new Promise((r) => setTimeout(r, reduced() ? 0 : DUR.spring * 3));
       toast(`Klipp is recording. Press ${c.hotkey} to save the last ${c.length} seconds.`);
       ondone?.();
       openPage("clips");
@@ -314,126 +372,150 @@
   }
 </script>
 
+<!-- The Buffer ring: `value` fills it from beside the dot, round to the dot. -->
+{#snippet ring(size: number, value: number, kind = "")}
+  <svg class="ring {kind}" viewBox="0 0 100 100" width={size} height={size} aria-hidden="true">
+    <path class="track" pathLength="100" d="M80.9 41.7 A32 32 0 1 1 58.3 19.1" />
+    <path class="arc" pathLength="100" d="M80.9 41.7 A32 32 0 1 1 58.3 19.1" style:stroke-dashoffset={100 - value * 100} />
+    <circle class="dot" cx="79.7" cy="20.3" r="9" />
+  </svg>
+{/snippet}
+
+{#snippet fact(name: string, value: string, kind = "", tip = "", delay = 0)}
+  <div class="fact enter {kind}" title={tip || undefined} style:--delay="{delay}ms">
+    <dt>{name}</dt>
+    <dd>{#if kind}<Icon name={kind === "bad" ? "warning" : "info"} size={14} />{/if}{value}</dd>
+  </div>
+{/snippet}
+
+{#snippet help()}
+  <p class="help">
+    Tell us about it and we'll look into it.
+    <button class="copy" onclick={copyDetails}><Icon name="copy" size={15} />Copy details</button>
+  </p>
+{/snippet}
+
 <div class="setup">
+  <div class="glow" class:on={step === "welcome" && !finished} aria-hidden="true"></div>
+
   <header data-tauri-drag-region>
-    <span class="brand"><Logo size={22} /></span>
+    <span class="brand" class:hidden={step === "welcome" || finished}><Logo size={20} /></span>
+    <span
+      class="progress"
+      class:hidden={step === "welcome" || finished}
+      role="progressbar"
+      aria-label="Setup"
+      aria-valuemin={1}
+      aria-valuemax={steps.length}
+      aria-valuenow={index + 1}
+      aria-valuetext={steps[index]?.name}
+    >
+      <span class="bar" style:--p={(index + 1) / steps.length}></span>
+    </span>
     {#if rerun}<button class="ghost skip" onclick={() => openPage("settings")}>Cancel</button>{/if}
     <WindowControls />
   </header>
 
-  <div class="body">
-    <ol class="rail">
-      {#each steps as s, i (s.id)}
-        <li class:done={i < index} class:current={i === index}>
-          <span class="dot">{#if i < index}<Icon name="check" size={13} />{:else}{i + 1}{/if}</span>
-          {s.name}
-        </li>
-      {/each}
-    </ol>
-
-    <section class="page">
-      {#key step}
-        <div class="content">
-          {#if step === "welcome"}
-            <div class="hero-mark"><Logo size={44} /></div>
-            <h1>{rerun ? "Set up Klipp again" : "Welcome to Klipp"}</h1>
-            <p class="lead">
-              Klipp keeps the last moments of your screen ready to save. Let's check what your PC can record and choose your audio. It takes about a minute.
-            </p>
+  <main class="stage stack">
+    {#key finished ? "done" : step}
+      <div class="view" style:--from="{dir * 28}px" out:leave={{ x: -dir * 20 }}>
+        {#if finished}
+          <div class="page center">
+            {@render ring(96, 1, "rec")}
+            <h1>Klipp is recording</h1>
+            <p class="lead">Press <kbd>{c.hotkey}</kbd> to save the last {fmtLength(c.length)}.</p>
+          </div>
+        {:else if step === "welcome"}
+          <div class="page center">
+            {@render ring(88, 1, "draw")}
+            <h1 class="big">{rerun ? "Set up Klipp again" : "Welcome to Klipp"}</h1>
+            <p class="lead">Klipp keeps the last moments of your screen ready to save.</p>
             <ul class="promises">
-              <li><Icon name="bolt" size={18} />Light: a few MB of memory besides the clip buffer</li>
-              <li><Icon name="drive" size={18} />Everything stays on your PC, no account</li>
-              <li><Icon name="crosshair" size={18} />Safe with anti-cheat: nothing touches your games</li>
+              <li title="A few MB of memory besides the clip buffer"><Icon name="bolt" size={15} />Light</li>
+              <li><Icon name="drive" size={15} />Stays on your PC, no account</li>
+              <li title="Nothing touches your games"><Icon name="crosshair" size={15} />Safe with anti-cheat</li>
             </ul>
-          {:else if step === "check"}
-            <h1>Your PC</h1>
-            <p class="lead">Klipp tested your graphics card's encoders for real, at your screen's size.</p>
+            <button class="primary go" onclick={next}>Get started</button>
+            <p class="eta">About a minute</p>
+          </div>
+        {:else if step === "check"}
+          <div class="stack fill">
             {#if checkError}
-              <p class="bad"><Icon name="warning" size={18} />Couldn't check this PC: {checkError}</p>
-              <button class="copy" onclick={copyDetails}><Icon name="copy" size={15} />Copy details</button>
-            {:else if !check}
-              <div class="checking"><span class="spinner"></span>Checking your graphics card…</div>
-            {:else}
-              <ul class="checks">
-                <li class:ok={canRecord} class:bad={!canRecord}>
-                  <span class="mark"><Icon name={canRecord ? "check" : "warning"} size={16} /></span>
-                  <div>
-                    <b>Graphics card</b>
-                    <span>{check.recordingGpu ?? check.gpus[0]?.name ?? "Not found"}{check.encoder ? ` · ${check.encoder}` : ""}</span>
-                    {#if !canRecord}
-                      <span class="note">
-                        {check.encoder
-                          ? "Klipp couldn't start this card's video encoder. A newer graphics driver often fixes that."
-                          : "This graphics card has no video encoder Klipp can use. Klipp records with NVIDIA, AMD and Intel graphics."}
-                      </span>
-                    {/if}
-                  </div>
-                </li>
-                {#if canRecord}
-                  <li class:ok={encodes("av1", nativeH)} class:warn={!encodes("av1", nativeH)}>
-                    <span class="mark"><Icon name={encodes("av1", nativeH) ? "check" : "info"} size={16} /></span>
-                    <div>
-                      <b>Video encoding</b>
-                      <span>
-                        {encodes("av1", nativeH)
-                          ? "AV1: small files at high quality"
-                          : "H.264 (AV1 needs a GeForce RTX 40, Radeon RX 7000 or 700M, Intel Arc or newer)"}
-                      </span>
-                      {#if integrated}<span>Built-in graphics: 1080p is suggested so recording keeps up at 60 fps.</span>{/if}
-                    </div>
-                  </li>
-                {/if}
-                {#if check.monitor}
-                  <li class="ok">
-                    <span class="mark"><Icon name="check" size={16} /></span>
-                    <div><b>Screen</b><span>{check.monitor.width} × {check.monitor.height} at {check.monitor.refreshHz} Hz</span></div>
-                  </li>
-                {/if}
-                <li class:ok={check.ramMb >= 8000} class:warn={check.ramMb < 8000}>
-                  <span class="mark"><Icon name={check.ramMb >= 8000 ? "check" : "info"} size={16} /></span>
-                  <div>
-                    <b>Memory</b>
-                    <span>{Math.round(check.ramMb / 1024)} GB{check.ramMb >= 8000 ? ", plenty for a 1-minute buffer" : ", so the buffer starts at 30 seconds"}</span>
-                  </div>
-                </li>
-                {#if check.freeGb != null}
-                  <li class:ok={check.freeGb >= 20} class:warn={check.freeGb < 20}>
-                    <span class="mark"><Icon name={check.freeGb >= 20 ? "check" : "info"} size={16} /></span>
-                    <div><b>Storage</b><span>{check.freeGb} GB free for clips in {check.clipsDir}</span></div>
-                  </li>
-                {/if}
-                {#if check.cs2}
-                  <li class="ok">
-                    <span class="mark"><Icon name="check" size={16} /></span>
-                    <div><b>Counter-Strike 2</b><span>Found: headshots and multi-kills can be saved automatically</span></div>
-                  </li>
-                {/if}
-                {#if check.league}
-                  <li class="ok">
-                    <span class="mark"><Icon name="check" size={16} /></span>
-                    <div><b>League of Legends</b><span>Found: multi-kills, first bloods and steals can be saved automatically</span></div>
-                  </li>
-                {/if}
-                {#if check.rocketLeague}
-                  <li class="ok">
-                    <span class="mark"><Icon name="check" size={16} /></span>
-                    <div><b>Rocket League</b><span>Found: goals, epic saves and demolitions can be saved automatically</span></div>
-                  </li>
-                {/if}
-              </ul>
-              {#if !canRecord}
-                <p class="help">Tell us about it and we'll look into it: <button class="copy" onclick={copyDetails}><Icon name="copy" size={15} />Copy details</button></p>
-              {/if}
-            {/if}
-          {:else if step === "audio"}
-            <h1>Audio</h1>
-            <p class="lead">Each source is its own track, so you can turn a loud teammate down later.</p>
-            {#if sonarFound}
-              <div class="option" class:on={c.sonar}>
-                <div>
-                  <b>SteelSeries Sonar found</b>
-                  <span>Record Sonar's Game, Chat and Mic as three separate tracks.</span>
+              <div class="page center" in:pageIn out:pageOut>
+                <div class="seal bad">{@render ring(72, 1, "bad")}<Icon name="warning" size={24} /></div>
+                <h1>Couldn't check this PC</h1>
+                <p class="lead selectable">{checkError}</p>
+                {@render help()}
+              </div>
+            {:else if !revealed}
+              <div class="page center" in:pageIn out:pageOut>
+                <div class="seal">
+                  {@render ring(136, meter, "live")}
+                  <span class="pct mono">{Math.round(meter * 100)}<small>%</small></span>
                 </div>
+                <h1>Testing your PC</h1>
+                <div class="stack phase" aria-live="polite">
+                  {#key testPhase}
+                    <p class="lead" in:enter={{ y: 6 }} out:leave={{ y: -6 }}>{testPhase}</p>
+                  {/key}
+                </div>
+                <p class="eta" class:hidden={!!check}>{pcOnly ? "New in this version. " : ""}About 20 seconds</p>
+              </div>
+            {:else if check}
+              <div class="page center result" in:pageIn out:pageOut>
+                {#if canRecord}
+                  <div class="seal ok">{@render ring(72, 1)}<Icon name="check" size={24} /></div>
+                  <h1>Ready to record</h1>
+                  <p class="choice">
+                    <span class="by">{preset === picked ? "Picked for your PC" : "Your choice"}</span>
+                    <b>{presetName}</b>
+                    <span class="mono">{sizeName(c.resolution)} · {c.fps} fps · {c.codec === "av1" ? "AV1" : "H.264"}</span>
+                  </p>
+                {:else}
+                  <div class="seal bad">{@render ring(72, 1, "bad")}<Icon name="warning" size={24} /></div>
+                  <h1>This PC can't record yet</h1>
+                  <p class="lead">
+                    {check.encoder
+                      ? "Klipp couldn't start this card's video encoder. A newer graphics driver often fixes that."
+                      : "This graphics card has no video encoder Klipp can use. Klipp records with NVIDIA, AMD and Intel graphics."}
+                  </p>
+                  {@render help()}
+                {/if}
+                <dl class="facts">
+                  {@render fact("Graphics card", `${check.recordingGpu ?? check.gpus[0]?.name ?? "Not found"}${check.encoder ? ` · ${check.encoder}` : ""}`, canRecord ? "" : "bad")}
+                  {#if canRecord}
+                    {@render fact(
+                      "Encoding",
+                      encodes("av1", nativeH) ? "AV1, small files at high quality" : "H.264",
+                      encodes("av1", nativeH) ? "" : "warn",
+                      encodes("av1", nativeH) ? "" : "AV1 needs a GeForce RTX 40, Radeon RX 7000 or 700M, Intel Arc or newer",
+                      48,
+                    )}
+                  {/if}
+                  {#if check.monitor}
+                    {@render fact("Screen", `${check.monitor.width} × ${check.monitor.height} at ${check.monitor.refreshHz} Hz`, "", "", 96)}
+                  {/if}
+                  {@render fact("Memory", `${Math.round(check.ramMb / 1024)} GB${check.ramMb >= 8000 ? "" : ", so the buffer starts at 30 seconds"}`, check.ramMb >= 8000 ? "" : "warn", "", 144)}
+                  {#if check.freeGb != null}
+                    {@render fact("Storage", `${check.freeGb} GB free`, check.freeGb >= 20 ? "" : "warn", `For clips in ${check.clipsDir}`, 192)}
+                  {/if}
+                  {#if games}
+                    {@render fact("Auto-clips", games, "", "Kills, goals, steals and more can be saved by themselves", 240)}
+                  {/if}
+                </dl>
+                {#if integrated}<p class="eta">Built-in graphics: 1080p is suggested so recording keeps up at 60 fps.</p>{/if}
+              </div>
+            {/if}
+          </div>
+        {:else if step === "audio"}
+          <div class="page">
+            <div class="title">
+              <h1>Audio</h1>
+              <p class="lead">Each source is its own track, so you can turn a loud teammate down later.</p>
+            </div>
+            {#if sonarFound}
+              <div class="row">
+                <span class="what wide"><b>SteelSeries Sonar found</b><span>Record Sonar's Game, Chat and Mic as three separate tracks.</span></span>
                 <Toggle checked={c.sonar} label="Use Sonar's tracks" onchange={(v) => ((c.sonar = v), (touchedAudio = true))} />
               </div>
             {/if}
@@ -446,115 +528,142 @@
                 </select>
               </label>
               {#if !router}
-                <div class="row">
-                  <span class="what"
-                    ><b>Try separating Discord and Windows sounds <span class="exp">Experimental</span></b><span
-                      >Voice chat on its own track, to turn it down later or leave it out when you share</span
-                    ></span
-                  >
+                <div class="row" title="Voice chat on its own track, to turn it down later or leave it out when you share">
+                  <span class="what wide"><b>Separate Discord and Windows sounds <span class="exp">Experimental</span></b></span>
                   <Toggle checked={c.discord} label="Try separating Discord and Windows sounds" onchange={(v) => (c.discord = v)} />
                 </div>
               {/if}
             {/if}
             <div class="row">
-              <span class="what"><b>Microphone</b><span>Your voice, on its own track</span></span>
-              <Toggle checked={c.mic} label="Record the microphone" onchange={(v) => (c.mic = v)} />
-            </div>
-            {#if c.mic && !c.sonar}
-              <label class="row sub">
-                <span class="what"><span>Microphone</span></span>
-                <select bind:value={c.micDevice}>
+              <span class="what"><b>Microphone</b><span>Your voice</span></span>
+              {#if c.mic && !c.sonar}
+                <select aria-label="Microphone" bind:value={c.micDevice} in:enter={{ y: 0, duration: DUR.base }}>
                   <option value="">Windows default</option>
                   {#each recording as name (name)}<option value={name}>{name}</option>{/each}
                 </select>
-              </label>
-            {/if}
-            <div class="row">
-              <span class="what"><b>Save sound</b><span>A short sound when a clip is saved, so you know it worked</span></span>
-              <Toggle checked={c.sound} label="Play a sound when a clip is saved" onchange={(v) => (c.sound = v)} />
+              {:else}
+                <span></span>
+              {/if}
+              <Toggle checked={c.mic} label="Record the microphone" onchange={(v) => (c.mic = v)} />
             </div>
-            {#if c.sound}
-              <label class="row sub">
-                <span class="what"
-                  ><span>{c.sonar ? "Plays on: pick your headset, not a Sonar device" : "Plays on (Klipp keeps it out of your clips)"}</span></span
-                >
-                <select bind:value={c.cue}>
+            <div class="row">
+              <span class="what" title="A short sound when a clip is saved, so you know it worked"><b>Save sound</b><span>{c.sonar ? "Pick your headset, not a Sonar device" : "Klipp keeps it out of your clips"}</span></span>
+              {#if c.sound}
+                <select aria-label="Save sound plays on" bind:value={c.cue} in:enter={{ y: 0, duration: DUR.base }}>
                   <option value="">Windows default</option>
                   {#each playback as name (name)}<option value={name}>{name}</option>{/each}
                 </select>
-              </label>
-              <div class="row sub">
+              {:else}
+                <span></span>
+              {/if}
+              <Toggle checked={c.sound} label="Play a sound when a clip is saved" onchange={(v) => (c.sound = v)} />
+            </div>
+            {#if c.sound}
+              <div class="row sub" in:enter={{ y: -4, duration: DUR.base }}>
                 <span class="what"><span>Volume</span></span>
-                <Slider min={0} max={1} step={0.05} value={c.volume} label="Save sound volume" oninput={(v) => (c.volume = v)} />
-                <span class="value mono">{Math.round(c.volume * 100)}%</span>
-                <button class="icon" aria-label="Play the save sound" title="Play it" onclick={() => api.playSound(c.cue, c.volume).catch((e) => toast(`Couldn't play it: ${e}`))}
+                <span class="ctl">
+                  <Slider min={0} max={1} step={0.05} value={c.volume} label="Save sound volume" oninput={(v) => (c.volume = v)} />
+                  <span class="value mono">{Math.round(c.volume * 100)}%</span>
+                </span>
+                <button class="icon ghost" aria-label="Play the save sound" title="Play it" onclick={() => api.playSound(c.cue, c.volume).catch((e) => toast(`Couldn't play it: ${e}`))}
                   ><Icon name="play" size={15} /></button
                 >
               </div>
             {/if}
-          {:else if step === "video"}
-            <h1>Video</h1>
-            <p class="lead">Picked for your PC. See what Klipp will use, and change it if you like.</p>
-            {#if pcTest}<div class="meters-wrap"><SystemMeters test={pcTest} choice={c} lengthSecs={c.length} {screen} audioTracks={1 + sources().length} /></div>{/if}
-            <div class="presets" role="radiogroup" aria-label="Preset">
-              {#each PRESETS as p (p.id)}
-                {@const v = presetValues(p.id, screen)}
-                <button class="preset" class:on={preset === p.id} role="radio" aria-checked={preset === p.id} onclick={() => applyPreset(p.id)}>
-                  <span class="pname">{p.name}</span>
-                  <span class="pspec mono">{v.resolution === "native" ? `${nativeH}p` : v.resolution} · {v.fps} fps</span>
-                </button>
-              {/each}
-              <div class="preset custom" class:on={preset === "custom"} role="radio" aria-checked={preset === "custom"} aria-disabled="true">
-                <span class="pname">Custom</span>
-                <span class="pspec">Your own mix</span>
+          </div>
+        {:else if step === "video"}
+          <div class="page wide">
+            <div class="title">
+              <h1>Video</h1>
+              <p class="lead">Picked for your PC. Change it if you like.</p>
+            </div>
+            <div class="split">
+              <div class="side stack">
+                {#key tune}
+                  <div class="pane" in:enter={{ x: tune ? 16 : -16, y: 0 }} out:leave={{ x: tune ? -12 : 12 }}>
+                    {#if !tune}
+                      <div class="presets" role="radiogroup" aria-label="Preset">
+                        {#each PRESETS as p (p.id)}
+                          {@const v = presetValues(p.id, screen)}
+                          <button class="preset" class:on={preset === p.id} role="radio" aria-checked={preset === p.id} onclick={() => applyPreset(p.id)}>
+                            <span class="pname">{p.name}</span>
+                            {#if picked === p.id}<span class="best">Best fit</span>{/if}
+                            <span class="pspec mono">{sizeName(v.resolution)} · {v.fps} fps</span>
+                          </button>
+                        {/each}
+                        {#if preset === "custom"}
+                          <div class="preset on custom" role="radio" aria-checked="true" aria-disabled="true">
+                            <span class="pname">Custom</span>
+                            <span class="pspec">Your own mix</span>
+                          </div>
+                        {/if}
+                      </div>
+                      <p class="phint">{preset === "custom" ? "Your own mix of the fine-tuning settings." : PRESETS.find((p) => p.id === preset)?.hint}</p>
+                      <button class="ghost link" onclick={() => (tune = true)}><Icon name="sliders" size={15} />Fine-tune</button>
+                    {:else}
+                      <button class="ghost link top" onclick={() => (tune = false)}><Icon name="back" size={15} />Presets</button>
+                      <div class="tuned" title={c.resolution === "native" ? `Your screen's size, ${check?.monitor?.width ?? ""} × ${nativeH}` : "Scaled down: smaller files and less memory"}>
+                        <span class="name">Resolution</span>
+                        <Segmented
+                          value={c.resolution}
+                          label="Resolution"
+                          options={resolutions.map((r) => [r, r === "native" ? `Native${encodes("av1", heightOf(r)) || encodes("h264", heightOf(r)) ? "" : " ✕"}` : r] as const)}
+                          onchange={(v) => (c.resolution = v)}
+                        />
+                      </div>
+                      <div class="tuned" title={refresh < 120 ? `Your screen runs at ${refresh} Hz, so 120 fps isn't offered` : "60 is smooth; 120 doubles the detail in fast moments"}>
+                        <span class="name">Frame rate</span>
+                        <Segmented
+                          value={c.fps}
+                          label="Frame rate"
+                          options={refresh >= 120 ? [[30, "30 fps"], [60, "60 fps"], [120, "120 fps"]] : [[30, "30 fps"], [60, "60 fps"]]}
+                          onchange={(v) => (c.fps = v)}
+                        />
+                      </div>
+                      <div class="tuned" title={canAv1 ? "AV1 makes files about half the size" : "Your graphics card records H.264"}>
+                        <span class="name">Codec</span>
+                        <Segmented
+                          value={c.codec}
+                          label="Codec"
+                          options={canAv1 ? [["av1", "AV1"], ["h264", "H.264"]] : [["h264", "H.264"]]}
+                          onchange={(v) => (c.codec = v)}
+                        />
+                      </div>
+                    {/if}
+                  </div>
+                {/key}
+              </div>
+              <div class="cost">
+                {#if pcTest}
+                  <SystemMeters test={pcTest} choice={c} lengthSecs={c.length} {screen} audioTracks={1 + sources().length} />
+                {:else}
+                  <p class="estimate"><Icon name="info" size={16} />In games this is about <b class="mono">{perMinute} MB</b> per minute of clips.</p>
+                {/if}
+                {#if (check?.monitors.length ?? 0) > 1}
+                  <label class="tuned" title="The one your games run on">
+                    <span class="name">Screen</span>
+                    <select bind:value={c.monitor}>
+                      <option value="">Main display ({check?.monitors[0]?.name})</option>
+                      {#each check?.monitors ?? [] as m (m.id)}<option value={m.id}>{m.name} · {m.width} × {m.height}</option>{/each}
+                    </select>
+                  </label>
+                {/if}
               </div>
             </div>
-            <p class="phint">{preset === "custom" ? "Your own mix of the settings below." : PRESETS.find((p) => p.id === preset)?.hint}</p>
-            {#if (check?.monitors.length ?? 0) > 1}
-              <label class="row">
-                <span class="what"><b>Screen</b><span>The one your games run on</span></span>
-                <select bind:value={c.monitor}>
-                  <option value="">Main display ({check?.monitors[0]?.name})</option>
-                  {#each check?.monitors ?? [] as m (m.id)}<option value={m.id}>{m.name} · {m.width} × {m.height}</option>{/each}
-                </select>
-              </label>
-            {/if}
-            <div class="row">
-              <span class="what"><b>Resolution</b><span>{c.resolution === "native" ? `Your screen's size, ${check?.monitor?.width ?? ""} × ${nativeH}` : "Scaled down: smaller files and less memory"}</span></span>
-              <Segmented
-                value={c.resolution}
-                label="Resolution"
-                options={resolutions.map((r) => [r, r === "native" ? `Native${encodes("av1", heightOf(r)) || encodes("h264", heightOf(r)) ? "" : " ✕"}` : r] as const)}
-                onchange={(v) => (c.resolution = v)}
-              />
+          </div>
+        {:else if step === "saving"}
+          <div class="page">
+            <div class="title">
+              <h1>Saving clips</h1>
+              <p class="lead">One key saves the last moments, from anywhere, even in fullscreen games.</p>
             </div>
-            <div class="row">
-              <span class="what"><b>Frame rate</b><span>{refresh < 120 ? `Your screen runs at ${refresh} Hz, so 120 fps isn't offered` : "60 is smooth; 120 doubles the detail in fast moments"}</span></span>
-              <Segmented
-                value={c.fps}
-                label="Frame rate"
-                options={refresh >= 120 ? [[30, "30"], [60, "60"], [120, "120"]] : [[30, "30"], [60, "60"]]}
-                onchange={(v) => (c.fps = v)}
-              />
+            <div class="key">
+              <HotkeyInput big phase={keyPhase} value={c.hotkey} onchange={(h) => (c.hotkey = h)} />
+              <span class="what"
+                ><b>Shortcut</b><span class:bad={keyBad} aria-live="polite">{keyNote || "Test it to check it reaches Klipp."}</span></span
+              >
+              <HotkeyTest hotkey={c.hotkey} bind:note={keyNote} bind:bad={keyBad} bind:phase={keyPhase} cue={c.cue} volume={c.volume} sound={c.sound} />
             </div>
-            <div class="row">
-              <span class="what"><b>Codec</b><span>{canAv1 ? "AV1 makes files about half the size" : "Your graphics card records H.264"}</span></span>
-              <Segmented
-                value={c.codec}
-                label="Codec"
-                options={canAv1 ? [["av1", "AV1"], ["h264", "H.264"]] : [["h264", "H.264"]]}
-                onchange={(v) => (c.codec = v)}
-              />
-            </div>
-            {#if !pcTest}
-              <div class="estimate">
-                <Icon name="info" size={16} />
-                <span>In games this is about <b class="mono">{perMinute} MB</b> per minute of clips.</span>
-              </div>
-            {/if}
-          {:else if step === "saving"}
-            <h1>Saving clips</h1>
-            <p class="lead">One key saves the last moments, from anywhere, even in fullscreen games.</p>
             {#if drives.length > 0}
               <label class="row">
                 <span class="what">
@@ -564,7 +673,7 @@
                     {driveChanged ? " Clips already saved stay where they are; Settings → Storage can move them." : ""}
                   </span>
                 </span>
-                <select bind:value={drive}>
+                <select class="both" bind:value={drive}>
                   {#each drives as d (d.letter)}
                     <option value={d.letter}>{d.letter} {d.label || (d.system ? "Windows" : "Drive")} · {d.freeGb} GB free</option>
                   {/each}
@@ -572,35 +681,38 @@
               </label>
             {/if}
             <div class="row">
-              <span class="what">
-                <b>Save hotkey</b>
-                <span class:bad={keyBad}>{keyNote || "Press Test, then the key, to check it reaches Klipp."}</span>
-              </span>
-              <HotkeyInput value={c.hotkey} onchange={(h) => (c.hotkey = h)} />
-              <HotkeyTest hotkey={c.hotkey} bind:note={keyNote} bind:bad={keyBad} cue={c.cue} volume={c.volume} sound={c.sound} />
-            </div>
-            <div class="row">
               <span class="what"><b>Clip length</b><span>Kept in memory: about {ramForBuffer} MB in games</span></span>
-              <Slider min={10} max={300} step={5} value={c.length} label="Clip length" oninput={(v) => (c.length = v)} />
-              <span class="value mono">{fmtLength(c.length)}</span>
+              <span class="ctl both">
+                <Slider min={10} max={300} step={5} value={c.length} label="Clip length" oninput={(v) => (c.length = v)} />
+                <span class="value mono">{fmtLength(c.length)}</span>
+              </span>
             </div>
             {#if check?.cs2}
               <div class="row">
-                <span class="what"><b>CS2 auto-clips</b><span>Headshots and multi-kills, saved by themselves</span></span>
+                <span class="what wide"><b>CS2 auto-clips</b><span>Headshots and multi-kills, saved by themselves</span></span>
                 <Toggle checked={c.cs2} label="CS2 auto-clips" onchange={(v) => (c.cs2 = v)} />
               </div>
             {/if}
             <div class="row">
-              <span class="what"><b>Start with Windows</b><span>So it's recording when the moment happens</span></span>
+              <span class="what wide"><b>Start with Windows</b><span>So it's recording when the moment happens</span></span>
               <Toggle checked={c.autostart} label="Start with Windows" onchange={(v) => (c.autostart = v)} />
             </div>
-          {/if}
-        </div>
-      {/key}
+          </div>
+        {/if}
+      </div>
+    {/key}
+  </main>
 
-      <footer>
+  <!-- Always there, so the page doesn't shift when its buttons arrive. -->
+  <footer>
+    {#if step !== "welcome" && !finished}
+      <div class="actions" in:enter={{ y: 8 }} out:leave>
         {#if index > 0}<button class="ghost" onclick={back}><Icon name="back" size={16} />Back</button>{/if}
+        {#if pcOnly && step === "check"}<button class="ghost" onclick={() => finishPc(false)}>Skip</button>{/if}
         <span class="grow"></span>
+        {#if (step === "saving" || (pcOnly && step === "video")) && !canRecord}
+          <span class="cant"><Icon name="warning" size={15} />This PC can't record yet</span>
+        {/if}
         {#if pcOnly && step === "video"}
           <button class="ghost" disabled={finishing} onclick={() => finishPc(false)}>Keep my settings</button>
           <button class="primary go" disabled={finishing || !canRecord} onclick={() => finishPc(true)}>Use these settings</button>
@@ -609,39 +721,60 @@
             <Icon name="record" size={17} />{finishing ? "Starting…" : "Start recording"}
           </button>
         {:else}
-          <button class="primary go" disabled={step === "check" && !check && !checkError} onclick={next}>
-            {step === "welcome" ? "Get started" : "Continue"}
-          </button>
-          {#if pcOnly && step === "check"}<button class="ghost" onclick={() => finishPc(false)}>Skip</button>{/if}
+          <button class="primary go" class:hidden={step === "check" && !check && !checkError} disabled={step === "check" && !check && !checkError} onclick={next}>Continue</button>
         {/if}
-      </footer>
-    </section>
-  </div>
+      </div>
+    {/if}
+  </footer>
 </div>
 
 <style>
   .setup {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: radial-gradient(90% 70% at 85% 0%, var(--accent-soft), transparent 60%), var(--bg);
+    background: var(--bg);
+  }
+
+  /* Warmth behind the welcome only; it goes as the work starts. */
+  .glow {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(60% 60% at 50% 34%, var(--accent-soft), transparent 70%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-slow) var(--ease-out);
+  }
+
+  .glow.on {
+    opacity: 0.55;
+    transition-duration: calc(var(--dur-slow) * 3);
   }
 
   header {
+    position: relative;
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     height: 44px;
-    padding-left: 24px;
+    padding-left: var(--sp-5);
   }
 
   .brand {
     margin-right: auto;
     pointer-events: none;
+    transition: opacity var(--dur) var(--ease-out);
+  }
+
+  .hidden,
+  button.hidden:disabled {
+    opacity: 0;
   }
 
   .skip {
-    margin-right: 8px;
-    font-size: 13px;
+    margin-right: var(--sp-2);
+    font-size: var(--fs-control);
     color: var(--muted);
   }
 
@@ -649,174 +782,422 @@
     align-self: flex-start;
   }
 
-  .body {
+  /* The one sign of how far along: a slim line that glides. */
+  .progress {
+    position: absolute;
+    top: 21px;
+    left: calc(50% - 80px);
+    width: 160px;
+    height: 3px;
+    overflow: hidden;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease-out);
+  }
+
+  .bar {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--text);
+    transform-origin: left;
+    transform: scaleX(var(--p));
+    transition: transform calc(var(--dur-spring) * 1.5) var(--ease-out);
+  }
+
+  .stage {
+    position: relative;
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: 240px 1fr;
+    grid-template-rows: minmax(0, 1fr);
   }
 
-  .rail {
-    list-style: none;
-    margin: 0;
-    padding: 48px 0 0 32px;
+  .view {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    min-height: 0;
+    overflow: hidden auto;
+    padding: 0 var(--sp-6);
   }
 
-  .rail li {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    color: var(--faint);
-    font-weight: 550;
-  }
-
-  .rail li.current {
-    color: var(--text);
-  }
-
-  .rail li.done {
-    color: var(--muted);
-  }
-
-  .dot {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 1.5px solid var(--line-strong);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .current .dot {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--on-accent);
-  }
-
-  .done .dot {
-    border-color: var(--accent);
-    color: var(--accent);
+  .fill {
+    flex: 1;
   }
 
   .page {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    padding: 36px 56px 28px 24px;
+    --col: 640px;
+    width: 100%;
+    max-width: var(--col);
+    margin: clamp(var(--sp-3), calc(16vh - 64px), 72px) auto var(--sp-3);
   }
 
-  .content {
-    flex: 1;
-    overflow-y: auto;
-    max-width: 680px;
-    animation: in 0.25s var(--ease);
+  .page.wide {
+    --col: 900px;
+  }
+
+  .page.center {
+    --col: 720px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: auto;
+    text-align: center;
+  }
+
+  /* Steps arrive from the way you're going, one piece just after another,
+     as the old one finishes leaving. */
+  .view .page > :global(*) {
+    animation: step-in var(--dur-slow) var(--ease-out) 70ms backwards;
+  }
+
+  .view .page > :global(:nth-child(2)) {
+    animation-delay: 100ms;
+  }
+  .view .page > :global(:nth-child(3)) {
+    animation-delay: 130ms;
+  }
+  .view .page > :global(:nth-child(4)) {
+    animation-delay: 160ms;
+  }
+  .view .page > :global(:nth-child(5)) {
+    animation-delay: 190ms;
+  }
+  .view .page > :global(:nth-child(n + 6)) {
+    animation-delay: 220ms;
+  }
+
+  /* The test's answer comes up in place: nothing is travelling. */
+  .page.result {
+    --from: 0px;
+  }
+
+  @keyframes step-in {
+    from {
+      opacity: 0;
+      transform: translateX(var(--from, 28px));
+    }
   }
 
   h1 {
-    margin: 0 0 10px;
+    margin: 0;
     font-family: var(--font-display);
-    font-size: 30px;
+    font-size: var(--fs-2xl);
+    font-weight: 700;
     letter-spacing: -0.03em;
+    line-height: 1.15;
+  }
+
+  h1.big {
+    font-size: 38px;
   }
 
   .lead {
-    margin: 0 0 26px;
-    max-width: 560px;
+    margin: 0;
     color: var(--muted);
-    font-size: 15px;
-    line-height: 1.55;
+    font-size: var(--fs-md);
+    line-height: 1.5;
   }
 
-  .hero-mark {
-    margin: 10px 0 26px;
+  .selectable {
+    user-select: text;
+  }
+
+  .title {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-5);
+  }
+
+  .center h1 {
+    margin-top: var(--sp-5);
+  }
+
+  .center .lead {
+    margin-top: var(--sp-2);
+    max-width: 480px;
+  }
+
+  .eta {
+    margin: var(--sp-3) 0 0;
+    color: var(--faint);
+    font-size: var(--fs-sm);
+  }
+
+  /* The ring. */
+  .ring {
+    display: block;
+    overflow: visible;
+  }
+
+  .track,
+  .arc {
+    fill: none;
+    stroke-width: 12;
+    stroke-linecap: round;
+  }
+
+  .track {
+    stroke: var(--surface-2);
+  }
+
+  .arc {
+    stroke: var(--text);
+    stroke-dasharray: 100;
+  }
+
+  .dot {
+    fill: var(--accent);
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  .ring.bad .arc {
+    stroke: var(--danger);
+  }
+
+  .ring.bad .dot {
+    fill: var(--danger);
+  }
+
+  /* Welcome: the ring draws itself, the dot lands, then it breathes. */
+  .ring.draw .arc {
+    animation: ring-draw calc(var(--dur-spring) * 2) var(--ease-out) backwards;
+  }
+
+  .ring.draw .dot {
+    animation:
+      dot-land var(--dur-spring) var(--spring) calc(var(--dur-spring) * 1.2) backwards,
+      breathe 3.2s ease-in-out calc(var(--dur-spring) * 3) infinite;
+  }
+
+  .ring.live .dot,
+  .ring.rec .dot {
+    animation: breathe 1.4s ease-in-out infinite;
+  }
+
+  @keyframes ring-draw {
+    from {
+      stroke-dashoffset: 100;
+    }
+  }
+
+  @keyframes dot-land {
+    from {
+      opacity: 0;
+      transform: scale(0.2);
+    }
+  }
+
+  @keyframes breathe {
+    50% {
+      opacity: 0.45;
+      transform: scale(0.82);
+    }
   }
 
   .promises {
-    list-style: none;
-    margin: 0;
-    padding: 0;
     display: flex;
-    flex-direction: column;
-    gap: 14px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--sp-2) var(--sp-5);
+    list-style: none;
+    margin: var(--sp-5) 0 0;
+    padding: 0;
+    color: var(--muted);
+    font-size: var(--fs-control);
   }
 
   .promises li {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--sp-2);
   }
 
-  .promises :global(.icon) {
-    color: var(--accent);
+  .center > .go {
+    margin-top: var(--sp-6);
   }
 
-  .checking {
+  .go {
+    min-width: 148px;
+    padding: 10px var(--sp-5);
+  }
+
+  /* The PC test. */
+  .seal {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+
+  .seal > :global(*) {
+    grid-area: 1 / 1;
+  }
+
+  .seal.ok {
+    color: var(--good);
+  }
+
+  .seal.bad {
+    color: var(--danger);
+  }
+
+  .seal.ok .track,
+  .seal.ok .arc {
+    stroke: var(--text);
+  }
+
+  .pct {
+    font-size: var(--fs-xl);
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .pct small {
+    margin-left: 1px;
+    font-size: var(--fs-sm);
+    font-weight: 400;
+    color: var(--faint);
+  }
+
+  .phase {
+    margin-top: var(--sp-1);
+    min-height: 26px;
+  }
+
+  .choice {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    color: var(--muted);
-  }
-
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 2px solid var(--accent);
-    border-right-color: transparent;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .checks {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .checks li {
-    display: flex;
-    gap: 14px;
-    padding: 14px 16px;
-    border-radius: 12px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--sp-1) var(--sp-3);
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-2) var(--sp-4);
+    border-radius: var(--r-full);
     background: var(--surface);
-    border: 1px solid var(--line);
-    animation: in 0.3s var(--ease) backwards;
+    font-size: var(--fs-control);
   }
 
-  .checks li:nth-child(2) {
-    animation-delay: 0.06s;
-  }
-  .checks li:nth-child(3) {
-    animation-delay: 0.12s;
-  }
-  .checks li:nth-child(4) {
-    animation-delay: 0.18s;
-  }
-  .checks li:nth-child(5) {
-    animation-delay: 0.24s;
-  }
-  .checks li:nth-child(6) {
-    animation-delay: 0.3s;
+  .choice .by {
+    color: var(--faint);
   }
 
-  .checks div,
+  .choice b {
+    font-size: var(--fs-md);
+    font-weight: 650;
+  }
+
+  .choice .mono {
+    color: var(--muted);
+    font-size: var(--fs-sm);
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-4) var(--sp-5);
+    width: 100%;
+    margin: var(--sp-6) 0 0;
+    text-align: left;
+  }
+
+  .fact {
+    min-width: 0;
+  }
+
+  .fact dt {
+    margin-bottom: 2px;
+    color: var(--faint);
+    font-size: var(--fs-sm);
+  }
+
+  .fact dd {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-1);
+    margin: 0;
+    font-size: var(--fs-control);
+    line-height: 1.4;
+  }
+
+  .fact dd :global(.icon) {
+    flex: none;
+    align-self: center;
+  }
+
+  .fact.warn dd {
+    color: var(--warn);
+  }
+
+  .fact.bad dd {
+    color: var(--danger);
+  }
+
+  .help {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin: var(--sp-4) 0 0;
+    color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  .copy {
+    gap: var(--sp-2);
+    font-size: var(--fs-control);
+  }
+
+  /* Rows: a name, a control, a switch. Selects and switches line up down the page. */
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 272px 38px;
+    align-items: center;
+    gap: var(--sp-4);
+    min-height: 52px;
+    padding: var(--sp-1) 0;
+  }
+
+  .row.sub {
+    min-height: 40px;
+    margin-top: calc(var(--sp-1) * -1);
+  }
+
+  .row .wide {
+    grid-column: 1 / 3;
+  }
+
+  .row .both {
+    grid-column: 2 / 4;
+  }
+
+  .row select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .row button.icon {
+    width: 34px;
+    justify-self: end;
+    margin-right: 2px;
+  }
+
   .what {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
+    min-width: 0;
   }
 
-  .checks span,
+  .what b {
+    font-weight: 600;
+  }
+
   .what span {
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--fs-control);
   }
 
   .what span.bad {
@@ -824,191 +1205,175 @@
   }
 
   .what b .exp {
-    margin-left: 6px;
-    padding: 2px 6px;
-    border-radius: 5px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font: 600 10px/1.4 var(--font-mono);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    vertical-align: 1px;
-  }
-
-  .mark {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    flex-shrink: 0;
-    border-radius: 50%;
+    margin-left: var(--sp-1);
+    padding: 1px 6px;
+    border-radius: var(--r-xs);
     background: var(--surface-3);
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-weight: 500;
   }
 
-  .ok .mark {
-    background: color-mix(in srgb, var(--good) 18%, transparent);
-    color: var(--good);
-  }
-
-  .warn .mark {
-    background: color-mix(in srgb, #f2c84b 18%, transparent);
-    color: #f2c84b;
-  }
-
-  .bad .mark,
-  p.bad {
-    color: var(--danger);
-  }
-
-  .note {
-    color: var(--text) !important;
-  }
-
-  .help {
+  .ctl {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin: 16px 0 0;
-    color: var(--muted);
-    font-size: 13px;
+    gap: var(--sp-3);
+    min-width: 0;
   }
 
-  .copy {
-    gap: 7px;
-    align-self: flex-start;
-    font-size: 13px;
-  }
-
-  p.bad + .copy {
-    margin-top: 12px;
-  }
-
-  /* Rows share the option card's side padding, so labels and switches line
-     up with the card's whether or not a card is above them. */
-  .meters-wrap {
-    padding-bottom: 14px;
-  }
-
-  .presets {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 8px;
-    margin-bottom: 10px;
-  }
-
-  .preset {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    padding: 12px 12px 11px;
-    border-radius: 12px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    text-align: left;
-  }
-
-  .preset:hover {
-    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-    background: var(--surface);
-  }
-
-  .preset.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .preset.custom {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .preset.custom.on {
-    opacity: 1;
-  }
-
-  .pname {
-    font-weight: 650;
-    font-size: 13.5px;
-    color: var(--text);
-  }
-
-  .pspec {
-    font-size: 11px;
-    color: var(--muted);
-  }
-
-  .phint {
-    margin: 0 0 14px;
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--muted);
-  }
-
-  .option,
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .option {
-    padding: 14px 16px;
-    margin-bottom: 8px;
-    border-radius: 12px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-  }
-
-  .option.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .option > div {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .option span {
-    color: var(--muted);
-    font-size: 13px;
-  }
-
-  .row .what {
+  .ctl :global(.slider) {
     flex: 1;
     min-width: 0;
   }
 
-  .row.sub {
-    padding-top: 0;
-  }
-
-  .row select {
-    width: 300px;
-  }
-
   .value {
-    min-width: 64px;
+    flex: none;
+    min-width: 40px;
     text-align: right;
-    font-size: 12px;
+    font-size: var(--fs-sm);
+    color: var(--muted);
   }
 
-  .row :global(.slider) {
-    width: 200px;
+  /* The key, the star of its step. */
+  .key {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-3);
+    border-radius: var(--r-md);
+    background: var(--sunken);
+  }
+
+  .key .what {
+    flex: 1;
+  }
+
+  /* Video: the choice on the left, what it costs on the right, side by side so
+     the meters answer as you click. */
+  .split {
+    display: grid;
+    grid-template-columns: 304px minmax(0, 1fr);
+    align-items: start;
+    gap: var(--sp-5);
+  }
+
+  .cost {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-5);
+    min-width: 0;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+
+  .presets {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+
+  .preset {
+    justify-content: flex-start;
+    gap: var(--sp-2);
+    min-height: 40px;
+    padding: var(--sp-2) var(--sp-3);
+    background: transparent;
+    text-align: left;
+  }
+
+  .preset:hover {
+    background: var(--hover);
+  }
+
+  .preset.on,
+  .preset.on:hover {
+    background: var(--surface-3);
+  }
+
+  .preset.on .pname {
+    color: var(--text);
+  }
+
+  .preset.custom {
+    display: flex;
+    align-items: center;
+    border-radius: var(--r-sm);
+    cursor: default;
+  }
+
+  .pname {
+    font-weight: 600;
+    font-size: var(--fs-control);
+    color: var(--muted);
+  }
+
+  .best {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+  }
+
+  .pspec {
+    margin-left: auto;
+    color: var(--faint);
+    font-size: var(--fs-xs);
+  }
+
+  .phint {
+    margin: 0;
+    padding: 0 var(--sp-3);
+    color: var(--muted);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+  }
+
+  .link {
+    align-self: flex-start;
+    padding: 5px var(--sp-3);
+    color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  .link.top {
+    margin-left: calc(var(--sp-3) * -1);
+    margin-bottom: calc(var(--sp-1) * -1);
+  }
+
+  .tuned {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 0;
+  }
+
+  .tuned .name {
+    color: var(--muted);
+    font-size: var(--fs-sm);
+  }
+
+  .tuned select {
+    width: 100%;
+    max-width: 320px;
+  }
+
+  .tuned :global(.segmented) {
+    display: grid;
+    width: 100%;
   }
 
   .estimate {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-top: 18px;
+    gap: var(--sp-2);
+    margin: 0;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--fs-control);
   }
 
   .estimate b {
@@ -1017,32 +1382,29 @@
   }
 
   footer {
+    position: relative;
+    flex-shrink: 0;
+    height: 72px;
+    padding: var(--sp-3) var(--sp-5) var(--sp-4);
+  }
+
+  .actions {
     display: flex;
     align-items: center;
-    gap: 10px;
-    max-width: 680px;
-    padding-top: 20px;
+    gap: var(--sp-2);
+    height: 100%;
   }
 
   .grow {
     flex: 1;
   }
 
-  .go {
-    min-width: 170px;
-    padding: 10px 18px;
-  }
-
-  @keyframes in {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .cant {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-right: var(--sp-2);
+    color: var(--danger);
+    font-size: var(--fs-control);
   }
 </style>

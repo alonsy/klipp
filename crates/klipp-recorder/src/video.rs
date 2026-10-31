@@ -46,10 +46,10 @@ const MAX_CATCH_UP: Duration = Duration::from_secs(1);
 /// How often the video thread checks that the capture is still alive.
 const REVIVE_CHECK_EVERY: Duration = Duration::from_millis(250);
 /// A still picture this soon after skipping ticks means the GPU is too busy
-/// to deliver frames, not that the capture stopped (FIX-17).
+/// to deliver frames, not that the capture stopped.
 const BEHIND_GRACE: Duration = Duration::from_secs(10);
 /// Longest wait for the video thread to start, or to stop. A thread stuck in
-/// the graphics driver is left behind instead of freezing the caller (FIX-20).
+/// the graphics driver is left behind instead of freezing the caller.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the graphics memory use and allowance are read, for the stats line.
@@ -191,6 +191,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             Err(e) => return Err(e),
         };
         *shared.video_stream.lock().unwrap() = Some(encoder.stream_info()?);
+        *shared.vendor.lock().unwrap() = Some(vendor);
         shared.bitrate_adjustable.store(vendor != klipp_media::Vendor::Amd, Ordering::Relaxed);
 
         // Windows sends a first frame right after capture starts.
@@ -402,6 +403,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             }
             Err(TrySendError::Disconnected(_)) => bail!("the encoder stopped"),
         }
+        shared.hud.tick(&gpu, capture.latest());
         shared.capture_resizes.store(resizes_before + capture.latest().resizes(), Ordering::Relaxed);
         i += 1;
     }
@@ -422,7 +424,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
 /// Frames waiting for the encoder. The encoder takes a texture only once the
 /// card has drawn it, and a game keeping the card busy makes that a wait of
 /// about one of its frames; queued, it holds up only the encoder, not the
-/// frame clock or the capture (FIX-17).
+/// frame clock or the capture.
 const QUEUE: usize = 8;
 
 enum Job {

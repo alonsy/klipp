@@ -15,7 +15,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use klipp_media::{Chapter, Mp4Writer, SAMPLE_RATE, StreamInfo};
+use klipp_media::{CAMERA_CLOCK, Chapter, Mp4Writer, SAMPLE_RATE, StreamInfo};
 use serde::Serialize;
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -27,7 +27,7 @@ use crate::clock;
 use crate::cue::{CueHandle, Sound};
 use crate::events::{EventKind, GameEvent};
 use crate::log::{info, warning};
-use crate::replay::{Clip, VIDEO};
+use crate::replay::{Clip, PacketInfo, VIDEO};
 
 /// The hidden folder inside the clips folder.
 pub const META_DIR: &str = ".klipp";
@@ -55,6 +55,9 @@ pub struct SaveJob {
     pub streams: Vec<StreamInfo>,
     /// Names of the audio tracks, in order (e.g. Mix, Game, Chat, Mic).
     pub tracks: Vec<String>,
+    /// Content Creator Mode: the camera's buffer stream id and track, written
+    /// after the audio tracks as a second video track ("Camera").
+    pub camera: Option<(u8, StreamInfo)>,
     pub clips_dir: PathBuf,
     /// Folder name for the clip, e.g. "Counter-Strike 2" or "Desktop".
     pub game: String,
@@ -90,6 +93,9 @@ struct ClipInfo<'a> {
     duration_secs: f64,
     tracks: &'a [String],
     events: Vec<EventInfo<'a>>,
+    /// The clip has a camera track (Content Creator Mode).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    camera: bool,
 }
 
 #[derive(Serialize)]
@@ -195,10 +201,10 @@ fn save(job: &SaveJob) -> Result<Saved> {
     if result.is_err() {
         let _ = fs::remove_file(&part);
     }
-    let seconds = result?;
+    let (seconds, camera) = result?;
     fs::rename(&part, &path)?;
     // The clip is usable without its info file, so a failure here only warns.
-    if let Err(e) = write_info(&meta_path(job, &path, "info", "json")?, job, seconds) {
+    if let Err(e) = write_info(&meta_path(job, &path, "info", "json")?, job, seconds, camera) {
         warning!("writing clip info for {} failed: {e:#}", path.display());
     }
     Ok(Saved { path, seconds, bytes: job.clip.data.len() })
@@ -222,7 +228,7 @@ fn seconds_into(job: &SaveJob, time: i64) -> f64 {
     ((time - job.clip.start_time) as f64 / clock::SECOND as f64 * 1000.0).round() / 1000.0
 }
 
-fn write_info(path: &Path, job: &SaveJob, seconds: f64) -> Result<()> {
+fn write_info(path: &Path, job: &SaveJob, seconds: f64, camera: bool) -> Result<()> {
     let start = job.clip.start_time;
     let events = job
         .events
@@ -240,6 +246,7 @@ fn write_info(path: &Path, job: &SaveJob, seconds: f64) -> Result<()> {
         duration_secs: (seconds * 1000.0).round() / 1000.0,
         tracks: &job.tracks,
         events,
+        camera,
     };
     let part = path.with_extension("json.part");
     fs::write(&part, serde_json::to_string_pretty(&info)?)?;
@@ -285,32 +292,56 @@ fn chapters(job: &SaveJob, end: i64) -> Vec<Chapter> {
 }
 
 /// Writes the clip with video starting at 0 and each audio track placed by
-/// its capture time relative to the first video frame. Returns the length in seconds.
-fn write_mp4(path: &Path, job: &SaveJob) -> Result<f64> {
+/// its capture time relative to the first video frame; the camera too, from
+/// its first keyframe on. Returns the length in seconds, and whether it has a camera track.
+fn write_mp4(path: &Path, job: &SaveJob) -> Result<(f64, bool)> {
     let start = job.clip.start_time;
     let last_video = job.clip.packets.iter().rev().find(|(p, _)| p.stream == VIDEO).context("clip has no video")?;
     let end = last_video.0.time;
 
-    let mut writer = Mp4Writer::create(path, &job.streams, &chapters(job, end))?;
-    // Per stream: the value subtracted from its timestamps.
-    let mut base: Vec<Option<i64>> = vec![None; job.streams.len()];
+    let mut streams = job.streams.clone();
+    let camera = job.camera.as_ref().map(|(id, info)| {
+        streams.push(info.clone());
+        (*id, streams.len() - 1)
+    });
+    let mut writer = Mp4Writer::create(path, &streams, &chapters(job, end))?;
+    // Per track: the value subtracted from its timestamps.
+    let mut base: Vec<Option<i64>> = vec![None; streams.len()];
     for (info, range) in &job.clip.packets {
-        let s = info.stream as usize;
-        if s >= job.streams.len() {
-            continue;
-        }
-        let b = *base[s].get_or_insert_with(|| {
-            if info.stream == VIDEO {
-                info.pts
-            } else {
-                // Audio timestamps count samples. Start this track where it actually began.
-                info.pts - (info.time - start) * SAMPLE_RATE as i64 / clock::SECOND
-            }
-        });
+        let Some((s, b)) = place(info, start, job.streams.len(), camera, &mut base) else { continue };
         writer.write(s, &job.clip.data[range.clone()], info.pts - b, info.dts - b, info.duration, info.key)?;
     }
     writer.finish()?;
-    Ok((end - start) as f64 / clock::SECOND as f64)
+    let camera_written = camera.is_some_and(|(_, s)| base[s].is_some());
+    Ok(((end - start) as f64 / clock::SECOND as f64, camera_written))
+}
+
+/// The track a packet goes to and the value subtracted from its timestamps,
+/// or `None` to leave it out: packets of no track (an older camera's), and a
+/// camera's before its first keyframe (it can't start without one).
+fn place(info: &PacketInfo, start: i64, tracks: usize, camera: Option<(u8, usize)>, base: &mut [Option<i64>]) -> Option<(usize, i64)> {
+    let (s, is_camera) = match camera {
+        Some((id, s)) if info.stream == id => (s, true),
+        _ if (info.stream as usize) < tracks => (info.stream as usize, false),
+        _ => return None,
+    };
+    if let Some(b) = base[s] {
+        return Some((s, b));
+    }
+    let b = if info.stream == VIDEO {
+        info.pts
+    } else if is_camera {
+        if !info.key || info.time < start {
+            return None;
+        }
+        // Camera timestamps count 90 kHz ticks, from its own start.
+        info.pts - (info.time - start) * CAMERA_CLOCK / clock::SECOND
+    } else {
+        // Audio timestamps count samples. Start this track where it actually began.
+        info.pts - (info.time - start) * SAMPLE_RATE as i64 / clock::SECOND
+    };
+    base[s] = Some(b);
+    Some((s, b))
 }
 
 /// ffmpeg.exe next to the recorder.

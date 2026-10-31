@@ -73,8 +73,8 @@ pub struct Params {
     pub min_kbps: f64,
 }
 
-/// Low, Mid, High, Ultra, in that order (indexed by `Level`). Measured on 10 of
-/// the owner's clips (1440p at 120 and 60 fps, AV1, 18-40 Mbit/s; VMAF against
+/// Low, Mid, High, Ultra, in that order (indexed by `Level`). Measured on 10
+/// real clips (1440p at 120 and 60 fps, AV1, 18-40 Mbit/s; VMAF against
 /// the original at 1440p, ~99 for a clip against itself; 2026-10-28): files
 /// come out at about 53%, 28%, 17% and 8% (audio is copied), at VMAF ~95.5,
 /// ~95 per frame, ~91 and ~87. Scaling down cost more than it saved: at the
@@ -717,12 +717,14 @@ fn ffmpeg_args(clip: &Path, part: &Path, level: Level, probe: &Probe, encoder: &
         a.extend(["-hwaccel", "auto"].map(String::from));
     }
     a.extend(["-i".into(), clip.to_string_lossy().into_owned()]);
-    // The video, every audio track as it is, the clip's tags and chapters.
-    a.extend(["-map", "0:v:0", "-map", "0:a?", "-c:a", "copy", "-map_metadata", "0", "-map_chapters", "0"].map(String::from));
+    // The video, every audio track as it is, the camera track (Content Creator
+    // Mode) as it is, the clip's tags and chapters.
+    a.extend(["-map", "0:v:0", "-map", "0:a?", "-map", "0:v:1?", "-c:a", "copy", "-map_metadata", "0", "-map_chapters", "0"].map(String::from));
     if let Some(vf) = video_filter(level.params(), probe, cuda) {
-        a.extend(["-vf".into(), vf]);
+        a.extend(["-filter:v:0".into(), vf]);
     }
     a.extend(encoder_args(encoder, kbps));
+    a.extend(["-c:v:1", "copy"].map(String::from));
     a.extend(["-movflags", "+faststart+use_metadata_tags"].map(String::from));
     for (key, value) in tags {
         a.extend(["-metadata".into(), format!("{key}={value}")]);

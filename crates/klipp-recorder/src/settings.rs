@@ -500,6 +500,7 @@ impl Settings {
             death: a.cs2.death,
             mvp: a.cs2.mvp,
             victory: false,
+            knock: false,
             first_blood: false,
             steal: false,
             objective: false,
@@ -512,6 +513,7 @@ impl Settings {
             pre_roll: ticks(a.pre_roll_secs),
             post_roll: ticks(a.post_roll_secs),
             merge_gap: ticks(a.merge_gap_secs),
+            max_chain: 0,
             lateness: 0,
             timing: a.timing.iter().map(|(k, t)| (k.clone(), (t.pre_roll_secs.map(ticks), t.post_roll_secs.map(ticks)))).collect(),
         }

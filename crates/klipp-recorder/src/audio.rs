@@ -285,6 +285,7 @@ fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, read
         }
     };
 
+    let mic = sources.iter().position(|s| s.cfg.kind == SourceKind::Capture);
     let mut mixed: i64 = 0;
     let mut next_discord_check = Instant::now() + DISCORD_EVERY;
     while !stop.load(Ordering::Relaxed) {
@@ -341,6 +342,10 @@ fn run(configs: Vec<AudioSourceConfig>, shared: &Shared, stop: &AtomicBool, read
             }
             for x in mix_l.iter_mut().chain(mix_r.iter_mut()) {
                 *x = x.clamp(-1.0, 1.0);
+            }
+            if let (Some(k), Some(voice)) = (mic, shared.voice.lock().unwrap().as_ref()) {
+                // A full queue loses this frame; recording never waits for voice.
+                let _ = voice.try_send(sources[k].left.iter().zip(&sources[k].right).map(|(l, r)| (l + r) * 0.5).collect());
             }
             mix.encode(&mix_l, &mix_r, mixed, &mut sink(MIX_STREAM))?;
             for (k, s) in sources.iter_mut().enumerate() {

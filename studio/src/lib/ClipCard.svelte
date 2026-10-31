@@ -1,34 +1,69 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import type { TransitionConfig } from "svelte/transition";
   import * as api from "./api";
   import type { Clip } from "./api";
-  import { captures, clipTitle, clock, duration, eventRank, isMultiKill, killSummary, mapName } from "./format";
+  import { captures, clipTitle, clock, duration, eventRank, killSummary, mapName, when } from "./format";
   import Icon from "./Icon.svelte";
+  import { isHero, shownThumbs } from "./state.svelte";
+
+  const still = (_: Element): TransitionConfig => ({ duration: 0 });
 
   interface Props {
     clip: Clip;
     selected: boolean;
-    /** It just arrived: glows for a moment. */
+    /** It just arrived: slides in and glows for a moment. */
     fresh?: boolean;
-    /** Something is selected, so a click on the thumbnail selects instead of opening. */
+    /** Something is selected, so a click changes the selection instead of opening. */
     selecting: boolean;
     x: number;
     y: number;
     w: number;
+    /** Its place in the list, for the staggered entry. */
+    index?: number;
+    /** A number worth seeing without hovering: what the list is sorted by. */
+    stat?: string;
+    /** No session header says which day this is, so the card does. */
+    dated?: boolean;
+    /** The list decides when a card animates: not while scrolling. */
+    appear?: (node: Element, params: { index: number }) => TransitionConfig;
+    vanish?: (node: Element) => TransitionConfig;
+    /** A click on the card: opens it, or selects (see `selecting`, Ctrl, Shift). */
     onselect: (e: MouseEvent) => void;
     ontoggle: () => void;
-    onopen: () => void;
+    onopen: (e?: MouseEvent) => void;
     onfavorite: () => void;
   }
-  let { clip, selected, fresh = false, selecting, x, y, w, onselect, ontoggle, onopen, onfavorite }: Props = $props();
+  let {
+    clip,
+    selected,
+    fresh = false,
+    selecting,
+    x,
+    y,
+    w,
+    index = 0,
+    stat,
+    dated = false,
+    appear = still,
+    vanish = still,
+    onselect,
+    ontoggle,
+    onopen,
+    onfavorite,
+  }: Props = $props();
 
   let thumb = $state<string | null>(null);
+  let asked = $state(false);
   let loaded = $state(false);
 
   onMount(() => {
     let mounted = true;
     api.thumbnail(clip, () => mounted).then((url) => {
-      if (mounted) thumb = url;
+      if (url) shownThumbs.set(clip.path, url);
+      if (!mounted) return;
+      thumb = url;
+      asked = true;
     });
     return () => (mounted = false);
   });
@@ -49,72 +84,87 @@
   let presses = $derived(captures(clip));
   let summary = $derived(killSummary(clip) || (presses > 1 ? `Saved ${presses} times · ${place}` : place));
   let badge = $derived(clip.label ?? (clip.kind === "auto" ? null : "manual"));
+  let hero = $derived(isHero(clip.path));
 </script>
 
 <div
   class="card"
   class:selected
   class:fresh
+  class:selecting
+  class:hero
   style="transform: translate({x}px, {y}px); width: {w}px"
   role="option"
   tabindex="-1"
   aria-selected={selected}
   onclick={onselect}
-  ondblclick={onopen}
+  ondblclick={(e) => {
+    // Two quick clicks on the star or the select box are two clicks on those.
+    if (!(e.target as Element).closest("button")) onopen(e);
+  }}
   onkeydown={(e) => e.key === "Enter" && onopen()}
+  in:appear|global={{ index }}
+  out:vanish|global
 >
-  <div class="thumb">
+  <div class="thumb" data-hero={hero ? "" : undefined}>
     {#if thumb}<img src={thumb} alt="" draggable="false" class:loaded onload={() => (loaded = true)} />{/if}
+    {#if !asked && !hero}<div class="waiting skeleton"></div>{/if}
     <div class="shade"></div>
-    {#if badge}
-      <span class="badge" class:hot={isMultiKill(badge)}>
-        <Icon event={badge} size={15} />
-        {clipTitle(clip)}
-      </span>
-    {/if}
+
     {#if !selecting}
       <button
         class="play"
         aria-label="Open"
+        title="Open"
         onclick={(e) => {
           e.stopPropagation();
-          onopen();
-        }}><Icon name="play" size={22} /></button
+          onopen(e);
+        }}><Icon name="play" size={20} /></button
       >
     {/if}
     <button
-      class="check"
+      class="pick"
       class:on={selected}
       aria-label={selected ? "Deselect" : "Select"}
+      title={selected ? "Deselect" : "Select"}
       onclick={(e) => {
         e.stopPropagation();
         ontoggle();
       }}>{#if selected}<Icon name="check" size={14} />{/if}</button
     >
-    {#if extras.length > 0}
-      <span class="extras">
-        {#each extras as [kind, n] (kind)}
-          <span class="extra"><Icon event={kind} size={14} />{#if n > 1}<span class="mono">{n}</span>{/if}</span>
-        {/each}
-      </span>
-    {/if}
-    {#if clip.durationSecs != null}<span class="duration mono">{duration(clip.durationSecs)}</span>{/if}
-  </div>
-  <div class="info">
-    <div class="line">
-      <span class="name">{clipTitle(clip)}</span>
-      <button
-        class="star"
-        class:on={clip.favorite}
-        aria-label={clip.favorite ? "Remove from favorites" : "Add to favorites"}
-        onclick={(e) => {
-          e.stopPropagation();
-          onfavorite();
-        }}><Icon name="star" size={15} /></button
-      >
-      <span class="time mono">{clock(clip.created)}</span>
+    <button
+      class="star"
+      class:on={clip.favorite}
+      aria-label={clip.favorite ? "Remove from favorites" : "Add to favorites"}
+      title={clip.favorite ? "Remove from favorites" : "Add to favorites"}
+      onclick={(e) => {
+        e.stopPropagation();
+        onfavorite();
+      }}><Icon name="star" size={16} /></button
+    >
+
+    <!-- The name rests on the bottom edge; hovering lifts it to show the rest. -->
+    <div class="meta">
+      <div class="line">
+        <span class="name">
+          {#if badge}<Icon event={badge} size={16} />{/if}
+          <span class="text">{clipTitle(clip)}</span>
+        </span>
+        {#if extras.length > 0}
+          <span class="extras">
+            {#each extras as [kind, n] (kind)}
+              <span class="extra"><Icon event={kind} size={14} />{#if n > 1}<span class="mono">{n}</span>{/if}</span>
+            {/each}
+          </span>
+        {/if}
+        {#if stat}<span class="stat mono">{stat}</span>{/if}
+        {#if clip.camera}<span class="camera" title="Has your camera"><Icon name="camera" size={14} /></span>{/if}
+      </div>
+      <div class="more">
+        <span class="summary">{summary}</span>
+        <span class="when mono">{dated ? when(clip.created) : clock(clip.created)}{#if clip.durationSecs != null}&nbsp;· {duration(clip.durationSecs)}{/if}</span>
+      </div>
     </div>
-    <div class="summary">{summary}</div>
   </div>
 </div>
 
@@ -124,117 +174,149 @@
     top: 0;
     left: 0;
     cursor: pointer;
-    /* Layout only: paint containment would clip the card to its rounded
-       shape, shaving the corner off the summary's first letter (the text
-       sits at the card's bottom edge). The thumbnail clips itself. */
     contain: layout;
-    border-radius: var(--radius);
-    outline: 2px solid transparent;
-    outline-offset: 3px;
-    transition:
-      outline-color 0.15s,
-      transform 0.3s var(--ease);
-  }
-
-  .card.selected {
-    outline-color: var(--accent);
-  }
-
-  .card.fresh {
-    animation: landed 2.4s var(--ease);
-  }
-
-  @keyframes landed {
-    0% {
-      outline-color: var(--accent);
-      filter: brightness(1.25);
-    }
-    60% {
-      outline-color: var(--accent);
-    }
+    border-radius: var(--r-md);
+    /* The list keeps cards it can: a filter or a new clip glides them to their place. */
+    transition: transform var(--dur-spring) var(--spring);
   }
 
   .thumb {
     position: relative;
     aspect-ratio: 16 / 9;
-    border-radius: var(--radius);
+    border-radius: var(--r-md);
     background: var(--surface);
     overflow: hidden;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    transition:
+      transform var(--dur) var(--ease-out),
+      outline-color var(--dur-fast);
+  }
+
+  .card:hover .thumb {
+    transform: translateY(-2px);
+  }
+
+  .card:active .thumb {
+    transform: scale(0.99);
+  }
+
+  .card.selected .thumb {
+    outline-color: var(--accent);
+  }
+
+  .card:focus-visible {
+    outline: none;
+  }
+
+  .card:focus-visible .thumb {
+    outline-color: var(--text);
+  }
+
+  /* A new clip takes the placeholder's spot; the one you came back to only glows. */
+  .card.fresh .thumb {
+    animation:
+      arrive var(--dur-spring) var(--spring) backwards,
+      landed 2.4s var(--ease-out);
+  }
+
+  .card.fresh.hero .thumb {
+    animation: landed 2.4s var(--ease-out);
+  }
+
+  @keyframes arrive {
+    from {
+      opacity: 0;
+      transform: translateX(-16px) scale(0.97);
+    }
+  }
+
+  @keyframes landed {
+    0%,
+    60% {
+      outline-color: var(--accent);
+    }
   }
 
   img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
     opacity: 0;
     transition:
-      opacity 0.25s,
-      transform 0.35s var(--ease);
+      opacity var(--dur),
+      transform var(--dur-slow) var(--ease-out);
   }
 
   img.loaded {
     opacity: 1;
   }
 
-  .card:hover img {
-    transform: scale(1.035);
+  /* It's what the player shrinks into: there from the first frame. */
+  .hero img {
+    opacity: 1;
+    transition: none;
   }
 
+  .card:hover img {
+    transform: scale(1.04);
+  }
+
+  .waiting {
+    position: absolute;
+    inset: 0;
+    border-radius: 0;
+  }
+
+  /* The bottom edge stays dark enough to read the name; hovering deepens the picture. */
   .shade {
     position: absolute;
     inset: 0;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.35), transparent 32%, transparent 62%, rgba(0, 0, 0, 0.55));
     pointer-events: none;
+    background: linear-gradient(to top, color-mix(in srgb, var(--stage) 72%, transparent), transparent 42%);
   }
 
-  .badge {
+  .shade::after {
+    content: "";
     position: absolute;
-    top: 9px;
-    left: 9px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 9px 4px 6px;
-    border-radius: 8px;
-    font-size: 12px;
-    font-weight: 650;
-    background: var(--glass);
-    backdrop-filter: blur(6px);
+    inset: 0;
+    background: linear-gradient(to top, color-mix(in srgb, var(--stage) 82%, transparent), color-mix(in srgb, var(--stage) 18%, transparent) 70%);
+    opacity: 0;
+    transition: opacity var(--dur);
   }
 
-  .badge.hot {
-    background: var(--accent);
-    color: var(--on-accent);
-  }
-
-  /* On the accent badge the whole icon is ink. */
-  .badge.hot :global(.icon) {
-    --accent: var(--on-accent);
+  .card:hover .shade::after,
+  .card:has(:focus-visible) .shade::after {
+    opacity: 1;
   }
 
   .play {
     position: absolute;
     left: 50%;
     top: 50%;
-    width: 48px;
-    height: 48px;
+    width: 44px;
+    height: 44px;
+    margin: -26px 0 0 -22px;
     padding: 0;
     border-radius: 50%;
-    border: none;
     background: var(--glass);
     backdrop-filter: blur(6px);
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.85);
+    transform: scale(0.88);
     transition:
-      opacity 0.18s,
-      transform 0.18s var(--ease),
-      background 0.15s;
+      opacity var(--dur-fast),
+      transform var(--dur) var(--ease-out),
+      background var(--dur-fast),
+      color var(--dur-fast);
   }
 
-  .card:hover .play {
+  .card:hover .play,
+  .play:focus-visible {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    transform: none;
   }
 
   .play:hover {
@@ -242,98 +324,71 @@
     color: var(--on-accent);
   }
 
-  .check {
-    position: absolute;
-    top: 9px;
-    right: 9px;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border-radius: 7px;
-    border: 2px solid rgba(244, 242, 236, 0.85);
-    background: rgba(0, 0, 0, 0.3);
-    color: var(--on-accent);
-    opacity: 0;
+  .play:active {
+    transform: scale(0.94);
   }
 
-  .card:hover .check,
-  .check.on {
+  /* Quick actions, in the corners. What's set stays when the pointer leaves. */
+  .pick,
+  .star {
+    position: absolute;
+    top: var(--sp-2);
+    padding: 0;
+    opacity: 0;
+    transition:
+      opacity var(--dur-fast),
+      background var(--dur-fast),
+      color var(--dur-fast),
+      transform var(--dur) var(--ease-out);
+  }
+
+  .pick {
+    left: var(--sp-2);
+    width: 24px;
+    height: 24px;
+    border-radius: var(--r-xs);
+    background: var(--glass);
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--text) 80%, transparent);
+    color: var(--on-accent);
+  }
+
+  .pick:hover {
+    background: var(--glass);
+    box-shadow: inset 0 0 0 1.5px var(--text);
+  }
+
+  .card:hover .pick,
+  .selecting .pick,
+  .pick:focus-visible {
     opacity: 1;
   }
 
-  .check.on {
+  .pick.on,
+  .pick.on:hover {
+    opacity: 1;
     background: var(--accent);
-    border-color: var(--accent);
-  }
-
-  .extras {
-    position: absolute;
-    left: 9px;
-    bottom: 9px;
-    display: flex;
-    gap: 4px;
-  }
-
-  .extra {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    padding: 3px 5px;
-    border-radius: 6px;
-    background: var(--glass);
-    font-size: 10px;
-  }
-
-  .duration {
-    position: absolute;
-    right: 9px;
-    bottom: 9px;
-    padding: 3px 7px;
-    border-radius: 6px;
-    font-size: 11px;
-    background: var(--glass);
-  }
-
-  .info {
-    padding: 10px 2px 0;
-  }
-
-  .line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .name {
-    flex: 1;
-    min-width: 0;
-    /* Room for the first letter's edge inside the clipped line (as .summary). */
-    padding-left: 2px;
-    margin-left: -2px;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    box-shadow: none;
   }
 
   .star {
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: none;
+    right: var(--sp-2);
+    width: 28px;
+    height: 28px;
+    margin: -2px -2px 0 0;
+    border-radius: 50%;
     background: transparent;
-    color: var(--faint);
-    opacity: 0;
-  }
-
-  .card:hover .star,
-  .star.on {
-    opacity: 1;
+    color: var(--text);
+    filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--stage) 70%, transparent));
   }
 
   .star:hover {
-    color: var(--text);
-    background: transparent;
+    background: var(--glass);
+  }
+
+  .card:hover .star,
+  .star:focus-visible,
+  .star.on {
+    opacity: 1;
   }
 
   .star.on {
@@ -344,23 +399,110 @@
     fill: currentColor;
   }
 
-  .time {
-    font-size: 11px;
-    color: var(--muted);
+  .meta {
+    --reveal: 20px;
+    position: absolute;
+    left: var(--sp-3);
+    right: var(--sp-3);
+    bottom: 9px;
+    pointer-events: none;
+    transform: translateY(var(--reveal));
+    transition: transform var(--dur) var(--ease-out);
   }
 
-  .summary {
+  .card:hover .meta,
+  .card:has(:focus-visible) .meta {
+    transform: none;
+  }
+
+  .line {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 20px;
+  }
+
+  .name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+    font-size: var(--fs-control);
+    text-shadow: 0 1px 2px color-mix(in srgb, var(--stage) 60%, transparent);
+  }
+
+  .text {
     /* Room for the first letter's edge inside the clipped line: on scaled
-       displays (125 %, 150 %) text lands between device pixels and its
-       antialiased edge reaches past the box. The card's own edge (2px to the
-       left) is the outer limit. */
+       displays (125 %, 150 %) text lands between device pixels. */
     padding-left: 2px;
     margin-left: -2px;
-    margin-top: 3px;
-    font-size: 12px;
-    color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .extras {
+    display: flex;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity var(--dur-fast);
+  }
+
+  .extra {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: var(--fs-xs);
+  }
+
+  .stat {
+    flex-shrink: 0;
+    font-size: var(--fs-xs);
+    text-shadow: 0 1px 2px color-mix(in srgb, var(--stage) 60%, transparent);
+  }
+
+  .more {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 20px;
+    font-size: var(--fs-sm);
+    color: color-mix(in srgb, var(--text) 78%, transparent);
+    opacity: 0;
+    transition: opacity var(--dur-fast);
+  }
+
+  .card:hover .more,
+  .card:hover .extras,
+  .card:has(:focus-visible) .more,
+  .card:has(:focus-visible) .extras {
+    opacity: 1;
+    transition-duration: var(--dur);
+  }
+
+  /* Part of the card at rest: it says which clips can have you in their short. */
+  .camera {
+    display: inline-flex;
+    flex-shrink: 0;
+    pointer-events: auto;
+    filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--stage) 60%, transparent));
+  }
+
+  .summary {
+    flex: 1;
+    min-width: 0;
+    padding-left: 2px;
+    margin-left: -2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .when {
+    flex-shrink: 0;
+    font-size: var(--fs-xs);
   }
 </style>

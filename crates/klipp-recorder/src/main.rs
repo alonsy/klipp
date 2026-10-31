@@ -9,6 +9,7 @@ mod audio;
 mod autoclip;
 mod autoinstall;
 mod autostart;
+mod camera;
 mod cancel;
 mod capture;
 mod channel;
@@ -19,11 +20,14 @@ mod cue;
 mod discord;
 mod duplication;
 mod events;
+mod fortnite;
 mod games;
+mod guard;
 mod gpu;
 mod hotkey;
 mod installlog;
 mod gpuload;
+mod hudtest;
 mod league;
 mod log;
 mod logsend;
@@ -49,6 +53,7 @@ mod tray;
 mod tuning;
 mod update;
 mod video;
+mod voice;
 mod watchdog;
 mod wasapi;
 
@@ -84,13 +89,15 @@ struct Args {
 }
 
 const USAGE: &str = "usage: klipp-recorder [--settings FILE]\n       \
-klipp-recorder --list-audio | --list-monitors | --cleanup | --check-update\n       \
+klipp-recorder --list-audio | --list-monitors | --list-cameras | --cleanup | --check-update\n       \
+klipp-recorder --probe-camera SECONDS [NAME]\n       \
 klipp-recorder --probe [--monitor ID] [--gpu NAME]\n       \
 klipp-recorder --test-recording SECONDS FILE [--settings FILE]\n       \
 klipp-recorder --show-indicator on|saved|failed\n       \
 klipp-recorder --test-hotkey KEY SECONDS\n       \
 klipp-recorder --test-chat SECONDS FILE.wav [--device NAME]\n       \
 klipp-recorder [--settings FILE] --levels SECONDS\n       \
+klipp-recorder [--settings FILE] --voice-teach\n       \
 klipp-recorder --play-sound [error] [--device NAME] [--volume 0-1]\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
@@ -169,6 +176,11 @@ fn parse_args() -> Result<Args> {
                 selftest::run_levels(seconds.clamp(1, 60), &Settings::load_or_create(&path).unwrap_or_default())?;
                 std::process::exit(0);
             }
+            "--voice-teach" => {
+                let path = a.settings.clone().map_or_else(Settings::default_path, Ok)?;
+                voice::teach(&Settings::load_or_create(&path).unwrap_or_default())?;
+                std::process::exit(0);
+            }
             "--test-hotkey" => {
                 let key = it.next().context("--test-hotkey needs KEY SECONDS")?;
                 let seconds: u32 = it.next().context("--test-hotkey needs KEY SECONDS")?.parse()?;
@@ -177,6 +189,15 @@ fn parse_args() -> Result<Args> {
             }
             "--list-monitors" => {
                 println!("{}", serde_json::to_string(&monitors::list())?);
+                std::process::exit(0);
+            }
+            "--list-cameras" => {
+                println!("{}", camera::list_json()?);
+                std::process::exit(0);
+            }
+            "--probe-camera" => {
+                let seconds: u32 = it.next().context("--probe-camera needs SECONDS")?.parse()?;
+                camera::probe(seconds.clamp(1, 60), &it.next().unwrap_or_default())?;
                 std::process::exit(0);
             }
             "--cleanup" => {
@@ -424,6 +445,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let mut recorder = Recorder::start(settings)?;
     let mut tray = Tray::create(&tooltip(recorder.settings()))?;
+    tray::show_hud_folder(recorder.hud.as_ref().is_some_and(|h| h.pictures()));
     tray.set_performance(recorder.settings().video.performance);
     update::start();
     logsend::start(log_path.clone());
@@ -456,8 +478,11 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut prev = (Instant::now(), stats::sample());
     let mut gpu_load = gpuload::GpuLoad::start();
     let mut pending_save = None;
+    // Shown under the usual tooltip.
+    let mut hud_status = String::new();
     let mut auto_install = autoinstall::AutoInstall::default();
     let mut cleanup = cleanup::Cleanup::new();
+    let mut voice_watcher = voice::VoiceWatcher::new(MAIN_THREAD.load(Ordering::Relaxed));
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if !msg.hwnd.is_invalid() {
@@ -466,6 +491,14 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         }
         match msg.message {
             WM_HOTKEY if msg.wParam.0 == HOTKEY_SAVE as usize => {
+                let ok = recorder.press();
+                indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
+                schedule_save(&mut pending_save);
+                if let Some(hud) = recorder.hud.as_mut() {
+                    hud.marker("save key");
+                }
+            }
+            voice::WM_VOICE_SAVE => {
                 let ok = recorder.press();
                 indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
                 schedule_save(&mut pending_save);
@@ -481,11 +514,20 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                     let ok = recorder.press();
                     indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
                     schedule_save(&mut pending_save);
+                    if let Some(hud) = recorder.hud.as_mut() {
+                        hud.marker("save key");
+                    }
                 }
                 Some(Command::OpenClips) => {
                     let dir = recorder.settings().storage.clips_dir();
                     let _ = fs::create_dir_all(&dir);
                     open_path(&dir);
+                }
+                Some(Command::OpenHudTest) => {
+                    if let Some(hud) = recorder.hud.as_ref() {
+                        let _ = fs::create_dir_all(hud.root());
+                        open_path(hud.root());
+                    }
                 }
                 Some(Command::OpenStudio) => {
                     if !open_studio(&[]) {
@@ -558,6 +600,17 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 if lend_event.is_some_and(|e| unsafe { WaitForSingleObject(e, 0) } == WAIT_OBJECT_0) {
                     recorder.lend_hotkey(LEND_TIME);
                 }
+                let auto_clips = recorder.settings().auto_clip.enabled;
+                if let Some(hud) = recorder.hud.as_mut() {
+                    hud.poll(auto_clips);
+                    let status = hud.status();
+                    if status != hud_status {
+                        let base = tooltip(recorder.settings());
+                        tray.set_tooltip(&if status.is_empty() { base } else { format!("{base}\n{status}") });
+                        hud_status = status;
+                    }
+                }
+                voice_watcher.poll(&recorder.shared);
                 if watcher.poll() {
                     match Settings::load_or_create(&settings_path) {
                         Ok(s) if s != *recorder.settings() => {
@@ -581,6 +634,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());
                 recorder.tick_standby();
+                recorder.tick_camera();
                 recorder.check_health();
                 recorder.tick_performance();
                 recorder.retry_hotkey();

@@ -36,6 +36,10 @@ export interface Clip {
   mode: string;
   thumb: string | null;
   edit: Edit | null;
+  /** Content Creator Mode: it has a camera track. */
+  camera: boolean;
+  /** The short made from it (Content Creation Center). */
+  short: unknown | null;
 }
 
 export interface Paths {
@@ -114,6 +118,29 @@ export interface TrackLevel {
 export const audioLevels = () => invoke<void>("audio_levels");
 export function onAudioLevels(handler: (tracks: TrackLevel[]) => void): Promise<UnlistenFn> {
   return listen<{ tracks: TrackLevel[] }>("audio-levels", (e) => handler(e.payload.tracks));
+}
+
+/** Fortnite's auto-clips: what the recorder reads from fortnite.json. */
+export const fortniteEnabled = () => invoke<boolean>("fortnite_enabled");
+export const setFortniteEnabled = (enabled: boolean) => invoke<void>("set_fortnite_enabled", { enabled });
+
+/** "Klipp that": what the recorder reads from voice.json. */
+export interface VoiceSettings {
+  enabled: boolean;
+  personal: string[];
+}
+export interface VoiceTeachStep {
+  step: "listen" | "heard" | "retry" | "failed" | "done";
+  take?: number;
+  of?: number;
+  why?: string;
+}
+export const voiceSettings = () => invoke<VoiceSettings>("voice_settings");
+export const setVoiceEnabled = (enabled: boolean) => invoke<void>("set_voice_enabled", { enabled });
+/** Three takes from the microphone; steps arrive through `onVoiceTeach`. */
+export const voiceTeach = () => invoke<void>("voice_teach");
+export function onVoiceTeach(handler: (step: VoiceTeachStep) => void): Promise<UnlistenFn> {
+  return listen<VoiceTeachStep>("voice-teach", (e) => handler(e.payload));
 }
 
 /** Setup's key test: a running recorder lends its key first, then up to 10 s for a press. */
@@ -315,6 +342,70 @@ export async function onExport(handlers: ExportEvents): Promise<() => void> {
       handlers.done(e.payload.id, e.payload.path, e.payload.sizeBytes),
     ),
     listen<{ id: number; error: string }>("export-failed", (e) => handlers.failed(e.payload.id, e.payload.error)),
+  ]);
+  return () => offs.forEach((off) => off());
+}
+
+/** Content Creator Mode: what the recorder reads from creator.json. */
+export interface CreatorSettings {
+  enabled: boolean;
+  /** "" = the first camera. */
+  camera: string;
+  height: number;
+  fps: number;
+}
+
+/** What the recorder's camera is doing. */
+export interface CameraStatus {
+  state: "starting" | "recording" | "error" | "off";
+  camera?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  /** Another app had the camera, so Klipp shares it. */
+  shared?: boolean;
+  error?: string;
+}
+
+/** A clip's camera track, copied out for the preview. */
+export interface CameraTrack {
+  path: string;
+  /** Where in the clip its first picture is, in seconds. */
+  offset: number;
+  width: number;
+  height: number;
+}
+
+export const creatorSettings = () => invoke<CreatorSettings>("creator_settings");
+export const setCreatorSettings = (settings: CreatorSettings) => invoke<void>("set_creator_settings", { settings });
+export const cameras = () => invoke<string[]>("cameras");
+export const cameraStatus = () => invoke<CameraStatus>("camera_status");
+export const cameraTrack = (path: string) => invoke<CameraTrack | null>("camera_track", { path });
+export const saveShort = (path: string, project: unknown) => invoke<void>("save_short", { path, project });
+
+/** What the renderer needs (see short.rs). */
+export interface ShortRequest {
+  path: string;
+  start: number;
+  end: number;
+  background: "blur" | "black";
+  camShift: number;
+  game: unknown;
+  camera: unknown | null;
+  badge: { x: number; y: number; width: number; height: number; rgba: number[] } | null;
+  volumes: number[];
+  mixVolume: number;
+  fps: number;
+}
+export const startShort = (request: ShortRequest) => invoke<number>("start_short", { request });
+export const cancelShort = (id: number) => invoke<void>("cancel_short", { id });
+
+/** Subscribes to short render events; returns a function that unsubscribes. */
+export async function onShort(handlers: ExportEvents): Promise<() => void> {
+  const offs: UnlistenFn[] = await Promise.all([
+    listen<{ id: number; fraction: number }>("short-progress", (e) => handlers.progress(e.payload.id, e.payload.fraction)),
+    listen<{ id: number; path: string; sizeBytes: number }>("short-done", (e) => handlers.done(e.payload.id, e.payload.path, e.payload.sizeBytes)),
+    listen<{ id: number; error: string }>("short-failed", (e) => handlers.failed(e.payload.id, e.payload.error)),
   ]);
   return () => offs.forEach((off) => off());
 }

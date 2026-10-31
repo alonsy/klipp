@@ -33,8 +33,10 @@ pub struct Rules {
     pub knife_or_zeus_kill: bool,
     pub death: bool,
     pub mvp: bool,
-    /// Fortnite's Victory Royale (FORTNITE TEST BUILD); false elsewhere.
+    /// Fortnite's Victory Royale; false elsewhere.
     pub victory: bool,
+    /// Fortnite's knocks: a knock with no elimination near it is a clip of its own.
+    pub knock: bool,
     /// League's (false elsewhere): your first blood, a stolen Baron, Dragon
     /// or Herald, every objective you took part in, and team aces you were in.
     pub first_blood: bool,
@@ -51,6 +53,9 @@ pub struct Rules {
     pub post_roll: i64,
     /// Events closer together than this join the same chain (and clip).
     pub merge_gap: i64,
+    /// A chain takes no more events once it has run this long; the next one
+    /// starts a chain of its own. 0: no limit.
+    pub max_chain: i64,
     /// How late the game's events can reach us after they happened (League
     /// is polled): chains stay open this much longer, so a late event still
     /// joins the chain it belongs to. 0 for games that push events at once.
@@ -68,6 +73,7 @@ impl Rules {
             EventKind::Death => self.death,
             EventKind::Mvp => self.mvp,
             EventKind::VictoryRoyale => self.victory,
+            EventKind::Knock => self.knock,
             EventKind::FirstBlood => self.first_blood,
             EventKind::Steal => self.steal,
             EventKind::Objective => self.objective,
@@ -136,6 +142,9 @@ impl Rules {
         if self.victory && has(EventKind::VictoryRoyale) {
             reasons.push(EventKind::VictoryRoyale);
         }
+        if self.knock && has(EventKind::Knock) {
+            reasons.push(EventKind::Knock);
+        }
         let switches = [
             (self.first_blood, EventKind::FirstBlood),
             (self.steal, EventKind::Steal),
@@ -158,6 +167,7 @@ fn about_itself(kind: EventKind) -> bool {
     matches!(
         kind,
         EventKind::VictoryRoyale
+            | EventKind::Knock
             | EventKind::FirstBlood
             | EventKind::Steal
             | EventKind::Objective
@@ -240,9 +250,9 @@ impl AutoClipper {
         if !rules.joins_chain(e.kind) {
             return;
         }
-        let gap = rules.merge_gap;
+        let (gap, max_chain) = (rules.merge_gap, rules.max_chain);
         match self.chains.last_mut() {
-            Some(chain) if chain.game == game && e.time <= chain.open_until(gap) => chain.events.push(e),
+            Some(chain) if chain.game == game && e.time <= chain.open_until(gap) && (max_chain == 0 || e.time - chain.first() <= max_chain) => chain.events.push(e),
             _ => self.chains.push(Chain { game: game.to_string(), events: vec![e] }),
         }
     }

@@ -1,4 +1,4 @@
-//! Performance mode (IDEA-42): while a game is in front and keeps the
+//! Performance mode: while a game is in front and keeps the
 //! graphics card busy, Klipp steps back, first its bitrate, then its frame
 //! rate (half, then a third), and comes back a step at a time once the card
 //! has room. The video keeps running through every step: the video loop takes

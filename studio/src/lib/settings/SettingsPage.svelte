@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Icon from "../Icon.svelte";
+  import { DUR, enter, pageOut } from "../motion";
   import { ui } from "../state.svelte";
   import About from "./About.svelte";
   import Advanced from "./Advanced.svelte";
@@ -13,42 +14,78 @@
   import Video from "./Video.svelte";
 
   const sections = [
-    { id: "general", name: "General", icon: "sliders" },
-    { id: "recording", name: "Recording", icon: "record" },
-    { id: "video", name: "Video", icon: "film" },
-    { id: "audio", name: "Audio", icon: "mic" },
-    { id: "autoclips", name: "Auto-clips", icon: "bolt" },
-    { id: "storage", name: "Storage", icon: "drive" },
-    { id: "advanced", name: "Advanced", icon: "gear" },
-    { id: "about", name: "About", icon: "info" },
+    { id: "general", name: "General" },
+    { id: "recording", name: "Recording" },
+    { id: "video", name: "Video" },
+    { id: "audio", name: "Audio" },
+    { id: "autoclips", name: "Auto-clips" },
+    { id: "storage", name: "Storage" },
+    { id: "advanced", name: "Advanced" },
+    { id: "about", name: "About" },
   ];
   // Pages that moved: the save sound is under Recording now, editor keys under About.
   const moved: Record<string, string> = { sounds: "recording", playback: "about" };
 
-  onMount(load);
-
   let current = $derived(sections.find((s) => s.id === (moved[ui.section] ?? ui.section)) ?? sections[0]);
+  let index = $derived(sections.indexOf(current));
+
+  // A new page comes in from the side its tab is on.
+  let before = 0;
+  let side = $state(0);
+  $effect.pre(() => {
+    side = Math.sign(index - before);
+    before = index;
+  });
+
+  // The underline under the current tab: as wide as its word, and it slides.
+  let nav = $state<HTMLElement>();
+  let line = $state({ x: 0, w: 0 });
+  /** Not on the first placement, or it would slide in from the corner. */
+  let settled = $state(false);
+  function measure() {
+    const word = nav?.querySelector<HTMLElement>("[aria-current] span");
+    if (word) line = { x: word.offsetLeft, w: word.offsetWidth };
+  }
+  $effect(() => {
+    void index;
+    measure();
+  });
+
+  onMount(() => {
+    load();
+    measure();
+    const watcher = new ResizeObserver(measure);
+    if (nav) watcher.observe(nav);
+    const frame = requestAnimationFrame(() => (settled = true));
+    return () => {
+      watcher.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  });
 </script>
 
 <section class="settings">
-  <nav>
-    <h1>Settings</h1>
-    {#each sections as s (s.id)}
-      <button class="item" class:active={current.id === s.id} onclick={() => (ui.section = s.id)}>
-        <Icon name={s.icon} size={17} />{s.name}
-      </button>
-    {/each}
-  </nav>
+  <header>
+    <div class="col">
+      <h1>Settings</h1>
+      <nav aria-label="Settings" bind:this={nav}>
+        {#each sections as s (s.id)}
+          <button class="tab" aria-current={current.id === s.id ? "page" : undefined} onclick={() => (ui.section = s.id)}><span>{s.name}</span></button>
+        {/each}
+        <i class="line" class:settled style:transform="translateX({line.x}px) scaleX({line.w})"></i>
+      </nav>
+    </div>
+  </header>
 
-  <div class="content">
-    <header>
-      <h2>{current.name}</h2>
-    </header>
-    {#if store.error}
-      <p class="error"><Icon name="warning" size={18} />{store.error}</p>
-    {:else if store.s}
-      <div class="scroll">
-        {#key current.id}
+  {#if store.error}
+    <div class="failed">
+      <Icon name="warning" size={18} />
+      <p>{store.error}</p>
+    </div>
+  {:else if store.s}
+    <div class="stack body">
+      {#key current.id}
+        <div class="scroll" in:enter={{ x: side * 14, y: 0, delay: 50, duration: DUR.base }} out:pageOut>
           <div class="page">
             {#if current.id === "general"}<General />
             {:else if current.id === "recording"}<Recording />
@@ -59,135 +96,197 @@
             {:else if current.id === "advanced"}<Advanced />
             {:else}<About />{/if}
           </div>
-        {/key}
-      </div>
-    {/if}
-  </div>
+        </div>
+      {/key}
+    </div>
+  {:else}
+    <div class="loading page" aria-hidden="true">
+      {#each [40, 56, 32, 48] as w, i (i)}<span class="skeleton text" style:width="{w}%"></span>{/each}
+    </div>
+  {/if}
 </section>
 
 <style>
   .settings {
-    display: grid;
-    grid-template-columns: 210px 1fr;
+    --col: 680px;
+    --gutter: 10px; /* the page's scrollbar */
+    display: flex;
+    flex-direction: column;
     height: 100%;
   }
 
-  nav {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 2px 12px 22px;
-    border-right: 1px solid var(--line);
+  /* The title sits in the window's top bar, where dragging goes on working. */
+  header {
+    flex-shrink: 0;
+    margin-top: -36px;
+    padding: 0 calc(var(--sp-5) + var(--gutter)) 0 var(--sp-5);
+    pointer-events: none;
+  }
+
+  .col {
+    max-width: var(--col);
+    margin-inline: auto;
   }
 
   h1 {
-    margin: 0 0 16px 12px;
+    display: flex;
+    align-items: center;
+    height: 36px;
+    margin: 0;
     font-family: var(--font-display);
-    font-size: 22px;
+    font-size: var(--fs-lg);
+    font-weight: 600;
     letter-spacing: -0.03em;
   }
 
-  .item {
-    justify-content: flex-start;
-    gap: 11px;
-    padding: 8px 12px;
-    border: none;
-    border-radius: 10px;
+  nav {
+    position: relative;
+    display: flex;
+    gap: var(--sp-1);
+    margin: var(--sp-1) 0 0 calc(-1 * var(--sp-3));
+    padding-bottom: var(--sp-1);
+    pointer-events: auto;
+  }
+
+  .tab {
+    padding: 6px var(--sp-3);
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--muted);
+    font-size: var(--fs-control);
+    white-space: nowrap;
   }
 
-  .item:hover {
-    background: var(--surface);
+  .tab:hover {
+    background: transparent;
     color: var(--text);
   }
 
-  .item.active {
-    background: var(--surface);
+  .tab:active {
+    transform: none;
+  }
+
+  .tab[aria-current] {
     color: var(--text);
+    font-weight: 550;
   }
 
-  .item.active :global(.icon) {
-    color: var(--accent);
+  .tab span {
+    display: block;
   }
 
-  .content {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
+  .line {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 1px;
+    height: 2px;
+    background: var(--accent);
+    transform-origin: left;
+    pointer-events: none;
   }
 
-  header {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 4px 36px 10px;
+  .line.settled {
+    transition: transform var(--dur-spring) var(--spring);
   }
 
-  h2 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 650;
+  .body {
+    flex: 1;
   }
 
   .scroll {
-    flex: 1;
     overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .page {
     display: flex;
     flex-direction: column;
-    gap: 22px;
-    max-width: 760px;
-    padding: 8px 36px 48px;
-    animation: in 0.2s var(--ease);
+    gap: var(--sp-5);
+    max-width: calc(var(--col) + 2 * var(--sp-5));
+    margin-inline: auto;
+    padding: var(--sp-5) var(--sp-5) var(--sp-6);
   }
 
+  /* A group is rows and space; its heading is the only thing that marks it. */
   .page :global(.group) {
-    border-radius: var(--radius);
-    background: var(--surface);
-    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .page :global(.group .field) {
+    min-height: 44px;
+    padding: var(--sp-1) 0;
+  }
+
+  .page :global(.field .title) {
+    font-weight: 500;
   }
 
   .page :global(.group-title) {
-    display: block;
-    margin: 0 0 -12px 4px;
+    margin: 0 0 var(--sp-1);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--faint);
   }
 
+  .page :global(.field .slider) {
+    width: 180px;
+  }
+
+  .page :global(.field select) {
+    max-width: 260px;
+  }
+
+  /* Something the page can't work around: a reason and maybe one action. */
   .page :global(.banner) {
     display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 12px 14px;
-    border-radius: 12px;
-    background: color-mix(in srgb, #f2c84b 9%, transparent);
-    border: 1px solid color-mix(in srgb, #f2c84b 25%, transparent);
-    color: #f5dc8c;
-    font-size: 13px;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--r-sm);
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: var(--fs-control);
+    line-height: 1.45;
+  }
+
+  /* A line for what a change will do. Stays quiet, stays there. */
+  .page :global(.note) {
+    margin: 0;
+    color: var(--faint);
+    font-size: var(--fs-sm);
     line-height: 1.5;
   }
 
   .page :global(.value) {
-    min-width: 64px;
+    min-width: 52px;
     text-align: right;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--fs-sm);
     color: var(--text);
   }
 
-  .error {
+  .failed {
     display: flex;
-    gap: 10px;
-    margin: 20px 36px;
+    gap: var(--sp-3);
+    width: 100%;
+    max-width: calc(var(--col) + 2 * var(--sp-5));
+    margin: var(--sp-5) auto;
+    padding: 0 calc(var(--sp-5) + var(--gutter)) 0 var(--sp-5);
     color: var(--danger);
   }
 
-  @keyframes in {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
+  .failed p {
+    margin: 0;
+    line-height: 1.45;
+    user-select: text;
+  }
+
+  .loading {
+    width: 100%;
+    gap: var(--sp-5);
   }
 </style>

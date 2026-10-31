@@ -1,6 +1,6 @@
 //! Sends the recorder's log to the developer (klipp.dev), so a tester doesn't
 //! have to be asked for it. With "Send logs" on (Settings → Advanced; on by
-//! default on the test channel, off on normal releases, D52); every 15
+//! default on the test channel, off on normal releases); every 15
 //! minutes, only what's new since the last send, with the user's own folder
 //! name left out. Nothing else leaves the PC: no clips, no pictures, no
 //! settings file.

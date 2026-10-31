@@ -1,7 +1,7 @@
 //! What Klipp learns about this PC while it records. When games keep the
 //! graphics card too busy for the set frame rate in two sessions, Klipp
 //! starts at the lower rate from then on, instead of stuttering at the start
-//! of every match until the watchdog steps in (FIX-17). Each new version
+//! of every match until the watchdog steps in. Each new version
 //! tries the set rate again (it may have made the work lighter), and so do
 //! new video settings. Each version also checks the saved video settings once
 //! before recording (perfcheck). Kept in tuning.json next to the log.

@@ -8,8 +8,11 @@
   import { clipTitle, eventName, isMultiKill, killSummary, mapName, modeName, timecode, weaponName, when } from "./format";
   import Icon from "./Icon.svelte";
   import { isHot, mergeMarkers } from "./markers";
-  import { deleteClips, prefs, setFavorite, setPref, toast, ui } from "./state.svelte";
+  import { DUR, enter, leave, unfold } from "./motion";
+  import { EDITOR_KEYS } from "./shortcuts";
+  import { deleteClips, openShort, prefs, setClipEdit, setFavorite, setPref, shownThumbs, toast, ui } from "./state.svelte";
   import Timeline, { type Lane } from "./Timeline.svelte";
+  import { swallowPress } from "./ui/clicks";
   import Slider from "./ui/Slider.svelte";
   import WindowControls from "./WindowControls.svelte";
 
@@ -23,6 +26,9 @@
   const FRAME = 1 / 60;
   /** "Set end" plays this much before the new end, to hear and see the cut. */
   const END_PREVIEW = 2;
+  /** The speeds the speed slider snaps to. */
+  const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+  const NORMAL = SPEEDS.indexOf(1);
 
   let video: HTMLVideoElement;
   let stage: HTMLDivElement;
@@ -39,12 +45,22 @@
   let master = $state(saved.master ?? 1);
   let masterMuted = $state(false);
   let flash = $state<"play" | "pause" | null>(null);
+  let flashes = $state(0);
+  let flashTimer = 0;
   let savedNote = $state(false);
+  /** The More menu in the top strip. */
+  let menu = $state(false);
+  let menuEl = $state<HTMLDivElement | null>(null);
+  /** The panel over the right of the picture: what's in the clip, or the shortcuts. */
+  let panel = $state<"moments" | "keys" | null>(null);
   /** How loud you hear it here. Separate from the clip's own levels, never exported. */
   let previewVolume = $state(prefs.previewVolume);
   let previewMuted = $state(false);
   let previewLevel = $derived(previewMuted ? 0 : previewVolume);
   let volumeIcon = $derived(previewLevel === 0 ? "mute" : previewLevel < 0.5 ? "volumeLow" : "volume");
+  /** How fast you watch it here, as a step of SPEEDS. Never exported; each clip opens at 1×. */
+  let speedStep = $state(NORMAL);
+  let speed = $derived(SPEEDS[speedStep]);
   // Fullscreen shows its own small controls, hidden while the mouse rests.
   let isFullscreen = $state(false);
   let fsIdle = $state(false);
@@ -143,6 +159,7 @@
       cancelAnimationFrame(frame);
       document.removeEventListener("fullscreenchange", onFullscreen);
       clearTimeout(fsTimer);
+      clearTimeout(flashTimer);
       flushSave();
       mixer?.close();
       mixer = null;
@@ -169,6 +186,13 @@
     if (video && noAudio) video.volume = Math.min(1, masterLevel * previewLevel);
   });
 
+  $effect(() => {
+    // Picture and sound both follow the speed; the pitch does too, as it does in the mixer.
+    video.preservesPitch = false;
+    video.playbackRate = video.defaultPlaybackRate = speed;
+    if (audioReady) mixer?.setRate(speed);
+  });
+
   function loaded() {
     length = video.duration;
     // Saved trim points from an older file length stay inside the clip.
@@ -187,12 +211,15 @@
   function toggle() {
     if (video.paused) play();
     else video.pause();
+    // Answers on the picture too, from the keyboard as much as from a click.
+    flash = video.paused ? "pause" : "play";
+    flashes += 1;
+    clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => (flash = null), 450);
   }
 
   function clickVideo() {
     toggle();
-    flash = video.paused ? "pause" : "play";
-    setTimeout(() => (flash = null), 450);
   }
 
   function seek(t: number) {
@@ -225,7 +252,7 @@
     api
       .saveEdit(initial.path, untouched ? null : edit)
       .then(() => {
-        clip.edit = untouched ? null : edit;
+        setClipEdit(initial.path, untouched ? null : edit);
         savedNote = true;
         setTimeout(() => (savedNote = false), 1400);
       })
@@ -398,10 +425,13 @@
       case "]":
         jumpMarker(1);
         break;
+      // Kept from a focused slider, which would jump to its own end too (2× speed, no volume).
       case "Home":
+        e.preventDefault();
         seek(inPoint);
         break;
       case "End":
+        e.preventDefault();
         seek(outPoint);
         break;
       case "f":
@@ -412,10 +442,26 @@
       case "M":
         previewMuted = !previewMuted;
         break;
+      case "?":
+        openPanel("keys");
+        break;
       case "Escape":
-        if (!document.fullscreenElement) close();
+        if (menu) menu = false;
+        else if (panel) panel = null;
+        else if (!document.fullscreenElement) close();
         break;
     }
+  }
+
+  function openPanel(which: "moments" | "keys") {
+    menu = false;
+    panel = panel === which ? null : which;
+  }
+
+  function outsideMenu(e: PointerEvent) {
+    if (!menu || menuEl?.contains(e.target as Node)) return;
+    menu = false;
+    swallowPress(e);
   }
 
   let subtitle = $derived(
@@ -424,26 +470,52 @@
   let badge = $derived(clip.label ?? (clip.kind === "auto" ? "kill" : "manual"));
   let markers = $derived(mergeMarkers(clip.events));
   let moments = $derived([...clip.events].filter((e) => e.kind !== "kill" || !clip.events.some((o) => o !== e && Math.abs(o.atSecs - e.atSecs) < 0.3 && o.kind !== "kill")).sort((a, b) => a.atSecs - b.atSecs));
+  let trimmed = $derived(inPoint > 0.01 || outPoint < length - 0.01);
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKey} onpointerdowncapture={outsideMenu} />
 
 <section class="editor">
   <!-- Also the title bar: empty space drags the window. -->
   <header data-tauri-drag-region>
-    <button class="ghost icon" onclick={close} title="Back to clips (Esc)"><Icon name="back" size={20} /></button>
-    <span class="badge" class:hot={isMultiKill(badge)}><Icon event={badge} size={22} /></span>
+    <button class="ghost icon" onclick={close} title="Back to clips (Esc)" aria-label="Back to clips"><Icon name="back" size={18} /></button>
     <div class="title" data-tauri-drag-region>
+      <span class="badge" class:hot={isMultiKill(badge)}><Icon event={badge} size={20} /></span>
       <h1>{clipTitle(clip)}</h1>
       <span class="sub">{subtitle}</span>
     </div>
-    <span class="saved label" class:show={savedNote}><Icon name="check" size={13} /> Edit saved</span>
-    <button class="ghost icon" class:fav={clip.favorite} onclick={() => setFavorite([clip.path], !clip.favorite)} title={clip.favorite ? "Remove from favorites" : "Add to favorites"}>
-      <Icon name="star" size={19} />
+    <span class="saved" class:show={savedNote}><Icon name="check" size={13} /> Saved</span>
+    <button class="ghost short" onclick={() => openShort(clip, "editor")} title="Make a vertical short">
+      <Icon name="phone" size={16} />Short{#if clip.camera}<Icon name="camera" size={14} />{/if}
     </button>
-    <button class="ghost icon" onclick={() => api.reveal(clip.path)} title="Show in folder"><Icon name="folder" size={19} /></button>
-    <button class="ghost icon danger" onclick={() => deleteClips([clip.path])} title="Delete"><Icon name="trash" size={19} /></button>
-    <span class="divider"></span>
+    <button class="ghost icon" class:fav={clip.favorite} onclick={() => setFavorite([clip.path], !clip.favorite)} title={clip.favorite ? "Remove from favorites" : "Add to favorites"} aria-label={clip.favorite ? "Remove from favorites" : "Add to favorites"}>
+      <Icon name="star" size={17} />
+    </button>
+    <div class="more" bind:this={menuEl}>
+      <button class="ghost icon" aria-label="More" aria-haspopup="menu" aria-expanded={menu} title="More" onclick={() => (menu = !menu)}><Icon name="more" size={18} /></button>
+      {#if menu}
+        <div class="menu" role="menu" in:unfold out:leave={{ y: -4 }}>
+          <button
+            class="ghost"
+            role="menuitem"
+            onclick={() => {
+              menu = false;
+              api.reveal(clip.path);
+            }}><Icon name="folder" size={16} />Show in folder</button
+          >
+          <button class="ghost" role="menuitem" onclick={() => openPanel("keys")}><Icon name="keyboard" size={16} />Shortcuts<kbd>?</kbd></button>
+          <button
+            class="ghost danger"
+            role="menuitem"
+            onclick={() => {
+              menu = false;
+              deleteClips([clip.path]);
+            }}><Icon name="trash" size={16} />Delete</button
+          >
+        </div>
+      {/if}
+    </div>
+    <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} volumes={exportVolumes} mixVolume={masterLevel} />
     <WindowControls />
   </header>
 
@@ -452,6 +524,8 @@
       <!-- svelte-ignore a11y_media_has_caption, a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
       <video
         bind:this={video}
+        data-hero
+        poster={clip.thumb ? api.fileUrl(clip.thumb) : shownThumbs.get(clip.path)}
         src={api.fileUrl(clip.path)}
         preload="auto"
         muted
@@ -471,9 +545,11 @@
         onclick={clickVideo}
         ondblclick={fullscreen}
       ></video>
-      {#if flash}
-        <div class="flash"><Icon name={flash} size={30} /></div>
-      {/if}
+      {#key flashes}
+        {#if flash}
+          <div class="flash"><Icon name={flash} size={26} /></div>
+        {/if}
+      {/key}
       {#if isFullscreen}
         <div class="fs-controls">
           <div class="fs-markers">
@@ -519,6 +595,10 @@
               <button class="fs-btn" onclick={() => (previewMuted = !previewMuted)} aria-label="Mute preview"><Icon name={volumeIcon} size={21} /></button>
               <Slider min={0} max={1} step={0.02} value={previewLevel} label="Preview volume" oninput={setPreview} onchange={(v) => setPref("previewVolume", v)} />
             </div>
+            <div class="fs-speed">
+              <button class="fs-rate mono" onclick={() => (speedStep = NORMAL)} title="Back to 1×">{speed}×</button>
+              <Slider min={0} max={SPEEDS.length - 1} value={speedStep} label="Playback speed" oninput={(i) => (speedStep = i)} />
+            </div>
             <span class="fs-spacer"></span>
             <span class="fs-title">{clipTitle(clip)}</span>
             <button class="fs-btn" onclick={fullscreen} aria-label="Exit fullscreen" title="Exit fullscreen (F)"><Icon name="exitFullscreen" size={21} /></button>
@@ -527,49 +607,74 @@
       {/if}
     </div>
 
-    <aside class="side">
-      <div class="moments">
-        <span class="label">In this clip</span>
-        {#if killSummary(clip)}<p class="summary">{killSummary(clip)}</p>{/if}
-        <ul>
-          {#each moments as e, i (i)}
-            <li>
-              <button class="ghost moment" onclick={() => seek(Math.max(0, e.atSecs - 1))}>
-                <Icon event={e.kind} size={18} />
-                <span class="m-name">{eventName(e.kind, clip.game)}{#if e.detail}<span class="m-detail"> · {weaponName(e.detail)}</span>{/if}</span>
-                <span class="m-time mono">{timecode(e.atSecs)}</span>
-              </button>
-            </li>
-          {:else}
-            <li class="empty">No game events. Saved with the hotkey.</li>
-          {/each}
-        </ul>
-      </div>
-    </aside>
+    {#if panel}
+      <aside class="side" in:enter={{ x: 16, y: 0 }} out:leave={{ x: 12 }}>
+        <div class="side-head">
+          <h2>{panel === "moments" ? "In this clip" : "Shortcuts"}</h2>
+          <button class="ghost icon" onclick={() => (panel = null)} aria-label="Close" title="Close (Esc)"><Icon name="x" size={15} /></button>
+        </div>
+        {#if panel === "moments"}
+          <div class="moments">
+            {#if killSummary(clip)}<p class="summary">{killSummary(clip)}</p>{/if}
+            <ul>
+              {#each moments as e, i (i)}
+                <li>
+                  <button class="ghost moment" onclick={() => seek(Math.max(0, e.atSecs - 1))}>
+                    <Icon event={e.kind} size={18} />
+                    <span class="m-name">{eventName(e.kind, clip.game)}{#if e.detail}<span class="m-detail">{` · ${weaponName(e.detail)}`}</span>{/if}</span>
+                    <span class="m-time mono">{timecode(e.atSecs)}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {:else}
+          <ul class="keys">
+            {#each EDITOR_KEYS as [combo, what] (what)}
+              <li>
+                <span>{what}</span>
+                <span class="combo">{#each combo as k (k)}<kbd>{k}</kbd>{/each}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </aside>
+    {/if}
   </div>
 
   <div class="transport">
     <div class="t-left">
-      <button onclick={setStart} title="Start the clip here (I)"><Icon name="setStart" size={17} />Set start <kbd>I</kbd></button>
-      <button onclick={setEnd} title="End the clip here (O)"><Icon name="setEnd" size={17} />Set end <kbd>O</kbd></button>
-      <button class="ghost" class:on={loop} onclick={toggleLoop} title="Loop the trimmed part (L)"><Icon name="loop" size={17} /><span class="word">Loop</span></button>
-      {#if inPoint > 0.01 || outPoint < length - 0.01}
-        <button class="ghost" onclick={resetRange} title="Reset trim"><Icon name="x" size={15} /><span class="word">Reset</span></button>
+      <span class="time mono"><span class="now">{timecode(current)}</span><span class="total">{timecode(length)}</span></span>
+      <button class="ghost icon" onclick={setStart} title="Start the clip here (I)" aria-label="Set start"><Icon name="setStart" size={18} /></button>
+      <button class="ghost icon" onclick={setEnd} title="End the clip here (O)" aria-label="Set end"><Icon name="setEnd" size={18} /></button>
+      <button class="ghost icon" class:on={loop} aria-pressed={loop} onclick={toggleLoop} title="Loop the trimmed part (L)" aria-label="Loop"><Icon name="loop" size={17} /></button>
+      {#if trimmed}
+        <button class="ghost kept" in:enter={{ y: 4, duration: DUR.base }} onclick={resetRange} title="{timecode(inPoint)} – {timecode(outPoint)} · Reset trim" aria-label="Reset trim"><span class="mono">{(outPoint - inPoint).toFixed(1)} s</span><Icon name="x" size={13} /></button>
       {/if}
     </div>
     <div class="t-center">
-      <span class="time mono now">{timecode(current)}</span>
-      <button class="ghost icon" onclick={() => step(-1)} title="Previous frame (,)"><Icon name="prevFrame" size={17} /></button>
-      <button class="play" onclick={toggle} aria-label={playing ? "Pause" : "Play"} title="Play / pause (Space)">
-        <Icon name={playing ? "pause" : "play"} size={20} />
+      <button class="ghost icon" onclick={() => step(-1)} title="Previous frame (,)" aria-label="Previous frame"><Icon name="prevFrame" size={17} /></button>
+      <button class="play" class:playing onclick={toggle} aria-label={playing ? "Pause" : "Play"} title="Play / pause (Space)">
+        <span class="glyph to-play"><Icon name="play" size={18} /></span>
+        <span class="glyph to-pause"><Icon name="pause" size={18} /></span>
       </button>
-      <button class="ghost icon" onclick={() => step(1)} title="Next frame (.)"><Icon name="nextFrame" size={17} /></button>
-      <span class="time mono total">{timecode(length)}</span>
+      <button class="ghost icon" onclick={() => step(1)} title="Next frame (.)" aria-label="Next frame"><Icon name="nextFrame" size={17} /></button>
     </div>
     <div class="t-right">
-      <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} volumes={exportVolumes} mixVolume={masterLevel} />
-      <span class="t-spacer"></span>
-      <div class="preview" title="Preview volume: only how loud you hear it here, not the clip's levels (M mutes)">
+      <div class="speed">
+        <button
+          class="ghost rate mono"
+          class:on={speedStep !== NORMAL}
+          aria-label="Playback speed {speed}×"
+          data-tip={speedStep !== NORMAL ? "Back to 1×" : undefined}
+          onclick={() => (speedStep = NORMAL)}>{speed}×</button
+        >
+        <div class="speed-pop">
+          <Slider min={0} max={SPEEDS.length - 1} value={speedStep} label="Playback speed" oninput={(i) => (speedStep = i)} />
+          <span>Only here, not the export</span>
+        </div>
+      </div>
+      <div class="preview" title="Preview volume, not the clip's levels (M)">
         <button class="ghost icon" onclick={() => (previewMuted = !previewMuted)} aria-label="Mute preview"><Icon name={volumeIcon} size={18} /></button>
         <Slider min={0} max={1} step={0.02} value={previewLevel} label="Preview volume" oninput={setPreview} onchange={(v) => setPref("previewVolume", v)} />
       </div>
@@ -584,6 +689,10 @@
     {outPoint}
     events={clip.events}
     {lanes}
+    media={() => video}
+    {noAudio}
+    eventsOpen={panel === "moments"}
+    onevents={() => openPanel("moments")}
     onseek={seek}
     onrange={onRange}
     ondrag={onDrag}
@@ -603,24 +712,20 @@
   }
 
   header {
+    position: relative;
+    z-index: 30;
     display: flex;
     align-items: center;
-    gap: 10px;
-    height: 62px;
-    padding-left: 18px;
-    border-bottom: 1px solid var(--line);
+    gap: var(--sp-1);
+    flex-shrink: 0;
+    height: 44px;
+    padding-left: var(--sp-2);
   }
 
   /* Window controls sit in the corner, like a title bar's. */
   header > :global(.controls) {
     align-self: flex-start;
-  }
-
-  .divider {
-    width: 1px;
-    height: 22px;
-    margin: 0 4px;
-    background: var(--line-strong);
+    margin-left: var(--sp-2);
   }
 
   /* So the title drags the window too. */
@@ -628,42 +733,35 @@
     pointer-events: none;
   }
 
+  .title {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: 1;
+    min-width: 0;
+    margin-left: var(--sp-1);
+  }
+
   .badge {
     display: grid;
     place-items: center;
-    width: 38px;
-    height: 38px;
-    border-radius: 11px;
-    background: var(--surface);
-  }
-
-  .badge.hot {
-    background: var(--accent);
-    color: var(--on-accent);
-  }
-
-  .badge.hot :global(.icon) {
-    --accent: var(--on-accent);
-  }
-
-  .title {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin-right: auto;
-    min-width: 0;
+    flex-shrink: 0;
   }
 
   h1 {
     margin: 0;
+    flex-shrink: 0;
     font-family: var(--font-display);
-    font-size: 18px;
+    font-size: var(--fs-base);
+    font-weight: 600;
     letter-spacing: -0.02em;
   }
 
   .sub {
-    color: var(--muted);
-    font-size: 13px;
+    min-width: 0;
+    margin-left: var(--sp-1);
+    color: var(--faint);
+    font-size: var(--fs-sm);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -672,10 +770,14 @@
   .saved {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    color: var(--good);
+    gap: var(--sp-1);
+    margin-right: var(--sp-2);
+    color: var(--muted);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
     opacity: 0;
-    transition: opacity 0.3s;
+    pointer-events: none; /* It's on the title bar: the window drags through it. */
+    transition: opacity var(--dur-slow) var(--ease-out);
   }
 
   .saved.show {
@@ -686,20 +788,62 @@
     color: var(--accent);
   }
 
+  .short {
+    flex-shrink: 0;
+    gap: 6px;
+    height: 34px;
+    margin-right: var(--sp-1);
+    padding: 0 var(--sp-3) 0 var(--sp-2);
+    color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  .short:hover {
+    color: var(--text);
+  }
+
   .fav :global(path) {
     fill: currentColor;
   }
 
+  .more {
+    position: relative;
+    margin-right: var(--sp-1);
+  }
+
+  .menu {
+    position: absolute;
+    top: calc(100% + var(--sp-2));
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    width: 196px;
+    padding: var(--sp-1);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-2);
+    transform-origin: top right;
+  }
+
+  .menu button {
+    justify-content: flex-start;
+    gap: var(--sp-3);
+    padding: 7px var(--sp-3);
+  }
+
+  .menu kbd {
+    margin-left: auto;
+  }
+
   .body {
+    position: relative;
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: 1fr 280px;
   }
 
   .stage {
-    position: relative;
-    min-width: 0;
+    position: absolute;
+    inset: 0;
     background: var(--stage);
   }
 
@@ -719,45 +863,77 @@
     top: 50%;
     display: grid;
     place-items: center;
-    width: 72px;
-    height: 72px;
-    margin: -36px 0 0 -36px;
+    width: 64px;
+    height: 64px;
+    margin: -32px 0 0 -32px;
     border-radius: 50%;
     background: var(--glass);
+    color: var(--text);
     pointer-events: none;
-    animation: flash 0.45s var(--ease) forwards;
+    animation: flash var(--dur-spring) var(--ease-out) forwards;
   }
 
   @keyframes flash {
     from {
+      opacity: 0;
+      transform: scale(0.7);
+    }
+    22% {
       opacity: 1;
-      transform: scale(0.85);
+      transform: scale(1);
     }
     to {
       opacity: 0;
-      transform: scale(1.25);
+      transform: scale(1.18);
     }
   }
 
+  /* Floats over the picture, so opening it never resizes the video. */
   .side {
+    position: absolute;
+    top: var(--sp-3);
+    right: var(--sp-3);
     display: flex;
     flex-direction: column;
-    gap: 22px;
-    padding: 18px;
-    border-left: 1px solid var(--line);
+    gap: var(--sp-2);
+    width: 272px;
+    max-height: calc(100% - 2 * var(--sp-3));
+    padding: var(--sp-2) var(--sp-2) var(--sp-3) var(--sp-4);
+    border-radius: var(--r-md);
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    box-shadow: var(--shadow-2);
     overflow-y: auto;
+  }
+
+  .side-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .side-head button {
+    width: 28px;
+    height: 28px;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: var(--fs-base);
+    font-weight: 600;
   }
 
   .moments {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--sp-2);
+    margin-left: calc(-1 * var(--sp-2));
   }
 
   .summary {
-    margin: 0;
+    margin: 0 0 0 var(--sp-2);
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--fs-sm);
   }
 
   ul {
@@ -768,9 +944,10 @@
 
   .moment {
     justify-content: flex-start;
-    gap: 10px;
+    gap: var(--sp-2);
     width: 100%;
-    padding: 6px 8px;
+    padding: 6px var(--sp-2);
+    font-size: var(--fs-sm);
     text-align: left;
   }
 
@@ -785,72 +962,120 @@
   .m-detail,
   .m-time {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
 
-  .empty {
-    color: var(--faint);
-    font-size: 13px;
+  .keys {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-right: var(--sp-2);
+    font-size: var(--fs-sm);
+    color: var(--muted);
+  }
+
+  .keys li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+  }
+
+  .combo {
+    display: flex;
+    gap: var(--sp-1);
+    flex-shrink: 0;
   }
 
   .transport {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    gap: 12px;
-    padding: 10px 20px;
-    border-top: 1px solid var(--line);
+    gap: var(--sp-3);
+    flex-shrink: 0;
+    height: 52px;
+    padding: 0 18px 0 16px;
   }
 
   .t-left,
   .t-right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 2px;
     min-width: 0;
   }
 
   .t-right {
-    padding-left: 12px;
-  }
-
-  .t-spacer {
-    flex: 1;
+    justify-content: flex-end;
   }
 
   .t-center {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--sp-1);
   }
 
+  /* As wide as the track names below it, so the buttons start where the timeline does. */
   .time {
-    width: 66px;
-    font-size: 13px;
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+    width: 126px;
+    margin-right: 6px;
+    white-space: nowrap;
   }
 
   .now {
-    text-align: right;
+    font-size: var(--fs-base);
+    font-weight: 500;
   }
 
   .total {
-    color: var(--muted);
+    color: var(--faint);
+    font-size: var(--fs-xs);
   }
 
   .play {
-    width: 46px;
-    height: 46px;
-    margin: 0 4px;
+    position: relative;
+    width: 38px;
+    height: 38px;
+    margin: 0 var(--sp-1);
     padding: 0;
     border-radius: 50%;
     background: var(--text);
-    color: var(--bg);
-    border: none;
+    color: var(--on-accent);
   }
 
   .play:hover {
-    background: #fff;
-    transform: scale(1.04);
+    background: var(--text);
+    transform: scale(1.05);
+  }
+
+  .play:active {
+    transform: scale(0.94);
+  }
+
+  /* Both shapes are there; one turns into the other. */
+  .glyph {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    transition:
+      opacity var(--dur-fast) var(--ease-out),
+      transform var(--dur) var(--ease-out);
+  }
+
+  .to-pause,
+  .playing .to-play {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+
+  .playing .to-pause {
+    opacity: 1;
+    transform: none;
   }
 
   .transport button.on {
@@ -858,12 +1083,20 @@
     background: var(--accent-soft);
   }
 
-  .transport kbd {
-    margin-left: 2px;
+  /* How long the kept part is; a click undoes the trim. */
+  .kept {
+    gap: var(--sp-1);
+    height: 28px;
+    margin-left: var(--sp-2);
+    padding: 0 var(--sp-2);
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
   }
 
-  .transport button {
-    white-space: nowrap;
+  .kept:hover {
+    color: var(--text);
   }
 
   .preview {
@@ -873,18 +1106,85 @@
   }
 
   .preview :global(.slider) {
-    width: 104px;
+    width: 84px;
   }
 
-  @media (max-width: 1420px) {
-    .t-left kbd {
-      display: none;
+  .speed {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Wide enough for "0.25×", so nothing moves as the speed changes. */
+  .rate {
+    width: 52px;
+    height: 34px;
+    padding: 0;
+    color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  /* Quiet until it's looked for: the slider rises out of the number. */
+  .speed-pop {
+    position: absolute;
+    bottom: calc(100% + var(--sp-2));
+    left: 50%;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    width: 172px;
+    margin-left: -86px;
+    padding: var(--sp-3);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-2);
+    color: var(--faint);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+    transform-origin: bottom center;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(4px) scale(0.98);
+    transition:
+      opacity var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      visibility 0s linear var(--dur-fast);
+  }
+
+  /* Bridges the gap, so moving up from the number keeps it open. */
+  .speed-pop::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    height: var(--sp-2);
+  }
+
+  .speed:hover .speed-pop,
+  .speed:focus-within .speed-pop {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    transition:
+      opacity var(--dur) var(--ease-out),
+      transform var(--dur-spring) var(--spring),
+      visibility 0s;
+  }
+
+  .speed :global(.slider) {
+    width: 100%;
+  }
+
+  @media (max-height: 700px) {
+    .transport {
+      height: 46px;
     }
-  }
 
-  @media (max-width: 1150px) {
-    .t-left .word {
-      display: none;
+    .play {
+      width: 34px;
+      height: 34px;
     }
   }
 
@@ -904,9 +1204,9 @@
     right: 0;
     bottom: 0;
     padding: 64px 40px 24px;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
-    color: #fff;
-    transition: opacity 0.3s;
+    background: linear-gradient(transparent, color-mix(in srgb, var(--stage) 80%, transparent));
+    color: var(--text);
+    transition: opacity var(--dur-slow) var(--ease-out);
   }
 
   .stage.idle .fs-controls {
@@ -917,21 +1217,20 @@
   .fs-markers {
     position: relative;
     height: 26px;
-    margin-bottom: 8px;
+    margin-bottom: var(--sp-2);
   }
 
   .fs-marker {
     position: absolute;
     bottom: 0;
     transform: translateX(-50%);
-    gap: 4px;
+    gap: var(--sp-1);
     height: 28px;
-    padding: 0 8px;
-    border: none;
-    border-radius: 8px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-full);
     background: var(--glass);
     color: var(--text);
-    font-size: 11px;
+    font-size: var(--fs-xs);
     font-weight: 700;
   }
 
@@ -962,19 +1261,19 @@
     width: 100%;
     height: 4px;
     border-radius: 2px;
-    background: rgba(255, 255, 255, 0.2);
-    transition: height 0.12s;
+    background: var(--line-strong);
+    transition: transform var(--dur-fast) var(--ease-out);
   }
 
   .fs-bar:hover .fs-track {
-    height: 6px;
+    transform: scaleY(1.5);
   }
 
   .fs-trim {
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(255, 255, 255, 0.22);
+    background: var(--line-strong);
   }
 
   .fs-fill {
@@ -1003,8 +1302,8 @@
     height: 14px;
     margin: -7px 0 0 -7px;
     border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+    background: var(--text);
+    box-shadow: var(--shadow-1);
     pointer-events: none;
   }
 
@@ -1013,9 +1312,9 @@
     bottom: 22px;
     transform: translateX(-50%);
     padding: 2px 6px;
-    border-radius: 5px;
+    border-radius: var(--r-xs);
     background: var(--glass);
-    font-size: 11px;
+    font-size: var(--fs-xs);
     pointer-events: none;
   }
 
@@ -1030,22 +1329,21 @@
     width: 46px;
     height: 46px;
     padding: 0;
-    border: none;
     border-radius: 50%;
     background: transparent;
-    color: #fff;
+    color: var(--text);
   }
 
   .fs-btn:hover {
-    background: rgba(255, 255, 255, 0.14);
+    background: var(--press);
   }
 
   .fs-time {
-    font-size: 15px;
+    font-size: var(--fs-md);
   }
 
   .fs-time span {
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--muted);
   }
 
   .fs-volume {
@@ -1058,13 +1356,37 @@
     width: 120px;
   }
 
+  .fs-speed {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .fs-rate {
+    width: 64px;
+    height: 46px;
+    padding: 0;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text);
+    font-size: var(--fs-md);
+  }
+
+  .fs-rate:hover {
+    background: var(--press);
+  }
+
+  .fs-speed :global(.slider) {
+    width: 96px;
+  }
+
   .fs-spacer {
     flex: 1;
   }
 
   .fs-title {
-    font-size: 15px;
+    font-size: var(--fs-md);
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--text);
   }
 </style>

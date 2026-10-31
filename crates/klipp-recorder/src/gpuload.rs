@@ -2,7 +2,7 @@
 //! log: the 3D engine (games, and Klipp's colour conversion), video encode,
 //! copy. From Windows' own "GPU Engine" performance counters, which need no
 //! admin rights. A card at 100 % 3D with Klipp's work waiting behind the
-//! game is what FIX-17 is about, so the log says when that happens.
+//! game is what makes clips stutter, so the log says when that happens.
 
 use std::collections::BTreeMap;
 

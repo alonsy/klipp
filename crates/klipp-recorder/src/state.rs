@@ -1,6 +1,7 @@
 //! State shared between the video thread, the main thread and the clip saver.
 
 use std::sync::Mutex;
+use std::sync::mpsc::SyncSender;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -14,6 +15,10 @@ pub struct Shared {
     pub video_stream: Mutex<Option<StreamInfo>>,
     /// Audio tracks in buffer-stream order: the premix first, then one per source.
     pub audio_streams: Mutex<Vec<StreamInfo>>,
+    /// Content Creator Mode: the camera's buffer stream id and track, once it sends pictures.
+    pub camera: Mutex<Option<(u8, StreamInfo)>>,
+    /// Whose encoder the video uses (the camera uses the same card's).
+    pub vendor: Mutex<Option<klipp_media::Vendor>>,
     pub frames: AtomicU64,
     /// Frames with new screen content (the rest repeat the previous frame).
     pub new_frames: AtomicU64,
@@ -29,11 +34,13 @@ pub struct Shared {
     pub capture_blind: AtomicBool,
     /// Pictures the capture delivered (each new picture of the screen counts once).
     pub captured: AtomicU64,
-    /// How long the video loop's steps take, for the stats line (FIX-17).
+    /// How long the video loop's steps take, for the stats line.
     pub steps: Steps,
     /// Graphics memory Klipp uses, and what Windows allows it, in MB.
     pub vram_used_mb: AtomicU64,
     pub vram_budget_mb: AtomicU64,
+    /// Frames copied for reading the HUD (see `hudtest`).
+    pub hud: crate::hudtest::Tap,
     /// Performance mode's asks of the running video (see `performance`): a
     /// new picture every this many frames (1 = every frame)...
     pub perf_stride: AtomicU32,
@@ -41,6 +48,8 @@ pub struct Shared {
     pub perf_max_bitrate: AtomicU32,
     /// The running encoder takes a new ceiling while recording (not AMF).
     pub bitrate_adjustable: AtomicBool,
+    /// Where the microphone goes while voice is listening (see `voice`).
+    pub voice: Mutex<Option<SyncSender<Vec<f32>>>>,
 }
 
 /// Time spent in the video steps since the last stats line: waiting for the
@@ -141,6 +150,8 @@ impl Shared {
             buffer: Mutex::new(buffer),
             video_stream: Mutex::new(None),
             audio_streams: Mutex::new(Vec::new()),
+            camera: Mutex::new(None),
+            vendor: Mutex::new(None),
             frames: AtomicU64::new(0),
             new_frames: AtomicU64::new(0),
             late_frames: AtomicU64::new(0),
@@ -152,9 +163,11 @@ impl Shared {
             steps: Steps::default(),
             vram_used_mb: AtomicU64::new(0),
             vram_budget_mb: AtomicU64::new(0),
+            hud: Default::default(),
             perf_stride: AtomicU32::new(1),
             perf_max_bitrate: AtomicU32::new(0),
             bitrate_adjustable: AtomicBool::new(true),
+            voice: Mutex::new(None),
         }
     }
 }

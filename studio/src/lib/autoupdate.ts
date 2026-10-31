@@ -1,8 +1,8 @@
-// Installing the next version by itself (FB-35; normal releases too since
-// IDEA-43): the recorder starts `klipp.exe --install-update` between games or
-// right after it starts, without showing the window (or passes it to the open
-// window). The same signed download and quiet installer as the update card,
-// logged step by step in install.log for the developer.
+// Installing the next version by itself: the recorder starts
+// `klipp.exe --install-update` between games or right after it starts, without
+// showing the window (or passes it to the open window). The same signed
+// download and quiet installer as the update card, logged step by step in
+// install.log for the developer.
 import * as api from "./api";
 import { toast } from "./state.svelte";
 

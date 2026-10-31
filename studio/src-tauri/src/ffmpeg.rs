@@ -4,7 +4,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use std::fs;
 
@@ -30,6 +30,24 @@ pub fn probe_command() -> Command {
     let mut c = Command::new(exe().with_file_name("ffprobe.exe"));
     c.creation_flags(CREATE_NO_WINDOW.0).stdin(Stdio::null()).args(["-v", "error"]);
     c
+}
+
+/// The first of `names` that really encodes on this PC.
+pub(crate) fn first_working<'a>(names: &[&'a str]) -> Option<&'a str> {
+    names.iter().copied().find(|name| {
+        command()
+            .args(["-f", "lavfi", "-i", "color=s=1080x1920:r=30:d=0.2", "-frames:v", "2", "-c:v", name, "-f", "null", "-"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// The H.264 encoder this PC has: the graphics card's, else Windows' own.
+pub fn h264_encoder() -> &'static str {
+    static PICKED: OnceLock<&'static str> = OnceLock::new();
+    PICKED.get_or_init(|| first_working(&["h264_nvenc", "h264_amf", "h264_qsv"]).unwrap_or("h264_mf"))
 }
 
 /// Copies every audio track out of the clip into the cache, without

@@ -2,9 +2,9 @@
 //! engine, and applies settings changes.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use klipp_media::StreamInfo;
@@ -13,6 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_NOREPEAT, RegisterHotKey, 
 use crate::arrivals::Arrivals;
 use crate::audio::AudioPipeline;
 use crate::autoclip::AutoClipper;
+use crate::camera::{self, CameraPipeline, CameraSettings};
 use crate::clock;
 use crate::cs2::{self, Cs2Integration};
 use crate::cue::{CuePlayer, Sound};
@@ -32,8 +33,14 @@ use crate::video::VideoPipeline;
 pub const HOTKEY_SAVE: i32 = 1;
 
 /// The frame rate Klipp drops to when the graphics card can't keep up with a
-/// higher one (FIX-17): half of 120, the same as the default.
+/// higher one: half of 120, the same as the default.
 const REDUCED_FPS: u32 = 60;
+
+/// A camera that failed or went quiet is started again after this.
+const CAMERA_RETRY: Duration = Duration::from_secs(10);
+
+/// The camera's buffer stream id and track, for clips that have it.
+type CameraTrack = Option<(u8, StreamInfo)>;
 
 /// Audio is mixed ~100 ms behind real time and AAC adds a little delay. A clip
 /// is only cut once this much time has passed after its end, so every audio
@@ -52,7 +59,7 @@ pub struct Recorder {
     hotkey_lent_until: Option<Instant>,
     paused: bool,
     /// Manual clipping is off and no game Klipp auto-clips is running, so
-    /// nothing is recorded (D51); see `tick_standby`.
+    /// nothing is recorded; see `tick_standby`.
     standby: bool,
     pub games: GameTracker,
     cs2: Option<Cs2Integration>,
@@ -70,18 +77,30 @@ pub struct Recorder {
     auto_arrivals: BTreeMap<i64, u64>,
     watchdog: crate::watchdog::Watchdog,
     /// Recording at this frame rate instead of the set one, for the rest of
-    /// the session, because the card couldn't keep up (FIX-17).
+    /// the session, because the card couldn't keep up.
     fps_cap: Option<u32>,
     /// What earlier sessions learned about this PC (see `tuning`).
     tuning: crate::tuning::Tuning,
     /// When this session started, to count sessions that couldn't keep up.
     session: String,
+    /// Reads Fortnite's screen, and saves HUD pictures when asked to (see `hudtest`).
+    pub hud: Option<crate::hudtest::HudTest>,
     /// Performance mode's steps, and its look at the graphics card while a
     /// game is in front (see `performance`).
     perf: crate::performance::Governor,
     perf_load: Option<crate::gpuload::GpuLoad>,
     /// The video's (frames, late, skipped) at the last look.
     perf_seen: (u64, u64, u64),
+    /// Content Creator Mode: the webcam, recorded while the
+    /// screen is, as set in creator.json (and when that file last changed).
+    camera: Option<CameraPipeline>,
+    creator: CameraSettings,
+    creator_seen: Option<SystemTime>,
+    /// Starts so far: each start records as its own buffer stream.
+    camera_starts: u8,
+    camera_retry: Option<Instant>,
+    /// The last camera error logged, so a camera that keeps failing the same way says it once.
+    camera_error: Arc<Mutex<String>>,
 }
 
 /// A clip saved with the hotkey that more presses can still extend. Each
@@ -91,6 +110,7 @@ struct Burst {
     clip: Clip,
     streams: Vec<StreamInfo>,
     tracks: Vec<String>,
+    camera: CameraTrack,
     game: String,
     presses: Vec<i64>,
     requested_at: Instant,
@@ -107,16 +127,22 @@ fn log_tag(game: &str) -> String {
 }
 
 /// Buffer window and byte cap for the current settings: the worst case at the
-/// bitrate ceiling, plus room for one extra GOP.
-fn buffer_limits(s: &Settings) -> (i64, u64) {
+/// bitrate ceiling (the camera's too, when it records), plus room for one extra GOP.
+fn buffer_limits(s: &Settings, creator: &CameraSettings) -> (i64, u64) {
     let secs = s.replay.length_secs as u64;
-    (secs as i64 * clock::SECOND, s.video.max_bitrate_mbps as u64 * 1_000_000 / 8 * (secs + 2))
+    let camera = if creator.enabled { creator.max_bitrate() as u64 } else { 0 };
+    (secs as i64 * clock::SECOND, (s.video.max_bitrate_mbps as u64 * 1_000_000 + camera) / 8 * (secs + 2))
+}
+
+/// When creator.json last changed (`None` if there's none).
+fn creator_changed() -> Option<SystemTime> {
+    CameraSettings::path().and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
 /// The programs of the games Klipp auto-clips, with auto-clips on for them.
 fn autoclipped_exes(s: &Settings) -> Vec<&'static str> {
     let a = &s.auto_clip;
-    let games = [(a.cs2.enabled, "cs2.exe"), (a.league.enabled, "league of legends.exe"), (a.rocket_league.enabled, "rocketleague.exe")];
+    let games = [(a.cs2.enabled, "cs2.exe"), (a.league.enabled, "league of legends.exe"), (a.rocket_league.enabled, "rocketleague.exe"), (crate::fortnite::enabled(), "fortniteclient-win64-shipping.exe")];
     if !a.enabled {
         return Vec::new();
     }
@@ -140,7 +166,8 @@ fn running_programs() -> Vec<String> {
 impl Recorder {
     /// Must be called on the thread that runs the message loop (for the hotkey).
     pub fn start(settings: Settings) -> Result<Self> {
-        let (window, max_bytes) = buffer_limits(&settings);
+        let creator = CameraSettings::load();
+        let (window, max_bytes) = buffer_limits(&settings, &creator);
         let cue = CuePlayer::start(&settings.cue)?;
         let (events_tx, events_rx) = mpsc::channel();
         let arrivals = Arc::new(Arrivals::new());
@@ -169,10 +196,21 @@ impl Recorder {
             fps_cap: None,
             tuning: crate::tuning::Tuning::load(),
             session: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string(),
+            hud: None,
             perf: crate::performance::Governor::default(),
             perf_load: None,
             perf_seen: (0, 0, 0),
+            camera: None,
+            creator,
+            creator_seen: creator_changed(),
+            camera_starts: 0,
+            camera_retry: None,
+            camera_error: Arc::new(Mutex::new(String::new())),
         };
+        if r.creator.enabled {
+            info!("creator mode: on; the camera records with the screen");
+        }
+        camera::status_off();
         r.set_game_rules();
         crate::watchdog::clear_health();
         let fps = r.settings.video.fps;
@@ -188,6 +226,13 @@ impl Recorder {
             r.standby = true;
             info!("recording: manual clipping is off, so Klipp records only while a game it auto-clips is running; none is yet");
         }
+        r.hud = match crate::hudtest::HudTest::start(r.shared.clone(), &r.settings.storage.clips_dir(), r.events_tx.clone()) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                warning!("HUD test: not started ({e:#})");
+                None
+            }
+        };
         r.register_hotkey();
         r.start_integrations();
         Ok(r)
@@ -228,6 +273,7 @@ impl Recorder {
             info!("recording: a game Klipp auto-clips is running; recording");
         } else {
             self.flush_burst();
+            self.stop_camera();
             self.video = None;
             self.audio = None;
             self.shared.buffer.lock().unwrap().clear();
@@ -266,7 +312,7 @@ impl Recorder {
             self.restart_video();
         }
         // A game keeping the card too busy for this frame rate leaves clips
-        // stuttering or as a slideshow (FIX-17). Half the rate halves Klipp's
+        // stuttering or as a slideshow. Half the rate halves Klipp's
         // work on the card; it lasts until Klipp restarts or the video
         // settings change, and the window says so.
         let fps = self.settings.video.fps;
@@ -382,6 +428,8 @@ impl Recorder {
         self.paused = paused;
         if paused {
             self.flush_burst();
+            // The camera's light goes off with the pause, not up to two seconds later.
+            self.stop_camera();
             self.video = None;
             self.audio = None;
             self.shared.buffer.lock().unwrap().clear();
@@ -414,7 +462,7 @@ impl Recorder {
         let rocket_league_changed = all_changed || was.rocket_league.enabled != is.rocket_league.enabled;
 
         if limits_changed {
-            let (window, max_bytes) = buffer_limits(&self.settings);
+            let (window, max_bytes) = buffer_limits(&self.settings, &self.creator);
             self.shared.buffer.lock().unwrap().set_limits(window, max_bytes);
         }
         if hotkey_changed {
@@ -503,14 +551,14 @@ impl Recorder {
             }
         }
         self.flush_burst();
-        let Some((streams, tracks)) = self.streams() else { return };
+        let Some((streams, tracks, camera)) = self.streams() else { return };
         let Some(clip) = self.shared.buffer.lock().unwrap().snapshot(end, window) else {
             warning!("nothing to save yet");
             return;
         };
         let game = self.games.current(Duration::from_secs(self.settings.replay.length_secs as u64));
         let arrival = self.arrivals.add("manual", &game, None);
-        self.burst = Some(Burst { clip, streams, tracks, game, presses: vec![end], requested_at: Instant::now(), arrival });
+        self.burst = Some(Burst { clip, streams, tracks, camera, game, presses: vec![end], requested_at: Instant::now(), arrival });
     }
 
     /// Writes the hotkey clip being collected, with a marker at each press.
@@ -522,7 +570,7 @@ impl Recorder {
         events.sort_by_key(|e| e.time);
         // Just before the first press, which is usually what it was pressed for.
         let thumb_at = b.presses[0] - 3 * clock::SECOND;
-        self.submit(b.clip, b.streams, b.tracks, b.game, ClipKind::Manual, None, events, thumb_at, b.requested_at, Some(b.arrival));
+        self.submit(b.clip, (b.streams, b.tracks, b.camera), b.game, ClipKind::Manual, None, events, thumb_at, b.requested_at, Some(b.arrival));
     }
 
     /// Takes in new game events and saves auto-clips whose chains have finished,
@@ -554,13 +602,13 @@ impl Recorder {
             let start = clip.start.max(clip.end - window);
             let events = self.autoclip.markers(&clip.game, start, clip.end, Some((clip.reason, clip.reason_time)));
             let snapshot = self.streams().zip(self.shared.buffer.lock().unwrap().snapshot(clip.end, clip.end - start));
-            let Some(((streams, tracks), snapshot)) = snapshot else {
+            let Some((streams, snapshot)) = snapshot else {
                 if let Some(id) = arrival {
                     self.arrivals.remove(id);
                 }
                 continue;
             };
-            self.submit(snapshot, streams, tracks, clip.game, ClipKind::Auto, Some(clip.reason), events, clip.reason_time, Instant::now(), arrival);
+            self.submit(snapshot, streams, clip.game, ClipKind::Auto, Some(clip.reason), events, clip.reason_time, Instant::now(), arrival);
         }
     }
 
@@ -589,8 +637,8 @@ impl Recorder {
         }
     }
 
-    /// The streams a clip is written with now, and their track names.
-    fn streams(&self) -> Option<(Vec<StreamInfo>, Vec<String>)> {
+    /// The streams a clip is written with now, their track names, and the camera's track.
+    fn streams(&self) -> Option<(Vec<StreamInfo>, Vec<String>, CameraTrack)> {
         let video = self.shared.video_stream.lock().unwrap().clone()?;
         let mut streams = vec![video.as_default()];
         streams.extend(self.shared.audio_streams.lock().unwrap().iter().cloned());
@@ -599,15 +647,73 @@ impl Recorder {
         } else {
             Vec::new()
         };
-        Some((streams, tracks))
+        Some((streams, tracks, self.shared.camera.lock().unwrap().clone()))
+    }
+
+    /// Content Creator Mode: reads creator.json when it
+    /// changes, and keeps the camera running while the screen is recorded.
+    /// A camera that fails or goes quiet starts again `CAMERA_RETRY` later.
+    /// Call every couple of seconds.
+    pub fn tick_camera(&mut self) {
+        let seen = creator_changed();
+        if seen != self.creator_seen {
+            self.creator_seen = seen;
+            let new = CameraSettings::load();
+            if new != self.creator {
+                let what = if !new.enabled {
+                    "off".to_string()
+                } else if new.camera.is_empty() {
+                    "on (the first camera)".to_string()
+                } else {
+                    format!("on ({})", new.camera)
+                };
+                info!("creator mode: {what}");
+                self.creator = new;
+                self.stop_camera();
+                self.camera_retry = None;
+                self.camera_error.lock().unwrap().clear();
+                let (window, max_bytes) = buffer_limits(&self.settings, &self.creator);
+                self.shared.buffer.lock().unwrap().set_limits(window, max_bytes);
+            }
+        }
+        let wanted = self.creator.enabled && self.video.is_some() && !self.paused && !self.standby;
+        if !wanted {
+            self.stop_camera();
+            return;
+        }
+        if let Some(c) = &self.camera {
+            if c.working() {
+                // Working again: a later failure is worth telling.
+                self.camera_error.lock().unwrap().clear();
+            }
+            if !c.dead() {
+                return;
+            }
+            self.camera = None;
+            self.camera_retry = Some(Instant::now() + CAMERA_RETRY);
+            return;
+        }
+        if self.camera_retry.is_some_and(|t| Instant::now() < t) {
+            return;
+        }
+        let Some(vendor) = *self.shared.vendor.lock().unwrap() else { return };
+        self.camera_starts = self.camera_starts.wrapping_add(1);
+        let stream = camera::FIRST_STREAM + self.camera_starts % camera::STREAMS;
+        self.camera = Some(CameraPipeline::start(self.creator.clone(), vendor, stream, self.shared.clone(), self.camera_error.clone()));
+        self.camera_retry = None;
+    }
+
+    fn stop_camera(&mut self) {
+        if self.camera.take().is_some() {
+            camera::status_off();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
         clip: Clip,
-        streams: Vec<StreamInfo>,
-        tracks: Vec<String>,
+        (streams, tracks, camera): (Vec<StreamInfo>, Vec<String>, CameraTrack),
         game: String,
         kind: ClipKind,
         reason: Option<EventKind>,
@@ -635,6 +741,7 @@ impl Recorder {
                 clip,
                 streams,
                 tracks,
+                camera,
                 clips_dir: self.settings.storage.clips_dir(),
                 game,
                 kind,
@@ -708,6 +815,7 @@ impl Recorder {
         let a = &self.settings.auto_clip;
         self.autoclip.set_game_rules(league::GAME_NAME, league::rules(&base, &a.league));
         self.autoclip.set_game_rules(rocketleague::GAME_NAME, rocketleague::rules(&base, &a.rocket_league));
+        self.autoclip.set_game_rules(crate::fortnite::GAME_NAME, crate::fortnite::rules(&base));
     }
 
     fn register_hotkey(&mut self) {
@@ -770,6 +878,7 @@ impl Drop for Recorder {
         self.cs2 = None;
         self.league = None;
         self.rocket_league = None;
+        self.stop_camera();
         self.video = None;
         self.audio = None;
         // Finishes any queued clips (and their sounds) before the cue player stops.

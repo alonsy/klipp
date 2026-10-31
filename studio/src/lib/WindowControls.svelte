@@ -17,7 +17,7 @@
   });
 </script>
 
-<div class="controls">
+<div class="controls shell-controls">
   <button class="ctl" aria-label="Minimize" title="Minimize" onclick={() => win.minimize()}>
     <svg viewBox="0 0 10 10" width="10" height="10"><path d="M0 5.5h10" /></svg>
   </button>
@@ -44,15 +44,18 @@
     width: 46px;
     height: 36px;
     padding: 0;
-    border: none;
     border-radius: 0;
     background: transparent;
     color: var(--muted);
   }
 
   .ctl:hover {
-    background: var(--surface-2);
+    background: var(--hover);
     color: var(--text);
+  }
+
+  .ctl:focus-visible {
+    outline-offset: -2px;
   }
 
   .ctl:active {

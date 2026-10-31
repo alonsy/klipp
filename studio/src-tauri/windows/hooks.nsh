@@ -1,7 +1,7 @@
 ; Setup steps for Klipp's two programs (Tauri runs these around installing
 ; and uninstalling; see installer.nsi).
 ;
-; Installing forces its way (FB-35). Klipp is closed without asking, the
+; Installing forces its way. Klipp is closed without asking, the
 ; window first (it would start the recorder again) and then the recorder;
 ; the install waits until Windows lets go of both programs, closes whatever
 ; still holds one (Restart Manager), and as a last resort moves a program
@@ -112,6 +112,8 @@ FunctionEnd
 
 !macro StopRecorder
   nsExec::Exec 'taskkill /IM klipp-recorder.exe /F'
+  Pop $0
+  nsExec::Exec 'taskkill /IM klipp-voice.exe /F'
   Pop $0
   ; Windows releases the file a moment after the process is gone.
   Sleep 800

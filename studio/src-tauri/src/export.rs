@@ -87,7 +87,7 @@ impl Exports {
             let progress = |fraction: f64| {
                 let _ = app.emit("export-progress", Progress { id, fraction });
             };
-            let result = run(&clips_dir, &req, &slot, &progress);
+            let result = run(&clips_dir, &req, ffmpeg::h264_encoder(), &slot, &progress);
             running.lock().unwrap().remove(&id);
             let _ = match result {
                 Ok(path) => {
@@ -146,11 +146,17 @@ fn probe(path: &Path) -> Result<Probe> {
 /// The audio part of the filter graph, producing `[aout]`, or `None` for no audio.
 /// Track 0 is the premix; separate tracks (if any) are 1..n.
 fn audio_filter(audio_streams: usize, volumes: &[f32], mix_volume: f32) -> Option<String> {
+    audio_filter_from(0, audio_streams, volumes, mix_volume)
+}
+
+/// `audio_filter` for the clip as ffmpeg's input number `input` (shorts take
+/// their pictures from input 0 and the clip's audio from input 1).
+pub(crate) fn audio_filter_from(input: usize, audio_streams: usize, volumes: &[f32], mix_volume: f32) -> Option<String> {
     if audio_streams == 0 {
         return None;
     }
     if audio_streams == 1 || volumes.is_empty() {
-        return (mix_volume > 0.0).then(|| format!("[0:a:0]volume={mix_volume:.3}[aout]"));
+        return (mix_volume > 0.0).then(|| format!("[{input}:a:0]volume={mix_volume:.3}[aout]"));
     }
     let parts: Vec<(usize, f32)> =
         volumes.iter().copied().enumerate().filter(|&(k, v)| v > 0.0 && k + 1 < audio_streams).collect();
@@ -159,7 +165,7 @@ fn audio_filter(audio_streams: usize, volumes: &[f32], mix_volume: f32) -> Optio
     }
     let mut f = String::new();
     for &(k, v) in &parts {
-        f.push_str(&format!("[0:a:{}]volume={v:.3}[t{k}];", k + 1));
+        f.push_str(&format!("[{input}:a:{}]volume={v:.3}[t{k}];", k + 1));
     }
     for &(k, _) in &parts {
         f.push_str(&format!("[t{k}]"));
@@ -171,6 +177,8 @@ fn audio_filter(audio_streams: usize, volumes: &[f32], mix_volume: f32) -> Optio
 
 /// The share export never needs more than this (kbps).
 const MAX_SHARE_KBPS: f64 = 12_000.0;
+/// A high quality copy of a 1080p clip on encoders that work to a bitrate (kbps).
+const QUALITY_KBPS_1080P: f64 = 16_000.0;
 
 /// Resolution and frame rate for a video bitrate, so a small file still looks sharp.
 fn size_ladder(video_kbps: f64, src: &Probe) -> (u32, f64) {
@@ -184,8 +192,48 @@ fn size_ladder(video_kbps: f64, src: &Probe) -> (u32, f64) {
     (height.min(src.height), fps.min(src.fps))
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Aim {
+    /// High quality; `kbps` is the guide on encoders that need one.
+    Quality,
+    /// A bitrate around `kbps`.
+    Size,
+    /// The same, for a try that came out too big.
+    SmallerSize,
+}
+
+/// `encoder`'s options for `aim`.
+fn video_args(encoder: &str, kbps: f64, aim: Aim) -> Vec<String> {
+    let (b, max, buf) = (format!("{kbps:.0}k"), format!("{:.0}k", kbps * 1.4), format!("{:.0}k", kbps * 2.0));
+    let rates = ["-b:v", &b, "-maxrate", &max, "-bufsize", &buf];
+    let mut a = vec!["-c:v", encoder];
+    match encoder {
+        "h264_nvenc" if aim == Aim::Quality => a.extend(["-preset", "p7", "-tune", "hq", "-rc", "vbr", "-cq", "21", "-b:v", "0"]),
+        "h264_nvenc" => {
+            a.extend(["-preset", "p7", "-tune", "hq", "-rc", "vbr", "-multipass", "fullres"]);
+            a.extend(rates);
+        }
+        // Not qvbr, as the recorder: it goes far past any bitrate. vbr_peak looks
+        // best, but on busy clips it stops shrinking when asked for less.
+        "h264_amf" => {
+            a.extend(["-quality", "quality", "-rc", if aim == Aim::SmallerSize { "vbr_latency" } else { "vbr_peak" }]);
+            a.extend(rates);
+        }
+        "h264_qsv" => {
+            a.extend(["-preset", "slow"]);
+            a.extend(rates);
+        }
+        _ => a.extend(["-rate_control", "pc_vbr", "-b:v", &b]),
+    }
+    // Windows' own encoder refuses a profile by name.
+    if encoder != "h264_mf" {
+        a.extend(["-profile:v", "high"]);
+    }
+    a.into_iter().map(String::from).collect()
+}
+
 /// Runs one export, reporting overall progress from 0 to 1. Returns the output file.
-fn run(clips_dir: &Path, req: &ExportRequest, slot: &Mutex<Option<Child>>, on_progress: &dyn Fn(f64)) -> Result<PathBuf> {
+fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option<Child>>, on_progress: &dyn Fn(f64)) -> Result<PathBuf> {
     let src = PathBuf::from(&req.path);
     let duration = (req.end - req.start).max(0.1);
     let stem = src.file_stem().context("no file name")?.to_string_lossy().into_owned();
@@ -212,7 +260,7 @@ fn run(clips_dir: &Path, req: &ExportRequest, slot: &Mutex<Option<Child>>, on_pr
     let audio = audio_filter(probe.audio_streams, &req.volumes, req.mix_volume);
     let dir = clips_dir.join(EXPORTS_DIR);
     fs::create_dir_all(&dir)?;
-    let base_args = |height: u32, fps: f64, video: &[&str], audio_kbps: u32| {
+    let base_args = |height: u32, fps: f64, video: &[String], audio_kbps: u32| {
         let mut args = Vec::new();
         seek(&mut args);
         let mut graph = format!("[0:v:0]scale=-2:{height}:flags=lanczos,fps={fps}[vout]");
@@ -220,8 +268,8 @@ fn run(clips_dir: &Path, req: &ExportRequest, slot: &Mutex<Option<Child>>, on_pr
             graph = format!("{graph};{a}");
         }
         args.extend(["-filter_complex".into(), graph, "-map".into(), "[vout]".into()]);
-        args.extend(video.iter().map(|s| s.to_string()));
-        args.extend(["-pix_fmt", "yuv420p", "-profile:v", "high"].map(String::from));
+        args.extend(video.iter().cloned());
+        args.extend(["-pix_fmt", "yuv420p"].map(String::from));
         if audio.is_some() {
             args.extend(["-map".into(), "[aout]".into(), "-c:a".into(), "aac".into(), "-b:a".into(), format!("{audio_kbps}k")]);
         }
@@ -231,7 +279,7 @@ fn run(clips_dir: &Path, req: &ExportRequest, slot: &Mutex<Option<Child>>, on_pr
 
     if req.mode == Mode::Quality {
         let out = unique(&dir.join(format!("{stem}_export.mp4")));
-        let video = ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-rc", "vbr", "-cq", "21", "-b:v", "0"];
+        let video = video_args(encoder, QUALITY_KBPS_1080P * probe.height as f64 / 1080.0, Aim::Quality);
         run_ffmpeg(base_args(probe.height, probe.fps, &video, 192), &out, duration, slot, progress(0.0, 1.0))?;
         return Ok(out);
     }
@@ -247,8 +295,7 @@ fn run(clips_dir: &Path, req: &ExportRequest, slot: &Mutex<Option<Child>>, on_pr
         // 1080p60 looks no better, so they come out small on the first try.
         let video_kbps = (target_bytes * 8.0 * budget / duration / 1000.0 - audio_kbps as f64).clamp(150.0, MAX_SHARE_KBPS);
         let (height, fps) = size_ladder(video_kbps, &probe);
-        let (b, max, buf) = (format!("{video_kbps:.0}k"), format!("{:.0}k", video_kbps * 1.4), format!("{:.0}k", video_kbps * 2.0));
-        let video = ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-rc", "vbr", "-multipass", "fullres", "-b:v", &b, "-maxrate", &max, "-bufsize", &buf];
+        let video = video_args(encoder, video_kbps, if attempt == 0 { Aim::Size } else { Aim::SmallerSize });
         let span = 1.0 / (attempt + 1) as f64;
         run_ffmpeg(base_args(height, fps, &video, audio_kbps), &out, duration, slot, progress(1.0 - span, span))?;
         if fs::metadata(&out)?.len() as f64 <= target_bytes {
@@ -318,7 +365,7 @@ fn copy_info(clips_dir: &Path, src: &Path, out: &Path, start: f64, end: f64) {
     }
     let _ = meta::update_info(clips_dir, out, |v| *v = info);
 }
-fn unique(path: &Path) -> PathBuf {
+pub(crate) fn unique(path: &Path) -> PathBuf {
     let (stem, ext) = (path.file_stem().unwrap_or_default().to_string_lossy(), path.extension().unwrap_or_default().to_string_lossy());
     let mut candidate = path.to_path_buf();
     let mut n = 2;

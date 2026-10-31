@@ -1,10 +1,11 @@
 // App-wide state shared by the sidebar, clips page, editor and settings.
 import * as api from "./api";
 import type { Arrival, Clip } from "./api";
+import { emptySocials } from "./creator/socials";
 
 export type Kind = "all" | "auto" | "manual" | "favorites";
 export type Sort = "newest" | "oldest" | "longest" | "largest";
-export type Page = "clips" | "settings" | "setup" | "pctest";
+export type Page = "clips" | "settings" | "setup" | "pctest" | "creator";
 
 export const library = $state({
   clips: [] as Clip[],
@@ -31,10 +32,26 @@ export const ui = $state({
   section: "general",
   /** The clip open in the editor, if any. */
   clip: null as Clip | null,
+  /** The clip being made into a short (Content Creation Center), if any, and where it was opened from. */
+  short: null as Clip | null,
+  shortFrom: "creator" as "creator" | "editor",
+  /** What the Content Creation page shows. */
+  creatorTab: "clips" as "clips" | "camera" | "socials",
   closeNotice: false,
   /** Setup was opened from Settings (it can be cancelled), not on a fresh install. */
   setupRerun: false,
+  /** The clip whose thumbnail grows into the player and back (see `isHero`). */
+  hero: null as string | null,
 });
+
+/** For the shell transition: this clip's picture carries over between library and editor. */
+export const isHero = (path: string) => ui.hero === path;
+
+/**
+ * Thumbnails made after the list was read aren't in `clip.thumb` yet. The editor
+ * needs them at once, for the picture the hero grows into.
+ */
+export const shownThumbs = new Map<string, string>();
 
 /** The studio's own preferences, with defaults. */
 export const prefs = $state({
@@ -55,6 +72,10 @@ export const prefs = $state({
   sonarSwitched: false,
   /** The version the PC test screen was shown for after an update (it shows once). */
   pcTestShownFor: "",
+  /** Content Creator Mode: your handles, and which ones shorts show. */
+  socials: emptySocials(),
+  /** The Content Creation Center lists only clips with your camera. */
+  creatorCameraOnly: true,
 });
 
 /** Clips on their way, and clips that just landed (briefly highlighted). */
@@ -178,11 +199,30 @@ export const libraryView = { scrollTop: 0, opened: null as string | null };
 
 export function openClip(c: Clip) {
   libraryView.opened = c.path;
+  ui.hero = c.path;
   ui.clip = c;
+}
+
+/** Opens the short editor (Content Creation Center) for a clip. */
+export function openShort(c: Clip, from: "creator" | "editor" = "creator") {
+  ui.clip = null;
+  ui.shortFrom = from;
+  ui.short = c;
+}
+
+/** A clip's saved trim and levels, for the next time it's opened. */
+export function setClipEdit(path: string, edit: Clip["edit"]) {
+  for (const c of [ui.clip, ui.short, ...library.clips]) if (c?.path === path) c.edit = edit;
+}
+
+/** A clip's saved short, for the next time it's opened. */
+export function setClipShort(path: string, short: Clip["short"]) {
+  for (const c of [ui.short, ...library.clips]) if (c?.path === path) c.short = short;
 }
 
 export function openPage(page: Page, section?: string) {
   ui.clip = null;
+  ui.short = null;
   ui.page = page;
   if (section) ui.section = section;
 }

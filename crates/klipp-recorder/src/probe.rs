@@ -162,7 +162,7 @@ const PERF_SETTLE: Duration = Duration::from_millis(700);
 const PERF_RUN: Duration = Duration::from_secs(3);
 /// Smooth means nearly nothing late or left out, with the work taking at
 /// most this share of a frame's time: an idle desktop is easy, and a game
-/// at full load makes every step wait (FIX-17), so the room matters.
+/// at full load makes every step wait, so the room matters.
 const MAX_BUSY: f64 = 0.25;
 const MAX_LATE: f64 = 0.02;
 

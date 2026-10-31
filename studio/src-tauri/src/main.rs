@@ -9,6 +9,7 @@ mod arrivals;
 mod channel;
 mod clipboard;
 mod config;
+mod creator;
 mod export;
 mod ffmpeg;
 mod installlog;
@@ -19,9 +20,12 @@ mod prefs;
 mod relocate;
 mod settings;
 mod setup;
+mod short;
 mod squeeze;
 mod support;
 mod trash;
+mod fortnite;
+mod voice;
 
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -33,6 +37,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use crate::config::Config;
 use crate::export::{ExportRequest, Exports};
 use crate::library::Clip;
+use crate::short::{ShortRequest, Shorts};
 use crate::squeeze::Squeezer;
 use crate::trash::Trash;
 
@@ -41,6 +46,7 @@ struct App {
     trash: Trash,
     exports: Exports,
     squeeze: Squeezer,
+    shorts: Shorts,
 }
 
 #[derive(Serialize)]
@@ -225,6 +231,86 @@ fn cancel_squeeze(app: State<App>) {
 #[tauri::command]
 fn squeeze_status(app: State<App>) -> Option<squeeze::Progress> {
     app.squeeze.status()
+}
+
+/// Content Creator Mode: what creator.json says.
+#[tauri::command]
+fn creator_settings(app: State<App>) -> creator::CreatorSettings {
+    creator::read(&app.config.settings_dir())
+}
+
+#[tauri::command]
+fn set_creator_settings(app: State<App>, settings: creator::CreatorSettings) -> CmdResult<()> {
+    creator::write(&app.config.settings_dir(), &settings).map_err(err)
+}
+
+/// Fortnite's auto-clips: what fortnite.json says.
+#[tauri::command]
+fn fortnite_enabled(app: State<App>) -> bool {
+    fortnite::enabled(&app.config.settings_dir())
+}
+
+#[tauri::command]
+fn set_fortnite_enabled(app: State<App>, enabled: bool) -> CmdResult<()> {
+    fortnite::set_enabled(&app.config.settings_dir(), enabled).map_err(err)
+}
+
+/// "Klipp that": what voice.json says.
+#[tauri::command]
+fn voice_settings(app: State<App>) -> voice::VoiceSettings {
+    voice::read(&app.config.settings_dir())
+}
+
+#[tauri::command]
+fn set_voice_enabled(app: State<App>, enabled: bool) -> CmdResult<()> {
+    voice::set_enabled(&app.config.settings_dir(), enabled).map_err(err)
+}
+
+/// Teaching "Klipp that": each step as a "voice-teach" event.
+#[tauri::command]
+async fn voice_teach(handle: AppHandle) -> CmdResult<()> {
+    blocking(move || {
+        lifecycle::voice_teach(|step| {
+            let _ = handle.emit("voice-teach", step);
+        })
+    })
+    .await
+}
+
+/// The cameras the recorder can use.
+#[tauri::command]
+async fn cameras() -> CmdResult<Vec<String>> {
+    blocking(creator::cameras).await
+}
+
+/// What the recorder's camera is doing ({ state, camera, width, height, fps, shared, error }).
+#[tauri::command]
+fn camera_status() -> Value {
+    creator::status(&config::load().log_dir, lifecycle::recorder_running())
+}
+
+/// The clip's camera track for the preview, or null if it has none.
+#[tauri::command]
+async fn camera_track(app: State<'_, App>, path: String) -> CmdResult<Option<creator::CameraTrack>> {
+    let cache = app.config.cache_dir.clone();
+    blocking(move || creator::camera_track(&PathBuf::from(path), &cache)).await
+}
+
+/// Remembers the short made from a clip (`null` forgets it).
+#[tauri::command]
+fn save_short(path: String, project: Value) -> CmdResult<()> {
+    creator::save_short(&config::load().clips_dir, &PathBuf::from(path), project).map_err(err)
+}
+
+/// Starts rendering a short; progress and the result arrive as events.
+#[tauri::command]
+fn start_short(handle: AppHandle, app: State<App>, request: ShortRequest) -> u64 {
+    app.shorts.start(handle, config::load().clips_dir, request)
+}
+
+#[tauri::command]
+fn cancel_short(app: State<App>, id: u64) {
+    app.shorts.cancel(id);
 }
 
 #[tauri::command]
@@ -431,7 +517,7 @@ fn install_log(app: State<App>, line: String) -> CmdResult<()> {
 /// An export is writing a file, or clips are being squeezed (an update would cut it off).
 #[tauri::command]
 fn exporting(app: State<App>) -> bool {
-    app.exports.busy() || app.squeeze.busy()
+    app.exports.busy() || app.squeeze.busy() || app.shorts.busy()
 }
 
 /// Started hidden to install an update and there's none: nothing more to do.
@@ -536,7 +622,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // The Windows folder picker (Settings → Storage).
         .plugin(tauri_plugin_dialog::init())
-        .manage(App { config, trash, exports: Exports::default(), squeeze: Squeezer::default() })
+        .manage(App { config, trash, exports: Exports::default(), squeeze: Squeezer::default(), shorts: Shorts::default() })
         .setup(move |app| {
             // Let the page load videos and thumbnails from these folders only.
             let scope = app.asset_protocol_scope();
@@ -594,6 +680,14 @@ fn main() {
             cancel_squeeze,
             squeeze_status,
             copy_to_clipboard,
+            creator_settings,
+            set_creator_settings,
+            cameras,
+            camera_status,
+            camera_track,
+            save_short,
+            start_short,
+            cancel_short,
             read_settings,
             write_settings,
             audio_devices,
@@ -603,6 +697,11 @@ fn main() {
             borrow_hotkey,
             test_hotkey,
             audio_levels,
+            fortnite_enabled,
+            set_fortnite_enabled,
+            voice_settings,
+            set_voice_enabled,
+            voice_teach,
             setup_needed,
             system_check,
             pc_test,

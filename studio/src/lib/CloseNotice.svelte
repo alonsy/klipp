@@ -2,6 +2,7 @@
   import * as api from "./api";
   import { clock } from "./format";
   import { markSvg } from "./icons";
+  import { DUR, enter, leave, pop } from "./motion";
   import { recorder, toast, ui } from "./state.svelte";
 
   let dontShow = $state(false);
@@ -22,24 +23,21 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="scrim" role="presentation" onclick={() => (ui.closeNotice = false)}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="close-title" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-    <div class="tray">
+<div class="scrim" role="presentation" onclick={() => (ui.closeNotice = false)} in:enter={{ y: 0, duration: DUR.base }} out:leave>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="close-title" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} in:pop={{ duration: DUR.slow }} out:pop={{ duration: DUR.fast }}>
+    <div class="tray" aria-hidden="true">
       <div class="taskbar">
         <span class="sys"></span><span class="sys"></span>
-        <span class="mark">{@html markSvg(22)}</span>
+        <span class="mark">{@html markSvg(20)}</span>
         <span class="sys"></span>
         <span class="time mono">{clock(Date.now())}</span>
       </div>
     </div>
     <h2 id="close-title">Klipp keeps recording</h2>
-    <p>
-      Closing this window doesn't stop Klipp. It stays in the tray and keeps the last {recorder.lengthSecs} seconds ready, so
-      <kbd>{recorder.hotkey}</kbd> and auto-clips still work.
-    </p>
-    <p class="muted">To stop recording, right-click the Klipp icon in the tray and choose <b>Quit Klipp</b>.</p>
+    <p>Closing this window doesn't stop it. From the tray, <kbd>{recorder.hotkey}</kbd> and auto-clips still work.</p>
+    <p class="muted">To stop recording, right-click the tray icon and choose <b>Quit Klipp</b>.</p>
     <div class="actions">
-      <label class="check"><input type="checkbox" bind:checked={dontShow} /> Don't show this again</label>
+      <label class="check"><input type="checkbox" bind:checked={dontShow} /> Don't show again</label>
       <button class="ghost" onclick={() => (ui.closeNotice = false)}>Cancel</button>
       <button class="primary" onclick={close}>Close window</button>
     </div>
@@ -55,109 +53,118 @@
     place-items: center;
     background: var(--scrim);
     backdrop-filter: blur(6px);
-    animation: fade 0.18s var(--ease);
   }
 
   .dialog {
-    width: min(460px, calc(100vw - 32px));
-    padding: 22px 24px 20px;
-    border-radius: 18px;
+    width: min(440px, calc(100vw - 32px));
+    padding: var(--sp-3) var(--sp-3) var(--sp-5);
+    border-radius: var(--r-lg);
     background: var(--surface);
-    border: 1px solid var(--line);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
-    animation: rise 0.22s var(--ease);
+    box-shadow: var(--shadow-3);
   }
 
+  /* The corner of the screen where Klipp goes. */
   .tray {
     display: flex;
     justify-content: flex-end;
-    padding: 20px 16px 0;
-    margin-bottom: 18px;
-    border-radius: 12px;
-    background: linear-gradient(160deg, var(--surface-3), var(--stage));
+    padding: var(--sp-5) var(--sp-5) 0;
+    margin-bottom: var(--sp-5);
+    border-radius: var(--r-md);
+    background: var(--sunken);
     overflow: hidden;
   }
 
   .taskbar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    border-radius: 10px 10px 0 0;
-    background: rgba(0, 0, 0, 0.45);
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--r-sm) var(--r-sm) 0 0;
+    background: var(--surface-2);
   }
 
   .sys {
     width: 12px;
     height: 12px;
     border-radius: 3px;
-    background: var(--surface-3);
+    background: var(--surface-4);
   }
 
   .mark {
+    position: relative;
     display: inline-flex;
-    padding: 3px;
-    border-radius: 6px;
+    padding: var(--sp-1);
+    border-radius: var(--r-xs);
     background: var(--accent-soft);
-    outline: 1.5px solid var(--accent);
     color: var(--text);
   }
 
+  /* A soft ring goes out from the icon, to say "here". */
+  .mark::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: 0 0 0 1.5px var(--accent);
+    animation: here 2s var(--ease-out) 300ms infinite;
+  }
+
   .time {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--muted);
   }
 
+  h2,
+  p,
+  .actions {
+    margin-inline: var(--sp-3);
+  }
+
   h2 {
-    margin: 0 0 8px;
+    margin-block: 0 var(--sp-2);
     font-family: var(--font-display);
-    font-size: 18px;
+    font-size: var(--fs-lg);
     letter-spacing: -0.02em;
   }
 
   p {
-    margin: 0 0 10px;
+    margin-block: 0 var(--sp-2);
     line-height: 1.5;
     color: var(--text);
   }
 
   .muted {
     color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  .muted b {
+    color: var(--text);
+    font-weight: 600;
   }
 
   .actions {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-top: 18px;
+    gap: var(--sp-2);
+    margin-top: var(--sp-5);
   }
 
   .check {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
     margin-right: auto;
     color: var(--muted);
+    font-size: var(--fs-control);
     cursor: pointer;
   }
 
-  input[type="checkbox"] {
-    accent-color: var(--accent);
-    width: 16px;
-    height: 16px;
-    padding: 0;
-  }
-
-  @keyframes fade {
-    from {
+  @keyframes here {
+    60%,
+    100% {
       opacity: 0;
-    }
-  }
-
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(10px) scale(0.98);
+      transform: scale(1.5);
     }
   }
 </style>

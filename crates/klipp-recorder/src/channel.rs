@@ -20,7 +20,7 @@ pub enum Channel {
 pub struct Updates {
     pub channel: Channel,
     /// The log goes to the developer every 15 minutes: on by default on the
-    /// test channel, off on normal releases unless switched on (D52).
+    /// test channel, off on normal releases unless switched on.
     pub send_logs: bool,
     /// Look for updates by itself (klipp.dev first, with the version and the install number).
     pub checks: bool,

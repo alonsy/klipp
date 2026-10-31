@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "../api";
-  import Icon from "../Icon.svelte";
   import { library, toast } from "../state.svelte";
   import Field from "../ui/Field.svelte";
   import Segmented from "../ui/Segmented.svelte";
   import Toggle from "../ui/Toggle.svelte";
+  import Reveal from "./Reveal.svelte";
   import { set, store } from "./store.svelte";
 
   let updates = $state<api.UpdateChannel | null>(null);
@@ -61,78 +61,67 @@
 
 {#if updates}
   <div class="group">
+    <h3 class="group-title">Updates</h3>
     <Field
       title="Mode"
-      hint={updates.channel === "test"
+      tip={updates.channel === "test"
         ? "Test: you get test builds first and help find problems before everyone else."
         : "Normal: updates that are ready for everyone. Switch to Test to try new things first."}
     >
       <Segmented value={updates.channel} label="Mode" options={modes} onchange={setChannel} />
     </Field>
-    {#if channelNote}<p class="note">{channelNote}</p>{/if}
+    <Reveal open={!!channelNote}>
+      <p class="note">{channelNote}</p>
+    </Reveal>
+    <Field title="Check for updates" tip="When this window opens, and once a day when you're not playing.">
+      <Toggle checked={updates.checks} label="Check for updates" onchange={(v) => setFlag({ checks: v })} />
+    </Field>
+    <Field title="Install updates by themselves" tip="When you're not playing, or when Klipp starts.">
+      <Toggle checked={updates.autoInstall && updates.checks} disabled={!updates.checks} label="Install updates by themselves" onchange={(v) => setFlag({ autoInstall: v })} />
+    </Field>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">Privacy</h3>
     <Field title="Send performance logs" hint="What Klipp did and how it ran, with your Windows user name left out. No clips, pictures or settings.">
       <Toggle checked={updates.sendLogs} label="Send performance logs" onchange={(v) => setFlag({ sendLogs: v })} />
     </Field>
-    <Field title="Install updates by themselves" hint="When you're not playing, or when Klipp starts.">
-      <Toggle checked={updates.autoInstall && updates.checks} disabled={!updates.checks} label="Install updates by themselves" onchange={(v) => setFlag({ autoInstall: v })} />
-    </Field>
-    <Field title="Check for updates" hint="When this window opens, and once a day when you're not playing.">
-      <Toggle checked={updates.checks} label="Check for updates" onchange={(v) => setFlag({ checks: v })} />
-    </Field>
   </div>
 {/if}
 
-<div class="group links">
-  <button class="ghost link" onclick={() => api.reveal(library.logDir)}><Icon name="folder" size={17} />Open the log folder<span>recorder.log</span></button>
-  <button class="ghost link" onclick={() => api.reveal(library.clipsDir)}><Icon name="film" size={17} />Open the clips folder<span>{library.clipsDir}</span></button>
-  <button class="ghost link" onclick={() => api.openFile(library.settingsPath)}><Icon name="sliders" size={17} />Open the settings file<span>settings.toml</span></button>
-</div>
-
-<span class="label group-title">Something wrong?</span>
-<div class="group links">
-  <button class="ghost link" onclick={copyDetails}><Icon name="copy" size={17} />Copy details<span>your PC, settings and the recent log</span></button>
-  <button class="ghost link" onclick={() => api.openFile("https://github.com/alonsy/klipp/issues/new/choose")}
-    ><Icon name="warning" size={17} />Report a problem or ask for something<span>GitHub</span></button
-  >
-</div>
-
-{#if store.s?.auto_clip?.cs2}
-  <div class="group">
-    <Field title="CS2 timing log" hint="Writes every CS2 game update to cs2.log, to check how quickly events arrive.">
+<div class="group">
+  <h3 class="group-title">Something wrong?</h3>
+  <Field title="Copy details" tip="Your PC, settings and the recent log.">
+    <button onclick={copyDetails}>Copy</button>
+  </Field>
+  <Field title="Report a problem or ask for something">
+    <button onclick={() => api.openFile("https://github.com/alonsy/klipp/issues/new/choose")}>GitHub</button>
+  </Field>
+  {#if store.s?.auto_clip?.cs2}
+    <Field title="CS2 timing log" tip="Writes every CS2 game update to cs2.log, to check how quickly events arrive.">
       <Toggle checked={store.s.auto_clip.cs2.debug_log} label="CS2 timing log" onchange={(v) => set(["auto_clip", "cs2", "debug_log"], v)} />
     </Field>
+  {/if}
+</div>
+
+<div class="group">
+  <h3 class="group-title">Files</h3>
+  <div class="files">
+    <button title="recorder.log" onclick={() => api.reveal(library.logDir)}>Log folder</button>
+    <button title={library.clipsDir} onclick={() => api.reveal(library.clipsDir)}>Clips folder</button>
+    <button title="settings.toml" onclick={() => api.openFile(library.settingsPath)}>Settings file</button>
   </div>
-{/if}
+</div>
 
 <style>
   .note {
-    margin: 0;
-    padding: 0 18px 14px;
-    font-size: 12px;
-    color: var(--muted);
+    padding-bottom: var(--sp-2);
   }
 
-  .links {
+  .files {
     display: flex;
-    flex-direction: column;
-    padding: 6px;
-  }
-
-  .link {
-    justify-content: flex-start;
-    gap: 12px;
-    padding: 10px 12px;
-    text-align: left;
-  }
-
-  .link span {
-    margin-left: auto;
-    max-width: 50%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--faint);
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding-top: var(--sp-1);
   }
 </style>

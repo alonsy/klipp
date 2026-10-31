@@ -3,7 +3,7 @@
 //! measured like setup's system check. When they don't run smoothly on this
 //! PC, the first lighter setting that does goes into settings.toml, and the
 //! Klipp window says what changed: a card that can't keep up stutters in
-//! every match (FIX-17). Once per version; while a game keeps the card busy
+//! every match. Once per version; while a game keeps the card busy
 //! it waits for the next start, since the numbers would be the game's.
 
 use std::path::Path;

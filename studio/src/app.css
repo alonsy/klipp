@@ -1,32 +1,88 @@
-/* Klipp: warm graphite (no blue in it), bone text, one hot accent. */
+/* Klipp: warm graphite (no blue in it), bone text, one hot accent.
+   Tokens first, then base controls, then motion. ui/FOUNDATION.md explains them. */
 :root {
-  --bg: #1e1e1d;
-  --surface: #272726;
-  --surface-2: #30302e;
-  --surface-3: #3b3b39;
+  /* Surfaces, darkest to lightest. Depth comes from tone, not from lines. */
+  --stage: #121211; /* behind video */
+  --sunken: #181817; /* the sidebar, wells behind controls */
+  --bg: #1e1e1d; /* the page */
+  --surface: #272726; /* something on the page */
+  --surface-2: #30302e; /* controls */
+  --surface-3: #3b3b39; /* a control hovered, a selected segment */
+  --surface-4: #484846;
+  --hover: rgba(244, 242, 236, 0.06); /* over anything: hovered ghost rows */
+  --press: rgba(244, 242, 236, 0.1);
+  --glass: rgba(22, 22, 21, 0.72); /* labels on top of video */
+  --scrim: rgba(12, 12, 11, 0.55);
   --line: rgba(244, 242, 236, 0.08);
   --line-strong: rgba(244, 242, 236, 0.15);
-  /* Darker than the page: behind video and under glass labels. */
-  --stage: #121211;
-  --glass: rgba(22, 22, 21, 0.72);
-  --scrim: rgba(12, 12, 11, 0.55);
+
+  /* Text. */
   --text: #f4f2ec;
-  --muted: #a3a29d;
-  --faint: #74736e;
+  --muted: #a8a7a1;
+  --faint: #8a8983;
+
+  /* Colour that means something. */
   --accent: #ff5a2e;
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --on-accent: #161615;
   --good: #7fd49a;
+  --good-soft: color-mix(in srgb, var(--good) 12%, transparent);
+  --warn: #f2c84b;
+  --warn-soft: color-mix(in srgb, var(--warn) 10%, transparent);
   --danger: #ff6b5e;
-  --radius: 14px;
-  --radius-sm: 9px;
+  --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
+
+  /* Spacing: 4 8 12 16 24 32. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* Radii. --radius and --radius-sm are the older names. */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-full: 999px;
+  --radius: var(--r-md);
+  --radius-sm: var(--r-sm);
+
+  /* Type. */
   --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
   --font-display: "Unbounded", var(--font-ui);
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --fs-2xs: 10px; /* ruler ticks and other marks inside a control */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-control: 13px; /* a control's label */
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 22px;
+  --fs-2xl: 30px;
+
+  /* Shadows: only for things that float above the page. */
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.38);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.55);
+
+  /* Motion. Enter with --dur or --dur-slow, leave with --dur-fast. */
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+  --dur-spring: 420ms; /* the length --spring is drawn for */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease: var(--ease-out);
+  /* A gentle spring, about 2 % past the target: for things that travel. */
+  --spring: linear(0, 0.049, 0.163, 0.305, 0.45, 0.585, 0.701, 0.796, 0.87, 0.925, 0.964, 0.99, 1.007, 1.015, 1.019, 1.02, 1.018, 1.016, 1.013, 1.01, 1.008, 1.005, 1.004, 1.002, 1);
+
+  --sidebar: 208px;
+
   color-scheme: dark;
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--text);
   background: var(--bg);
 }
@@ -49,11 +105,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Small uppercase mono labels, as in the brand sheets. */
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Small uppercase mono labels, as in the brand sheets. Use them sparingly. */
 .label {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
@@ -64,23 +124,25 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Buttons: default (a tone), .primary (one per view), .ghost, .icon, .danger. */
 button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--sp-2);
   font: inherit;
   color: inherit;
   background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   padding: 7px 14px;
   cursor: pointer;
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    color 0.15s,
-    transform 0.1s;
+    background var(--dur-fast),
+    border-color var(--dur-fast),
+    color var(--dur-fast),
+    opacity var(--dur-fast),
+    transform var(--dur-fast) var(--ease-out);
 }
 
 button:hover {
@@ -88,7 +150,7 @@ button:hover {
 }
 
 button:active {
-  transform: translateY(1px);
+  transform: scale(0.97);
 }
 
 button:disabled {
@@ -99,7 +161,6 @@ button:disabled {
 
 button.primary {
   background: var(--accent);
-  border-color: var(--accent);
   color: var(--on-accent);
   font-weight: 600;
 }
@@ -108,13 +169,24 @@ button.primary:hover {
   background: color-mix(in srgb, var(--accent) 88%, white);
 }
 
+button.primary:disabled:hover {
+  background: var(--accent);
+}
+
 button.ghost {
   background: transparent;
-  border-color: transparent;
 }
 
 button.ghost:hover {
-  background: var(--surface-2);
+  background: var(--hover);
+}
+
+button.ghost:active {
+  background: var(--press);
+}
+
+button.ghost:disabled:hover {
+  background: transparent;
 }
 
 button.icon {
@@ -125,41 +197,61 @@ button.icon {
 
 button.danger:hover {
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: var(--danger-soft);
+}
+
+:focus {
+  outline: none;
 }
 
 button:focus-visible,
-input:focus-visible,
 select:focus-visible,
-[tabindex]:focus-visible {
+[tabindex]:focus-visible,
+a:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="range"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
+/* A text field is focused after every click: no accent for that. */
+input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 30%, transparent);
+  outline-offset: 0;
+}
+
+/* Inputs and selects. */
 input,
 select {
   font: inherit;
   color: inherit;
   background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   padding: 7px 11px;
-  transition: border-color 0.15s;
+  transition:
+    background var(--dur-fast),
+    border-color var(--dur-fast);
 }
 
 input:hover,
 select:hover {
-  border-color: var(--line-strong);
+  background: var(--surface-3);
 }
 
 input::placeholder {
   color: var(--faint);
 }
 
+input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
+}
+
 select {
   appearance: none;
   padding-right: 30px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5' fill='none' stroke='%238A8D96' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5' fill='none' stroke='%23a8a7a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 9px center;
   background-size: 16px;
@@ -169,19 +261,54 @@ select option {
   background: var(--surface);
 }
 
+input[type="checkbox"] {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border-radius: 5px;
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+input[type="checkbox"]:hover {
+  background: var(--surface-4);
+}
+
+input[type="checkbox"]:checked {
+  background: var(--text);
+}
+
+input[type="checkbox"]:checked::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 2px solid var(--on-accent);
+  border-bottom: 2px solid var(--on-accent);
+  transform: rotate(-45deg);
+}
+
+/* Range: set --fill (the part before the thumb) on the input; ui/Slider does. */
 input[type="range"] {
   appearance: none;
   height: 18px;
   padding: 0;
   border: none;
+  border-radius: var(--r-xs);
   background: transparent;
+  cursor: pointer;
   --fill: 50%;
 }
 
 input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
-  background: linear-gradient(to right, var(--accent) var(--fill), var(--surface-3) var(--fill));
+  background: linear-gradient(to right, var(--muted) var(--fill), var(--surface-3) var(--fill));
+  transition: background var(--dur-fast);
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -192,45 +319,299 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: var(--text);
   border: none;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  transition: transform 0.1s;
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 
 input[type="range"]:hover::-webkit-slider-thumb {
   transform: scale(1.15);
 }
 
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(0.92);
+}
+
 kbd {
   display: inline-block;
   min-width: 20px;
   padding: 1px 6px;
-  border: 1px solid var(--line-strong);
-  border-bottom-width: 2px;
-  border-radius: 5px;
-  background: var(--surface-2);
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-align: center;
   color: var(--text);
 }
 
+/* Scrollbars float: the thumb only, on any surface. */
 ::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-3);
-  border-radius: 6px;
-  border: 3px solid var(--bg);
+  background: var(--surface-3) padding-box;
+  border: 3px solid transparent;
+  border-radius: var(--r-full);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4c4c49;
+  background: var(--surface-4) padding-box;
 }
 
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* The shared tooltip (ui/tooltip.ts): any title="" gets it. */
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 280px;
+  padding: 5px 9px;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.tooltip.show {
+  opacity: 1;
+}
+
+.tooltip kbd {
+  background: var(--surface-4);
+}
+
+/* Loading: a skeleton where the content's shape is known, a spinner where it isn't. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.skeleton.text {
+  height: 12px;
+  border-radius: var(--r-xs);
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(244, 242, 236, 0.055) 50%, transparent 80%);
+  transform: translateX(-100%);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Motion helpers in CSS. lib/motion.ts has the same things for Svelte. */
+.enter {
+  animation: rise var(--dur-slow) var(--ease-out) var(--delay, 0ms) backwards;
+}
+
+.fade-in {
+  animation: fade var(--dur) var(--ease-out) var(--delay, 0ms) backwards;
+}
+
+/* A dialog or popover opening. */
+.pop {
+  animation: pop var(--dur) var(--ease-out) backwards;
+}
+
+/* Overlaps a {#key} block's old and new content, so they crossfade in place. */
+.stack {
+  display: grid;
+  min-height: 0;
+  min-width: 0;
+}
+
+.stack > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Shell transitions (viewTransition in lib/motion.ts). The names exist only while
+   html[data-vt] is set: a view-transition-name would otherwise trap fixed dialogs'
+   blur inside its element. */
+html[data-vt] aside.shell-sidebar {
+  view-transition-name: shell-sidebar;
+}
+
+html[data-vt] .shell-page {
+  view-transition-name: shell-page;
+}
+
+html[data-vt] .shell-controls {
+  view-transition-name: shell-controls;
+}
+
+html[data-vt="hero"] [data-hero] {
+  view-transition-name: clip-hero;
+}
+
+/* While the old picture fades and the new one comes in, this is what shows between
+   them: without a colour it's the browser's own white. */
+html::view-transition {
+  pointer-events: none;
+  background: var(--bg);
+}
+
+::view-transition-old(root) {
+  animation: vt-out var(--dur-fast) var(--ease-out) both;
+}
+
+::view-transition-new(root) {
+  animation: vt-in var(--dur) var(--ease-out) 40ms both;
+}
+
+::view-transition-group(shell-sidebar),
+::view-transition-group(shell-controls) {
+  animation: none;
+}
+
+::view-transition-old(shell-sidebar),
+::view-transition-new(shell-sidebar),
+::view-transition-old(shell-controls),
+::view-transition-new(shell-controls) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* The sidebar leaves and comes back from the side it lives on. */
+::view-transition-old(shell-sidebar):only-child {
+  animation: vt-side-out var(--dur) var(--ease-out) both;
+}
+
+::view-transition-new(shell-sidebar):only-child {
+  animation: vt-side-in var(--dur-slow) var(--ease-out) both;
+}
+
+::view-transition-group(shell-page) {
+  animation: none;
+}
+
+::view-transition-old(shell-page) {
+  animation: vt-out var(--dur-fast) var(--ease-out) both;
+}
+
+::view-transition-new(shell-page) {
+  animation: vt-rise var(--dur) var(--ease-out) 40ms both;
+}
+
+/* The thumbnail grows into the player; both keep the picture's shape. */
+::view-transition-group(clip-hero) {
+  z-index: 5;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  animation-duration: var(--dur-spring);
+  animation-timing-function: var(--spring);
+}
+
+::view-transition-image-pair(clip-hero) {
+  isolation: isolate;
+}
+
+::view-transition-old(clip-hero),
+::view-transition-new(clip-hero) {
+  block-size: 100%;
+  object-fit: contain;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(clip-hero) {
+  animation: vt-out var(--dur-slow) linear both;
+}
+
+::view-transition-new(clip-hero) {
+  animation: vt-in var(--dur) linear both;
+}
+
+@keyframes vt-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes vt-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes vt-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes vt-side-out {
+  to {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+
+@keyframes vt-side-in {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -239,5 +620,13 @@ kbd {
   *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
   }
 }

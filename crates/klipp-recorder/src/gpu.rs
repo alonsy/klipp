@@ -95,7 +95,7 @@ impl Gpu {
 
     /// Whether Windows lets this card schedule its own work ("hardware-accelerated
     /// GPU scheduling"): (supported, on). It changes how the GPU priority above
-    /// plays out against a game, so the log says which it is (FIX-17).
+    /// plays out against a game, so the log says which it is.
     pub fn hardware_scheduling(&self) -> Option<(bool, bool)> {
         let luid = unsafe { self.adapter.as_ref()?.GetDesc1() }.ok()?.AdapterLuid;
         let mut open = OpenAdapterFromLuid { luid, adapter: 0 };
@@ -139,7 +139,7 @@ const KMTQAITYPE_WDDM_2_7_CAPS: u32 = 70;
 
 /// When a game fills the card's memory, Windows moves other processes'
 /// textures out to system memory and back again as they're used: every
-/// frame then waits on that, down to a few frames a second (FIX-17). Klipp's
+/// frame then waits on that, down to a few frames a second. Klipp's
 /// few textures are marked to go last.
 pub fn keep_resident(texture: &ID3D11Texture2D) {
     unsafe { texture.SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM.0) };
@@ -158,7 +158,7 @@ const SCHEDULING_CLASS_HIGH: i32 = 4;
 
 /// The thread priority above only orders our own work. A game keeping the
 /// card at 100 % still made every conversion and encode wait behind its
-/// frames, down to a few frames a second (FIX-17). The process-wide GPU
+/// frames, down to a few frames a second. The process-wide GPU
 /// scheduling class puts all of Klipp's GPU work, the capture's copies too,
 /// ahead of normal processes. Once per process; best effort.
 fn raise_scheduling_class() {

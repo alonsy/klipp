@@ -140,7 +140,7 @@ fn texture_size(cfg: &VideoEncoderConfig) -> (u32, u32) {
 
 /// AMD's QVBR quality level (1–51, higher is better) for an NVENC-scale
 /// constant-quality value (lower is better): both are QP-like, mirrored.
-fn amf_quality_level(nvenc_cq: u8) -> u8 {
+pub(crate) fn amf_quality_level(nvenc_cq: u8) -> u8 {
     52u8.saturating_sub(nvenc_cq).clamp(1, 51)
 }
 
@@ -249,7 +249,7 @@ impl VideoEncoder {
                     // Each NVENC surface holds an output buffer in system RAM (~9.5 MB at
                     // 1440p). With 2, every frame waited for the one before it to finish
                     // encoding, so a card busy with a game set the recorder's pace, down to
-                    // a few frames a second (FIX-17). FFmpeg's default of 4 keeps three
+                    // a few frames a second. FFmpeg's default of 4 keeps three
                     // in flight, and a slow frame makes the next ones late, not lost.
                     set_opt(c.priv_data, "surfaces", "4")?;
                 }
@@ -263,7 +263,7 @@ impl VideoEncoder {
                     // Frames in flight; each holds GPU and system memory. With 2, handing
                     // over a frame waited for the one before it to finish: 12.9 ms of
                     // each 16.7 on an RX 6650 XT at 1080p60 on the desktop, and late
-                    // frames in games (a tester's log, 2026-10-25). 4, as NVENC (FIX-17).
+                    // frames in games (a tester's log, 2026-10-25). 4, as NVENC.
                     set_opt(c.priv_data, "async_depth", "4")?;
                 }
                 Vendor::Intel => {
@@ -401,7 +401,7 @@ fn set_rates(c: &mut ff::AVCodecContext, vendor: Vendor, max_bitrate: u32) {
     };
 }
 
-fn set_opt(obj: *mut std::ffi::c_void, name: &str, value: &str) -> Result<()> {
+pub(crate) fn set_opt(obj: *mut std::ffi::c_void, name: &str, value: &str) -> Result<()> {
     let (n, v) = (CString::new(name)?, CString::new(value)?);
     check(unsafe { ff::av_opt_set(obj, n.as_ptr(), v.as_ptr(), 0) }, &format!("setting encoder option {name}={value}"))?;
     Ok(())

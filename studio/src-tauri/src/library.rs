@@ -37,6 +37,10 @@ pub struct Clip {
     pub thumb: Option<String>,
     /// Trim points and track levels saved by the editor.
     pub edit: Option<Value>,
+    /// Content Creator Mode: the clip has a camera track.
+    pub camera: bool,
+    /// The short made from it in the Content Creation Center.
+    pub short: Option<Value>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -111,6 +115,8 @@ fn read_clip(clips_dir: &Path, path: &Path, game: &str) -> Option<Clip> {
         mode: text("mode"),
         thumb: thumb.exists().then(|| thumb.to_string_lossy().into_owned()),
         edit: Some(info["edit"].clone()).filter(Value::is_object),
+        camera: info["camera"].as_bool().unwrap_or(false),
+        short: Some(info["short"].clone()).filter(Value::is_object),
     })
 }
 

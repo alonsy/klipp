@@ -2,28 +2,15 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
   import * as api from "../api";
-  import Icon from "../Icon.svelte";
   import Logo from "../Logo.svelte";
   import { renderMarkdown } from "../markdown";
+  import { EDITOR_KEYS } from "../shortcuts";
+  import Disclosure from "./Disclosure.svelte";
 
   let version = $state("");
-  let shortcuts = $state(false);
   onMount(() => {
     getVersion().then((v) => (version = v), () => {});
   });
-
-  const keys = [
-    [["Space"], "Play / pause"],
-    [["I"], "Start the clip here"],
-    [["O"], "End the clip here"],
-    [["L"], "Loop the trimmed part"],
-    [["←", "→"], "Back / forward 1 s (Shift: 5 s)"],
-    [[",", "."], "Previous / next frame"],
-    [["[", "]"], "Previous / next event"],
-    [["Home", "End"], "Go to the start / end of the trim"],
-    [["F"], "Fullscreen"],
-    [["Esc"], "Back to clips"],
-  ] as const;
 
   // Release notes ship with the app (releases/vX.Y.Z.md, the same text as the
   // GitHub release), so they read offline. They're here for the curious;
@@ -64,166 +51,97 @@
 </script>
 
 <div class="hero">
-  <Logo size={44} />
-  <p>Your moments, kept. A replay buffer that stays light: no leaks, a few MB of RAM besides the buffer.</p>
-  {#if version}<span class="label">Version {version}</span>{/if}
+  <Logo size={36} />
+  {#if version}<span class="version mono">Version {version}</span>{/if}
 </div>
 
-<span class="label group-title">Editor</span>
-<div class="group links">
-  <button class="ghost link" aria-expanded={shortcuts} onclick={() => (shortcuts = !shortcuts)}><Icon name="keyboard" size={17} />See shortcuts<span>{shortcuts ? "Hide" : ""}</span></button>
-  {#if shortcuts}
+<div class="group">
+  <h3 class="group-title">Editor</h3>
+  <Disclosure label="Shortcuts">
     <div class="keys">
-      {#each keys as [combo, what] (what)}
+      {#each EDITOR_KEYS as [combo, what] (what)}
         <div class="key">
           <span class="combo">{#each combo as k (k)}<kbd>{k}</kbd>{/each}</span>
           <span>{what}</span>
         </div>
       {/each}
     </div>
-  {/if}
+  </Disclosure>
 </div>
 
-<span class="label group-title">What's new</span>
-<div class="group notes" bind:this={notes}>
+<div class="group" bind:this={notes}>
+  <h3 class="group-title">What's new</h3>
   {#each releases as r, i (r.version)}
-    <details open={i === 0}>
-      <summary>
-        <b>Klipp {r.version}</b>
+    <Disclosure label="Klipp {r.version}" open={i === 0}>
+      {#snippet meta()}
         {#if r.version === version}<span class="tag">You have this</span>{/if}
-      </summary>
+      {/snippet}
       <div class="md">{@html r.html}</div>
-    </details>
+    </Disclosure>
   {/each}
 </div>
 
-<p class="credits">Video is encoded on your graphics card and saved with FFmpeg (LGPL).</p>
-<p class="credits">Klipp isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>
+<div class="group">
+  <p class="note">Video is encoded on your graphics card and saved with FFmpeg (LGPL).</p>
+  <p class="note">Klipp isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>
+</div>
 
 <style>
   .hero {
     display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding: 26px;
-    border-radius: var(--radius);
-    background: radial-gradient(120% 140% at 0% 0%, var(--accent-soft), transparent 55%), var(--surface);
-    border: 1px solid var(--line);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
   }
 
-  .hero p {
-    margin: 0;
-    max-width: 440px;
+  .version {
     color: var(--muted);
-    line-height: 1.55;
-  }
-
-  .links {
-    display: flex;
-    flex-direction: column;
-    padding: 6px;
-  }
-
-  .link {
-    justify-content: flex-start;
-    gap: 12px;
-    padding: 10px 12px;
-    text-align: left;
-  }
-
-  .link span {
-    margin-left: auto;
-    max-width: 50%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--faint);
+    font-size: var(--fs-sm);
   }
 
   .keys {
-    padding: 4px 12px 8px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    column-gap: var(--sp-6);
+    padding: var(--sp-1) 0 var(--sp-2) var(--sp-5);
   }
 
   .key {
     display: grid;
-    grid-template-columns: 120px 1fr;
+    grid-template-columns: 84px 1fr;
     align-items: center;
-    padding: 7px 0;
-    font-size: 13px;
-  }
-
-  .key + .key {
-    border-top: 1px solid var(--line);
+    padding: 6px 0;
+    font-size: var(--fs-control);
+    color: var(--muted);
   }
 
   .combo {
     display: flex;
-    gap: 4px;
-  }
-
-  .notes {
-    display: flex;
-    flex-direction: column;
-    padding: 6px 18px;
-  }
-
-  details + details {
-    border-top: 1px solid var(--line);
-  }
-
-  summary {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 0;
-    cursor: pointer;
-    list-style: none;
-  }
-
-  summary::-webkit-details-marker {
-    display: none;
-  }
-
-  summary::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-right: 1.5px solid var(--muted);
-    border-bottom: 1.5px solid var(--muted);
-    transform: rotate(-45deg);
-    transition: transform 0.15s;
-  }
-
-  details[open] summary::before {
-    transform: rotate(45deg);
+    gap: var(--sp-1);
   }
 
   .tag {
-    padding: 2px 8px;
-    border-radius: 6px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: 11px;
-    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: var(--r-xs);
+    background: var(--surface-3);
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-weight: 500;
   }
 
   .md {
-    padding: 0 0 14px 16px;
+    padding: 0 0 var(--sp-3) var(--sp-5);
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--fs-control);
     line-height: 1.55;
   }
 
   .md :global(h3),
   .md :global(h4),
   .md :global(h5) {
-    margin: 12px 0 4px;
-    font-size: 12px;
+    margin: var(--sp-3) 0 var(--sp-1);
+    font-size: var(--fs-sm);
     font-weight: 650;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
     color: var(--faint);
   }
 
@@ -251,13 +169,10 @@
 
   .md :global(code) {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
 
-  .credits {
-    margin: 0 4px;
-    font-size: 12px;
-    color: var(--faint);
+  .group:last-child {
+    gap: var(--sp-2);
   }
-
 </style>

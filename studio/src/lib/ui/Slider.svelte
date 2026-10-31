@@ -12,7 +12,9 @@
   }
   let { value, min, max, step = 1, label, oninput, onchange }: Props = $props();
 
-  let fill = $derived(`${((value - min) / (max - min)) * 100}%`);
+  // The fill ends under the thumb's middle, which travels 14px less than the track.
+  let fraction = $derived(max > min ? (value - min) / (max - min) : 0);
+  let fill = $derived(`calc(${fraction * 100}% + ${(0.5 - fraction) * 14}px)`);
 </script>
 
 <input

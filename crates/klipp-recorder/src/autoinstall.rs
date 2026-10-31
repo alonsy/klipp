@@ -1,5 +1,5 @@
-//! Updates install by themselves (FB-35 for test builds; IDEA-43 for normal
-//! releases too): testers kept running an old one for hours after "update
+//! Updates install by themselves, on test builds and normal releases:
+//! testers kept running an old one for hours after "update
 //! available". Once the update check has found a newer version, no game has
 //! been in front for a few minutes and no clip is being saved, the recorder
 //! asks the window's updater to install it without showing the window

@@ -52,6 +52,8 @@
   // showing what each saves and what it costs. Opened from Settings → Storage.
   import { onMount, untrack } from "svelte";
   import Icon from "./Icon.svelte";
+  import { enter, leave, pop } from "./motion";
+  import Num from "./settings/Num.svelte";
   import Toggle from "./ui/Toggle.svelte";
 
   interface Props {
@@ -74,6 +76,7 @@
 
   let choice = $derived(plan?.levels.find((l) => l.level === chosen) ?? null);
   let canSqueeze = $derived(!!plan?.encoder && !!choice && choice.clips > 0);
+  let chosenIndex = $derived(plan?.levels.findIndex((l) => l.level === chosen) ?? -1);
 
   onMount(() => {
     watch();
@@ -166,30 +169,28 @@
 <svelte:window onkeydown={onKey} />
 
 {#if open}
-  <div class="scrim" role="presentation" onclick={close}>
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="squeeze-title" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+  <div class="scrim fade-in" role="presentation" onclick={close} out:leave>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="squeeze-title" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} in:pop>
       <div class="head">
         <div>
-          <h2 id="squeeze-title">Squeeze Space</h2>
-          <p class="sub">Makes clips smaller by re-encoding them on your graphics card. Every audio track and marker stays.</p>
+          <h2 id="squeeze-title">Squeeze space</h2>
+          <p class="sub">Re-encodes clips smaller on your graphics card. Every audio track and marker stays.</p>
         </div>
         <button class="ghost icon" title="Close" aria-label="Close" onclick={close}><Icon name="x" size={18} /></button>
       </div>
 
       {#if phase === "running" && progress}
         {@const shownDone = Math.min(progress.done + 1, progress.total)}
-        <div class="running">
-          <div class="p-label">
-            <span>
+        <div class="running" in:enter>
+          <div class="p-top">
+            <span class="p-pct mono"><Num value={progress.fraction * 100} format={(x) => `${Math.round(x)}%`} /></span>
+            <span class="p-what">
               {#if progress.total > 0}Squeezing at {LEVELS[progress.level].name}: clip {shownDone} of {progress.total}{:else}Getting ready…{/if}
             </span>
-            <span class="mono">{Math.round(progress.fraction * 100)}%</span>
+            {#if progress.savedBytes > 0}<span class="freed">Freed <Num value={progress.savedBytes} format={size} /></span>{/if}
           </div>
-          <div class="track"><div class="fill" style="width: {progress.fraction * 100}%"></div></div>
-          <div class="p-meta">
-            <span class="current mono" title={progress.current}>{progress.current || "Starting…"}</span>
-            {#if progress.savedBytes > 0}<span class="freed">Freed {size(progress.savedBytes)} so far</span>{/if}
-          </div>
+          <div class="track"><div class="fill" style:transform="scaleX({progress.fraction})"></div></div>
+          <span class="current mono" title={progress.current}>{progress.current || "Starting…"}</span>
           <p class="hint">You can close this, Klipp keeps going. Cancel puts the clip in progress back as it was; clips already squeezed stay squeezed.</p>
           <div class="actions">
             <button class="ghost" onclick={close}>Close</button>
@@ -197,7 +198,7 @@
           </div>
         </div>
       {:else if phase === "done" && summary}
-        <div class="done">
+        <div class="done" in:enter>
           {#if summary.error}
             <p class="bad"><Icon name="warning" size={16} />{summary.error}</p>
           {:else}
@@ -221,7 +222,9 @@
         <p class="bad"><Icon name="warning" size={16} />Couldn't look at your clips: {failed}</p>
         <div class="actions"><button onclick={load}>Try again</button></div>
       {:else if !plan}
-        <div class="loading"><span class="spinner"></span>Looking at your clips…</div>
+        <div class="levels" aria-label="Looking at your clips…">
+          {#each [0, 1, 2, 3] as i (i)}<div class="level skeleton"></div>{/each}
+        </div>
       {:else}
         {#if !plan.encoder}
           <p class="bad"><Icon name="warning" size={16} />This PC's graphics card can't re-encode video, so clips can't be squeezed here.</p>
@@ -230,10 +233,11 @@
           <span class="mono">{clips(plan.clips)} · {size(plan.bytes)}</span>
           {#if plan.favorites > 0}<span>· {plan.favorites === 1 ? "1 favorite" : `${plan.favorites} favorites`} left out</span>{/if}
           {#if plan.recent > 0}<span>· {clips(plan.recent)} from the last minutes left out</span>{/if}
-          {#if loading}<span class="spinner small"></span>{/if}
+          <span class="skip"><span>Skip favorites</span><Toggle checked={skipFavorites} label="Skip favorites" disabled={phase === "confirm"} onchange={setSkipFavorites} /></span>
         </div>
 
-        <div class="levels" role="radiogroup" aria-label="How hard to squeeze">
+        <div class="levels" class:busy={loading} role="radiogroup" aria-label="How hard to squeeze" style:--i={chosenIndex}>
+          {#if chosenIndex >= 0}<span class="thumb" aria-hidden="true"></span>{/if}
           {#each plan.levels as l (l.level)}
             {@const info = LEVELS[l.level]}
             <button
@@ -248,32 +252,26 @@
               }}
             >
               <span class="l-name">{info.name}</span>
-              <span class="l-what">{what(l)}</span>
-              {#if l.clips > 0}
-                <span class="l-about">Saves about</span>
-                <span class="l-save mono">{size(saved(l))}</span>
-                <span class="l-pct">{percent(l)}% smaller · {clips(l.clips)}</span>
-              {:else}
-                <span class="l-save none">Nothing to squeeze</span>
-                <span class="l-pct">{l.already > 0 ? "Squeezed this hard already" : "Small enough already"}</span>
-              {/if}
-              <span class="l-loss" class:warm={info.kept === 2} class:hot={info.kept === 1}>
-                <span class="meter" aria-label="Quality kept: {info.kept} of 5">
-                  {#each [1, 2, 3, 4, 5] as n (n)}<i class:full={n <= info.kept}></i>{/each}
+              <span class="l-text">
+                <span class="l-what">{what(l)}</span>
+                <span class="l-loss" class:warm={info.kept === 2} class:hot={info.kept === 1}>
+                  <span class="meter" role="img" aria-label="Quality kept: {info.kept} of 5">
+                    {#each [1, 2, 3, 4, 5] as n (n)}<i class:full={n <= info.kept}></i>{/each}
+                  </span>
+                  {info.loss}
                 </span>
-                {info.loss}
               </span>
-              {#if l.already > 0 && l.clips > 0}<span class="l-note">{clips(l.already)} squeezed already</span>{/if}
+              <span class="l-gain">
+                {#if l.clips > 0}
+                  <span class="l-save"><span class="l-about">Saves about</span> <b class="mono"><Num value={saved(l)} format={size} /></b></span>
+                  <span class="l-pct">{percent(l)}% smaller · {clips(l.clips)}{#if l.already > 0}{" "}· {l.already} squeezed already{/if}</span>
+                {:else}
+                  <span class="l-none">Nothing to squeeze</span>
+                  <span class="l-pct">{l.already > 0 ? "Squeezed this hard already" : "Small enough already"}</span>
+                {/if}
+              </span>
             </button>
           {/each}
-        </div>
-
-        <div class="option">
-          <div class="o-text">
-            <span class="o-title">Skip favorites</span>
-            <span class="o-hint">{skipFavorites ? "Favorites keep their full quality." : "Favorites are squeezed too."}</span>
-          </div>
-          <Toggle checked={skipFavorites} label="Skip favorites" disabled={phase === "confirm"} onchange={setSkipFavorites} />
         </div>
 
         <div class="warn">
@@ -283,7 +281,7 @@
 
         <div class="actions">
           {#if phase === "confirm" && choice}
-            <span class="ask">Squeeze {clips(choice.clips)} at {LEVELS[choice.level].name}? This can't be undone.</span>
+            <span class="ask" in:enter={{ x: -8, y: 0 }}>Squeeze {clips(choice.clips)} at {LEVELS[choice.level].name}? This can't be undone.</span>
             <button class="ghost" onclick={() => (phase = "plan")}>Back</button>
             <button class="primary" onclick={squeeze}>Yes, squeeze them</button>
           {:else}
@@ -307,42 +305,39 @@
     place-items: center;
     background: var(--scrim);
     backdrop-filter: blur(6px);
-    animation: fade 0.18s var(--ease);
   }
 
   .dialog {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    width: min(760px, calc(100vw - 32px));
-    max-height: calc(100vh - 48px);
+    gap: var(--sp-3);
+    width: min(720px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
     overflow-y: auto;
-    padding: 22px 24px 20px;
-    border-radius: 18px;
+    padding: var(--sp-5);
+    border-radius: var(--r-lg);
     background: var(--surface);
-    border: 1px solid var(--line);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
-    animation: rise 0.22s var(--ease);
+    box-shadow: var(--shadow-3);
   }
 
   .head {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 16px;
+    gap: var(--sp-4);
   }
 
   h2 {
-    margin: 0 0 6px;
-    font-family: var(--font-display);
-    font-size: 18px;
-    letter-spacing: -0.02em;
+    margin: 0 0 var(--sp-1);
+    font-size: var(--fs-lg);
+    font-weight: 650;
   }
 
   .sub {
     margin: 0;
     color: var(--muted);
-    line-height: 1.5;
+    font-size: var(--fs-control);
+    line-height: 1.45;
   }
 
   .head .icon {
@@ -356,47 +351,75 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
+    gap: var(--sp-1) 6px;
     color: var(--muted);
+    font-size: var(--fs-sm);
   }
 
   .scope .mono {
     color: var(--text);
   }
 
-  .levels {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
+  .skip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-left: auto;
+    color: var(--text);
+    font-size: var(--fs-control);
   }
 
-  @media (max-width: 680px) {
-    .levels {
-      grid-template-columns: repeat(2, 1fr);
-    }
+  /* One row per level; the highlight slides between them. */
+  .levels {
+    --row: 62px;
+    position: relative;
+    display: grid;
+    grid-auto-rows: var(--row);
+    transition: opacity var(--dur) var(--ease-out);
+  }
+
+  .levels.busy {
+    opacity: 0.6;
+  }
+
+  .thumb {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--row);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    transform: translateY(calc(var(--i) * 100%));
+    transition: transform var(--dur-spring) var(--spring);
   }
 
   .level {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: flex-start;
-    gap: 4px;
-    padding: 12px 12px 11px;
-    border-radius: 12px;
-    background: var(--surface-2);
-    border: 1px solid var(--line);
+    position: relative;
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: 0 var(--sp-3);
+    border-radius: var(--r-sm);
+    background: transparent;
     text-align: left;
   }
 
-  .level:hover:not(:disabled) {
-    background: var(--surface-3);
+  .level.skeleton {
+    margin-bottom: var(--sp-1);
   }
 
-  .level.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
+  .level:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .level.on:hover {
+    background: transparent;
+  }
+
+  .level:active {
+    transform: none;
   }
 
   .level:disabled {
@@ -404,63 +427,39 @@
   }
 
   .l-name {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-weight: 600;
     color: var(--muted);
+    transition: color var(--dur-fast);
   }
 
   .on .l-name {
     color: var(--accent);
   }
 
+  .l-text,
+  .l-gain {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .l-gain {
+    align-items: flex-end;
+    text-align: right;
+  }
+
   .l-what {
-    min-height: 2.8em;
-    font-size: 13px;
-    line-height: 1.4;
-  }
-
-  .l-about {
-    margin-top: 4px;
-    font-size: 11.5px;
-    color: var(--muted);
-  }
-
-  .l-save {
-    font-size: 19px;
-    font-weight: 700;
-  }
-
-  .l-save.none {
-    margin-top: 4px;
-    font-size: 13px;
-    font-weight: 550;
-    color: var(--muted);
-  }
-
-  .l-pct,
-  .l-note {
-    font-size: 11.5px;
-    color: var(--muted);
-  }
-
-  .l-note {
-    color: var(--faint);
+    font-size: var(--fs-control);
   }
 
   .l-loss {
     display: flex;
-    flex-direction: column;
-    gap: 5px;
-    margin-top: 8px;
-    padding-top: 8px;
-    width: 100%;
-    border-top: 1px solid var(--line);
-    font-size: 12px;
-    line-height: 1.35;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
     color: var(--muted);
+    font-size: var(--fs-sm);
   }
 
   .l-loss.warm {
@@ -473,11 +472,12 @@
 
   .meter {
     display: flex;
-    gap: 3px;
+    flex-shrink: 0;
+    gap: 2px;
   }
 
   .meter i {
-    width: 14px;
+    width: 9px;
     height: 4px;
     border-radius: 2px;
     background: var(--surface-3);
@@ -487,42 +487,41 @@
     background: currentColor;
   }
 
-  .option {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 2px 0;
-    border-top: 1px solid var(--line);
+  .l-save b {
+    font-size: var(--fs-md);
+    font-weight: 650;
   }
 
-  .o-text {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .o-title {
-    font-size: 13px;
-    font-weight: 550;
-  }
-
-  .o-hint {
-    font-size: 11.5px;
+  .l-about {
     color: var(--muted);
+    font-size: var(--fs-xs);
+  }
+
+  .l-none {
+    font-size: var(--fs-control);
+    color: var(--muted);
+  }
+
+  .l-pct {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
   }
 
   .warn {
     display: flex;
     align-items: flex-start;
-    gap: 9px;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--r-sm);
+    background: var(--danger-soft);
     color: var(--danger);
-    font-size: 12.5px;
+    font-size: var(--fs-sm);
     line-height: 1.45;
+  }
+
+  .warn :global(.icon) {
+    flex-shrink: 0;
   }
 
   .warn span {
@@ -537,12 +536,12 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 8px;
+    gap: var(--sp-2);
   }
 
   .ask {
     margin-right: auto;
-    font-size: 13px;
+    font-size: var(--fs-control);
   }
 
   button.danger {
@@ -552,67 +551,48 @@
   .bad {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
     margin: 0;
     color: var(--danger);
     line-height: 1.45;
   }
 
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 28px 0;
-    color: var(--muted);
-  }
-
-  .spinner {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .spinner.small {
-    width: 11px;
-    height: 11px;
-  }
-
   .running {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--sp-3);
   }
 
-  .p-label,
-  .p-meta {
+  .p-top {
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    font-size: 13px;
+    align-items: baseline;
+    gap: var(--sp-3);
   }
 
-  .p-meta {
+  .p-pct {
+    min-width: 76px;
+    font-size: var(--fs-2xl);
+    font-weight: 650;
+    letter-spacing: -0.03em;
+  }
+
+  .p-what {
+    flex: 1;
+    min-width: 0;
     color: var(--muted);
-    font-size: 12px;
-  }
-
-  .current {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: var(--fs-control);
   }
 
   .freed {
     flex-shrink: 0;
     color: var(--good);
+    font-size: var(--fs-control);
   }
 
   .track {
+    position: relative;
     height: 6px;
-    border-radius: 3px;
+    border-radius: var(--r-full);
     background: var(--surface-3);
     overflow: hidden;
   }
@@ -620,12 +600,31 @@
   .fill {
     height: 100%;
     background: var(--accent);
-    transition: width 0.2s linear;
+    transform-origin: left;
+    transition: transform var(--dur-slow) var(--ease-out);
+  }
+
+  /* A sheen, so a long clip still looks alive between progress reports. */
+  .track::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 30%, rgba(244, 242, 236, 0.14) 50%, transparent 70%);
+    transform: translateX(-100%);
+    animation: shimmer 1.8s ease-in-out infinite;
+  }
+
+  .current {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: var(--fs-sm);
   }
 
   .hint {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     line-height: 1.5;
     color: var(--muted);
   }
@@ -633,18 +632,18 @@
   .done {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--sp-3);
   }
 
   .result {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 12px 14px;
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--good) 10%, transparent);
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--r-sm);
+    background: var(--good-soft);
     color: var(--good);
-    font-size: 15px;
+    font-size: var(--fs-md);
   }
 
   .result span {
@@ -660,7 +659,7 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    font-size: 11.5px;
+    font-size: var(--fs-xs);
     color: var(--faint);
   }
 
@@ -668,24 +667,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  @keyframes fade {
-    from {
-      opacity: 0;
-    }
-  }
-
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(10px) scale(0.98);
-    }
   }
 </style>

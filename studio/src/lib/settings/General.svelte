@@ -11,6 +11,8 @@
     ["#f4f2ec", "Bone"],
   ] as const;
 
+  const chosen = $derived(accents.findIndex(([color]) => color === prefs.accent));
+
   async function autostart(on: boolean) {
     try {
       await api.setAutostart(on);
@@ -23,19 +25,22 @@
 </script>
 
 <div class="group">
-  <Field title="Start with Windows" hint="Klipp starts in the tray when you sign in, ready to record.">
+  <Field title="Start with Windows" tip="Klipp starts in the tray when you sign in, ready to record.">
     <Toggle checked={recorder.autostart} label="Start with Windows" onchange={autostart} />
   </Field>
-  <Field title="Explain closing the window" hint="Closing this window keeps Klipp in the tray. Shows a reminder when you close it.">
+  <Field title="Explain closing the window" tip="Closing this window keeps Klipp in the tray. Shows a reminder when you close it.">
     <Toggle checked={prefs.closeNotice} label="Explain closing the window" onchange={(v) => setPref("closeNotice", v)} />
   </Field>
+  <Field title="Group clips by session" tip="Clips from one sitting (and one map) are shown together.">
+    <Toggle checked={prefs.groupSessions} label="Group clips by session" onchange={(v) => setPref("groupSessions", v)} />
+  </Field>
   <Field title="Accent color">
-    <div class="swatches" role="radiogroup" aria-label="Accent color">
+    <div class="swatches" role="radiogroup" aria-label="Accent color" style:--i={chosen}>
+      {#if chosen >= 0}<span class="ring" aria-hidden="true"></span>{/if}
       {#each accents as [color, name] (color)}
         <button
           class="swatch"
-          class:on={prefs.accent === color}
-          style="--c: {color}"
+          style:--c={color}
           role="radio"
           aria-checked={prefs.accent === color}
           title={name}
@@ -45,13 +50,10 @@
       {/each}
     </div>
   </Field>
-  <Field title="Group clips by session" hint="Clips from one sitting (and one map) are shown together.">
-    <Toggle checked={prefs.groupSessions} label="Group clips by session" onchange={(v) => setPref("groupSessions", v)} />
-  </Field>
 </div>
 
 <div class="group">
-  <Field title="Run setup diagnostics again" hint="Tests your PC again, shows what Klipp uses on it, and walks through audio, video and saving.">
+  <Field title="Setup diagnostics" tip="Tests your PC again, shows what Klipp uses on it, and walks through audio, video and saving.">
     <button
       onclick={() => {
         ui.setupRerun = true;
@@ -63,18 +65,21 @@
 
 <style>
   .swatches {
+    --size: 24px;
+    --gap: 12px;
+    position: relative;
     display: flex;
-    gap: 10px;
+    gap: var(--gap);
+    padding: var(--sp-1);
   }
 
   .swatch {
-    width: 28px;
-    height: 28px;
+    position: relative;
+    width: var(--size);
+    height: var(--size);
     padding: 0;
     border-radius: 50%;
-    border: 2px solid transparent;
     background: var(--c);
-    box-shadow: inset 0 0 0 3px var(--surface);
   }
 
   .swatch:hover {
@@ -82,7 +87,16 @@
     transform: scale(1.08);
   }
 
-  .swatch.on {
-    border-color: var(--c);
+  /* One ring that travels to the chosen colour. */
+  .ring {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: calc(var(--size) + 8px);
+    height: calc(var(--size) + 8px);
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 2px var(--line-strong);
+    transform: translateX(calc(var(--i) * (var(--size) + var(--gap))));
+    transition: transform var(--dur-spring) var(--spring);
   }
 </style>

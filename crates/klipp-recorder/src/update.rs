@@ -9,7 +9,7 @@
 //! normal releases counts.
 //!
 //! The check asks klipp.dev first, which answers with the same manifest and
-//! counts active installs from the random install number it's sent (D43);
+//! counts active installs from the random install number it's sent;
 //! GitHub directly if klipp.dev can't be reached. "Check for updates" off in
 //! Settings → Advanced stops it altogether.
 
@@ -51,7 +51,7 @@ pub fn available() -> Option<String> {
 }
 
 /// Whether a game is in front (the main loop says, every couple of
-/// seconds): checks wait for the PC to be idle (IDEA-43).
+/// seconds): checks wait for the PC to be idle.
 pub fn set_in_game(in_game: bool) {
     IN_GAME.store(in_game, AtomicOrdering::Relaxed);
 }
