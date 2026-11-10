@@ -31,6 +31,7 @@ mod hudtest;
 mod league;
 mod log;
 mod logsend;
+mod minecraft;
 mod mmcss;
 mod monitors;
 mod overlay;

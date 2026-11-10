@@ -91,7 +91,7 @@
   let flat = $derived(sessions.flatMap((s) => s.clips));
 
   // Event chips: what's in the current folder/kind/search, most notable first.
-  const CHIP_EVENTS = /^(\d+k|ace|penta|headshot|knife|zeus|mvp|death|teamace|firstblood|steal|goal|epicsave|save|demolition)$/;
+  const CHIP_EVENTS = /^(\d+k|ace|penta|headshot|knife|zeus|mvp|death|teamace|firstblood|steal|goal|epicsave|save|demolition|milestone)$/;
   let chips = $derived.by(() => {
     const m = new Map<string, number>();
     for (const c of library.clips) {

@@ -28,6 +28,7 @@
     { id: "league", name: "League of Legends", icon: "objective", how: EVENTS, short: EVENTS_SHORT, sees: "Multi-kills, first bloods, steals, aces" },
     { id: "rocket_league", name: "Rocket League", icon: "goal", how: EVENTS, short: EVENTS_SHORT, sees: "Goals, epic saves, demolitions" },
     { id: "fortnite", name: "Fortnite", icon: "kill", how: "Recorded by reading the screen · Anti-cheat safe", short: "Reads the screen · Anti-cheat safe", sees: "Eliminations, knocks, Victory Royales" },
+    { id: "minecraft", name: "Minecraft", icon: "milestone", how: "Recorded from the game's log · Anti-cheat safe", short: "Game log · Anti-cheat safe", sees: "PvP kills, goals, challenges" },
   ] as const;
   // Fortnite's switch lives in fortnite.json, not in the settings.
   let fortnite = $state(true);
@@ -66,6 +67,13 @@
     ["demolition", "demolition", "Demolitions"],
     ["save", "save", "Every save"],
     ["assist", "assist", "Assists"],
+  ];
+
+  const minecraftEvents: readonly Moment[] = [
+    ["any_kill", "kill", "Every kill", "Players you take down. The game doesn't log mob kills."],
+    ["milestone", "milestone", "Goals and challenges", "The rare advancements, like Free the End."],
+    ["advancement", "advancement", "Every advancement", "There are lots of these; good for a first playthrough."],
+    ["death", "death", "Deaths"],
   ];
 
   /** Fortnite clips all of these; there's nothing to choose. */
@@ -161,6 +169,20 @@
           {@render moments("rocket_league", rocketEvents)}
         </div>
         <p class="note">Assists, saves and the result are marked on the timeline of every clip.</p>
+      {:else if current.id === "minecraft"}
+        <p class="note">Java Edition, from the official launcher. Bedrock isn't covered.</p>
+        <div class="group" class:disabled={!a.enabled || !on}>
+          <Field title="Multi-kills" tip={`Clip kills within ${gap} s of each other, starting from this many.`}>
+            <Segmented
+              value={s.auto_clip.minecraft.multi_kill_min}
+              label="Minecraft multi-kills"
+              options={[[0, "Off"], [2, "2"], [3, "3"], [4, "4"], [5, "5"]]}
+              onchange={(v) => set(["auto_clip", "minecraft", "multi_kill_min"], v)}
+            />
+          </Field>
+          {@render moments("minecraft", minecraftEvents)}
+        </div>
+        <p class="note">Advancements and deaths are marked on the timeline of every clip.</p>
       {/if}
     {:else}
       {#if !a.enabled}
