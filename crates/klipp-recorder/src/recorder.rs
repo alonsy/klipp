@@ -242,6 +242,11 @@ impl Recorder {
         &self.settings
     }
 
+    /// The save key while Klipp holds it: manual clipping on, registered, not lent to the window.
+    pub fn held_hotkey(&self) -> Option<Hotkey> {
+        if self.hotkey_registered && self.settings.replay.manual { Hotkey::parse(&self.settings.replay.hotkey).ok() } else { None }
+    }
+
     /// False if another app holds the configured hotkey (there's none to hold
     /// with manual clipping off).
     pub fn hotkey_registered(&self) -> bool {

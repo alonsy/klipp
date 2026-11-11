@@ -26,6 +26,7 @@ mod guard;
 mod gpu;
 mod hotkey;
 mod installlog;
+mod keywatch;
 mod gpuload;
 mod hudtest;
 mod league;
@@ -358,6 +359,17 @@ fn schedule_save(pending: &mut Option<(usize, i64)>) {
     }
 }
 
+/// A manual save (save key or tray menu): the sound and the pill right away,
+/// the clip once the audio has caught up.
+fn manual_press(recorder: &mut Recorder, indicators: &mut overlay::Indicators, pending: &mut Option<(usize, i64)>) {
+    let ok = recorder.press();
+    indicate(indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
+    schedule_save(pending);
+    if let Some(hud) = recorder.hud.as_mut() {
+        hud.marker("save key");
+    }
+}
+
 /// Opens a folder or file with its default app (Notepad for files without one).
 fn open_path(path: &Path) {
     let target = HSTRING::from(path.as_os_str());
@@ -483,6 +495,9 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut auto_install = autoinstall::AutoInstall::default();
     let mut cleanup = cleanup::Cleanup::new();
     let mut voice_watcher = voice::VoiceWatcher::new(MAIN_THREAD.load(Ordering::Relaxed));
+    // For games that keep the save key from Windows (League of Legends in a match).
+    let mut save_key = keywatch::SaveKey::new();
+    save_key.watch(recorder.held_hotkey());
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if !msg.hwnd.is_invalid() {
@@ -491,11 +506,17 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         }
         match msg.message {
             WM_HOTKEY if msg.wParam.0 == HOTKEY_SAVE as usize => {
-                let ok = recorder.press();
-                indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
-                schedule_save(&mut pending_save);
-                if let Some(hud) = recorder.hud.as_mut() {
-                    hud.marker("save key");
+                if save_key.hotkey(msg.time) {
+                    info!("hotkey: pressed ({} in front)", games::in_front(&recorder.settings().games));
+                    manual_press(&mut recorder, &mut indicators, &mut pending_save);
+                }
+            }
+            keywatch::WM_SAVE_KEY_SEEN => save_key.seen(msg.lParam.0 as u32),
+            WM_TIMER if save_key.owns(msg.wParam.0) => {
+                if save_key.expired() {
+                    let key = &recorder.settings().replay.hotkey;
+                    info!("hotkey: {key} was pressed but Windows didn't pass it on ({} in front); saving anyway", games::in_front(&recorder.settings().games));
+                    manual_press(&mut recorder, &mut indicators, &mut pending_save);
                 }
             }
             voice::WM_VOICE_SAVE => {
@@ -510,14 +531,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             }
             WM_TIMER if indicators.owns(msg.wParam.0) => indicators.tick(),
             WM_TRAY_COMMAND => match Command::from_wparam(msg.wParam.0) {
-                Some(Command::SaveClip) => {
-                    let ok = recorder.press();
-                    indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
-                    schedule_save(&mut pending_save);
-                    if let Some(hud) = recorder.hud.as_mut() {
-                        hud.marker("save key");
-                    }
-                }
+                Some(Command::SaveClip) => manual_press(&mut recorder, &mut indicators, &mut pending_save),
                 Some(Command::OpenClips) => {
                     let dir = recorder.settings().storage.clips_dir();
                     let _ = fs::create_dir_all(&dir);
@@ -630,6 +644,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                         }
                     }
                 }
+                // After a new key, a lend to the window or getting a taken key back.
+                save_key.watch(recorder.held_hotkey());
             }
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());

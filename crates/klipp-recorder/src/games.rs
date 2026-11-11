@@ -65,6 +65,16 @@ impl GameTracker {
     }
 }
 
+/// The game in front right now and its program, for the log ("League of
+/// Legends (League of Legends.exe)"), or "no game". Other programs aren't named.
+pub fn in_front(custom: &BTreeMap<String, String>) -> String {
+    let exe = foreground_exe();
+    match exe.as_deref().and_then(|e| Some((game_name(e, custom)?, e.file_name()?.to_string_lossy()))) {
+        Some((name, file)) => format!("{name} ({file})"),
+        None => "no game".into(),
+    }
+}
+
 fn foreground_exe() -> Option<PathBuf> {
     unsafe {
         let hwnd = GetForegroundWindow();
