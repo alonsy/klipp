@@ -22,6 +22,7 @@ use crate::games::GameTracker;
 use crate::hotkey::Hotkey;
 use crate::league::{self, LeagueIntegration};
 use crate::log::{info, warning};
+use crate::minecraft::{self, MinecraftIntegration};
 use crate::replay::{Clip, ReplayBuffer};
 use crate::rocketleague::{self, RocketLeagueIntegration};
 use crate::save::{ClipKind, SaveJob, Saver};
@@ -65,6 +66,7 @@ pub struct Recorder {
     cs2: Option<Cs2Integration>,
     league: Option<LeagueIntegration>,
     rocket_league: Option<RocketLeagueIntegration>,
+    minecraft: Option<MinecraftIntegration>,
     /// Events from every game integration, with the game's name.
     events_tx: Sender<(String, GameEvent)>,
     events_rx: Receiver<(String, GameEvent)>,
@@ -142,7 +144,15 @@ fn creator_changed() -> Option<SystemTime> {
 /// The programs of the games Klipp auto-clips, with auto-clips on for them.
 fn autoclipped_exes(s: &Settings) -> Vec<&'static str> {
     let a = &s.auto_clip;
-    let games = [(a.cs2.enabled, "cs2.exe"), (a.league.enabled, "league of legends.exe"), (a.rocket_league.enabled, "rocketleague.exe"), (crate::fortnite::enabled(), "fortniteclient-win64-shipping.exe")];
+    // Minecraft Java runs as javaw.exe, which other Java programs share: with
+    // manual clipping off, any of them running turns recording on.
+    let games = [
+        (a.cs2.enabled, "cs2.exe"),
+        (a.league.enabled, "league of legends.exe"),
+        (a.rocket_league.enabled, "rocketleague.exe"),
+        (crate::fortnite::enabled(), "fortniteclient-win64-shipping.exe"),
+        (a.minecraft.enabled, "javaw.exe"),
+    ];
     if !a.enabled {
         return Vec::new();
     }
@@ -189,6 +199,7 @@ impl Recorder {
             cs2: None,
             league: None,
             rocket_league: None,
+            minecraft: None,
             events_tx,
             events_rx,
             burst: None,
@@ -465,6 +476,7 @@ impl Recorder {
         let cs2_changed = all_changed || was.cs2.enabled != is.cs2.enabled || was.cs2.port != is.cs2.port || was.cs2.debug_log != is.cs2.debug_log;
         let league_changed = all_changed || was.league.enabled != is.league.enabled;
         let rocket_league_changed = all_changed || was.rocket_league.enabled != is.rocket_league.enabled;
+        let minecraft_changed = all_changed || was.minecraft.enabled != is.minecraft.enabled || was.minecraft.log != is.minecraft.log;
 
         if limits_changed {
             let (window, max_bytes) = buffer_limits(&self.settings, &self.creator);
@@ -490,6 +502,10 @@ impl Recorder {
         if rocket_league_changed {
             self.rocket_league = None;
             self.start_rocket_league();
+        }
+        if minecraft_changed {
+            self.minecraft = None;
+            self.start_minecraft();
         }
         // While paused or standing by nothing is running; starting again uses the new settings.
         if (video_changed || audio_changed) && !self.paused && !self.standby {
@@ -781,6 +797,7 @@ impl Recorder {
         self.start_cs2();
         self.start_league();
         self.start_rocket_league();
+        self.start_minecraft();
     }
 
     fn start_cs2(&mut self) {
@@ -816,13 +833,25 @@ impl Recorder {
         }
     }
 
-    /// League's and Rocket League's own rules, with the shared timing.
+    fn start_minecraft(&mut self) {
+        let a = &self.settings.auto_clip;
+        if !(a.enabled && a.minecraft.enabled) {
+            return;
+        }
+        match MinecraftIntegration::start(&a.minecraft, self.events_tx.clone()) {
+            Ok(i) => self.minecraft = i,
+            Err(e) => warning!("minecraft: integration failed to start: {e:#}"),
+        }
+    }
+
+    /// League's, Rocket League's and Minecraft's own rules, with the shared timing.
     fn set_game_rules(&mut self) {
         let base = self.settings.autoclip_rules();
         let a = &self.settings.auto_clip;
         self.autoclip.set_game_rules(league::GAME_NAME, league::rules(&base, &a.league));
         self.autoclip.set_game_rules(rocketleague::GAME_NAME, rocketleague::rules(&base, &a.rocket_league));
         self.autoclip.set_game_rules(crate::fortnite::GAME_NAME, crate::fortnite::rules(&base));
+        self.autoclip.set_game_rules(minecraft::GAME_NAME, minecraft::rules(&base, &a.minecraft));
     }
 
     fn register_hotkey(&mut self) {
@@ -885,6 +914,7 @@ impl Drop for Recorder {
         self.cs2 = None;
         self.league = None;
         self.rocket_league = None;
+        self.minecraft = None;
         self.stop_camera();
         self.video = None;
         self.audio = None;

@@ -108,10 +108,21 @@ save = false             # your saves (always marked)
 epic_save = true
 demolition = true        # cars you demolished
 
+[auto_clip.minecraft]
+# Minecraft Java Edition. Klipp reads the game's own log (logs\latest.log);
+# nothing to install. Kills are PvP only: the game doesn't log mob kills.
+enabled = true
+multi_kill_min = 2       # clip kills close together from this many (0 = off)
+any_kill = true          # every player you kill
+death = false
+advancement = false      # every advancement (there are many)
+milestone = true         # goals and challenges, like "Free the End"
+log = ""                 # another launcher's latest.log; empty = the official launcher's
+
 # Different timing for specific events. Event names: kill, headshot, 2k, 3k,
 # 4k, ace, multikill (all of 2k to ace or penta), knife, zeus, death, mvp,
 # penta, firstblood, steal, objective, teamace, assist, goal, save, epicsave,
-# demolition. For example:
+# demolition, advancement, milestone. For example:
 # [auto_clip.timing.ace]
 # pre_roll_secs = 20
 

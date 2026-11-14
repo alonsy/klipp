@@ -44,6 +44,10 @@ const EVENTS: Record<string, string> = {
   epicsave: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 10 L82 22 V46 C82 66 68 82 50 90 C32 82 18 66 18 46 V22 Z"/></g><path d="M50 32 L54.1 42.3 L65.2 43.1 L56.7 50.2 L59.4 60.9 L50 55 L40.6 60.9 L43.3 50.2 L34.8 43.1 L45.9 42.3 Z" fill="${A}"/>`,
   // A burst around an accent core.
   demolition: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 10 L58.4 29.7 L78.3 21.7 L70.3 41.6 L90 50 L70.3 58.4 L78.3 78.3 L58.4 70.3 L50 90 L41.6 70.3 L21.7 78.3 L29.7 58.4 L10 50 L29.7 41.6 L21.7 21.7 L41.6 29.7 Z"/></g><circle cx="50" cy="50" r="9" fill="${A}"/>`,
+  // Minecraft's advancement tile, an accent gem inside.
+  advancement: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="68" height="68" rx="12"/></g><path d="M50 32 L66 50 L50 68 L34 50 Z" fill="${A}"/>`,
+  // A goal or challenge: the tile turned on its point, the gem in accent.
+  milestone: `<g fill="none" stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"><path d="M50 8 L92 50 L50 92 L8 50 Z"/></g><path d="M50 34 L66 50 L50 66 L34 50 Z" fill="${A}"/>`,
 };
 
 /** Labels drawn with another label's icon: League's pentakill is five kills like an ace. */

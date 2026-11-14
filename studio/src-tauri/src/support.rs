@@ -127,11 +127,12 @@ fn describe_settings(out: &mut String, s: &Value) {
     let a = &s["auto_clip"];
     let _ = writeln!(
         out,
-        "Auto-clips: {} (CS2 {}, League {}, Rocket League {})",
+        "Auto-clips: {} (CS2 {}, League {}, Rocket League {}, Minecraft {})",
         auto(&a["enabled"]),
         auto(&a["cs2"]["enabled"]),
         auto(&a["league"]["enabled"]),
-        auto(&a["rocket_league"]["enabled"])
+        auto(&a["rocket_league"]["enabled"]),
+        auto(&a["minecraft"]["enabled"])
     );
 }
 

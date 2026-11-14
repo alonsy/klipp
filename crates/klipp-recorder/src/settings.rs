@@ -54,6 +54,7 @@ pub struct AutoClip {
     pub cs2: Cs2,
     pub league: League,
     pub rocket_league: RocketLeague,
+    pub minecraft: Minecraft,
     /// Per-event overrides, keyed by event name.
     pub timing: BTreeMap<String, Timing>,
 }
@@ -68,6 +69,7 @@ impl Default for AutoClip {
             cs2: Cs2::default(),
             league: League::default(),
             rocket_league: RocketLeague::default(),
+            minecraft: Minecraft::default(),
             timing: BTreeMap::new(),
         }
     }
@@ -166,6 +168,29 @@ impl Default for RocketLeague {
     }
 }
 
+/// Minecraft (Java Edition), from its log. Kills are PvP: the game doesn't log mob kills.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Minecraft {
+    pub enabled: bool,
+    /// Clip kills close together from this many; 0 turns them off.
+    pub multi_kill_min: u8,
+    pub any_kill: bool,
+    pub death: bool,
+    /// Every advancement (there are many; off by default).
+    pub advancement: bool,
+    /// Goals and challenges: the rare advancements, like "Free the End".
+    pub milestone: bool,
+    /// The game's latest.log; empty means the official launcher's.
+    pub log: String,
+}
+
+impl Default for Minecraft {
+    fn default() -> Self {
+        Self { enabled: true, multi_kill_min: 2, any_kill: true, death: false, advancement: false, milestone: true, log: String::new() }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Timing {
@@ -176,7 +201,7 @@ pub struct Timing {
 /// Event names allowed under `[auto_clip.timing]`.
 const TIMING_EVENTS: &[&str] = &[
     "kill", "headshot", "2k", "3k", "4k", "ace", "multikill", "knife", "zeus", "death", "mvp", "penta", "firstblood", "steal", "objective",
-    "teamace", "assist", "goal", "save", "epicsave", "demolition",
+    "teamace", "assist", "goal", "save", "epicsave", "demolition", "advancement", "milestone",
 ];
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -423,7 +448,7 @@ impl Settings {
         clamp_to("auto_clip.pre_roll_secs", &mut a.pre_roll_secs, 0.0, 120.0, &mut w);
         clamp_to("auto_clip.post_roll_secs", &mut a.post_roll_secs, 0.0, 60.0, &mut w);
         clamp_to("auto_clip.merge_gap_secs", &mut a.merge_gap_secs, 1.0, 60.0, &mut w);
-        for (game, min) in [("cs2", &mut a.cs2.multi_kill_min), ("league", &mut a.league.multi_kill_min)] {
+        for (game, min) in [("cs2", &mut a.cs2.multi_kill_min), ("league", &mut a.league.multi_kill_min), ("minecraft", &mut a.minecraft.multi_kill_min)] {
             if *min == 1 || *min > 5 {
                 w.push(format!("auto_clip.{game}.multi_kill_min {min} should be 0 (off) or 2-5; using 2"));
                 *min = 2;
@@ -518,6 +543,8 @@ impl Settings {
             save: false,
             epic_save: false,
             demolition: false,
+            advancement: false,
+            milestone: false,
             pre_roll: ticks(a.pre_roll_secs),
             post_roll: ticks(a.post_roll_secs),
             merge_gap: ticks(a.merge_gap_secs),

@@ -26,7 +26,7 @@ const KLIPP_DEV: &str = "https://klipp.dev/api/update";
 /// Settings tables test builds add that releases before them don't know.
 /// Their recorders refuse unknown settings (and fall back to defaults), so
 /// going back to a normal release takes these out first.
-const TEST_ONLY_SETTINGS: &[(&str, &str)] = &[("auto_clip", "league"), ("auto_clip", "rocket_league")];
+const TEST_ONLY_SETTINGS: &[(&str, &str)] = &[("auto_clip", "league"), ("auto_clip", "rocket_league"), ("auto_clip", "minecraft")];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
