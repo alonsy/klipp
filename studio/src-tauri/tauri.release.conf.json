@@ -4,6 +4,12 @@
     "createUpdaterArtifacts": true,
     "resources": {
       "../../target/release/klipp-recorder.exe": "klipp-recorder.exe",
+      "../../target/release/klipp-voice.exe": "klipp-voice.exe",
+      "../../vendor/voice-model/encoder.int8.onnx": "voice-model/encoder.int8.onnx",
+      "../../vendor/voice-model/decoder.onnx": "voice-model/decoder.onnx",
+      "../../vendor/voice-model/joiner.int8.onnx": "voice-model/joiner.int8.onnx",
+      "../../vendor/voice-model/tokens.txt": "voice-model/tokens.txt",
+      "../../crates/klipp-voice/LICENSES.txt": "voice-model/LICENSES.txt",
       "../../vendor/ffmpeg/bin/ffmpeg.exe": "ffmpeg.exe",
       "../../vendor/ffmpeg/bin/ffprobe.exe": "ffprobe.exe",
       "../../vendor/ffmpeg/bin/avcodec-62.dll": "avcodec-62.dll",

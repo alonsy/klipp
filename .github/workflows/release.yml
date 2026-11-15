@@ -34,8 +34,11 @@ jobs:
       - name: FFmpeg (the pinned LGPL build)
         run: ./scripts/fetch-ffmpeg.ps1
 
-      - name: Recorder
-        run: cargo build --release --locked -p klipp-recorder
+      - name: The speech model (pinned)
+        run: ./scripts/fetch-voice-model.ps1
+
+      - name: Recorder and listener
+        run: cargo build --release --locked -p klipp-recorder -p klipp-voice
 
       - name: Interface packages
         working-directory: studio
@@ -46,7 +49,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        # The release config adds the recorder and FFmpeg to the installer, and the update signature.
+        # The release config adds the recorder, the listener, FFmpeg and the model to the installer, and the update signature.
         run: npx tauri build --config src-tauri/tauri.release.conf.json
 
       - name: Draft release

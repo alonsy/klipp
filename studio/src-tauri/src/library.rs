@@ -29,6 +29,8 @@ pub struct Clip {
     pub size_bytes: u64,
     pub favorite: bool,
     pub tracks: Vec<String>,
+    /// Which tracks after Mix carry voices. Empty on older clips.
+    pub voices: Vec<bool>,
     pub events: Vec<Event>,
     /// e.g. "de_mirage" and "competitive", when the game reported them.
     pub map: String,
@@ -37,6 +39,12 @@ pub struct Clip {
     pub thumb: Option<String>,
     /// Trim points and track levels saved by the editor.
     pub edit: Option<Value>,
+    /// Content Creator Mode: the clip has a camera track.
+    pub camera: bool,
+    /// The short made from it in the Content Creation Center.
+    pub short: Option<Value>,
+    /// Auto-backup put it on the person's Klipp account.
+    pub backed_up: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -50,6 +58,8 @@ pub struct Event {
 pub fn list(clips_dir: &Path) -> Vec<Clip> {
     let mut clips = Vec::new();
     let Ok(entries) = fs::read_dir(clips_dir) else { return clips };
+    // What the recorder's auto-backup wrote down; nothing when it never ran.
+    let backup = klipp_cloud::backup::Ledger::load(clips_dir).unwrap_or_default();
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -61,7 +71,10 @@ pub fn list(clips_dir: &Path) -> Vec<Clip> {
             meta::adopt_sidecars(clips_dir, &path);
             for file in fs::read_dir(&path).into_iter().flatten().flatten() {
                 if is_mp4(&file.path()) {
-                    clips.extend(read_clip(clips_dir, &file.path(), &name));
+                    clips.extend(read_clip(clips_dir, &file.path(), &name).map(|mut clip| {
+                        clip.backed_up = klipp_cloud::backup::key_of(&file.path()).is_some_and(|key| backup.backed_up(&key));
+                        clip
+                    }));
                 }
             }
         } else if is_mp4(&path) {
@@ -106,11 +119,15 @@ fn read_clip(clips_dir: &Path, path: &Path, game: &str) -> Option<Clip> {
         size_bytes: meta.len(),
         favorite: info["favorite"].as_bool().unwrap_or(false),
         tracks: info["tracks"].as_array().map(|t| t.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
+        voices: info["voices"].as_array().map(|v| v.iter().map(|b| b.as_bool().unwrap_or(false)).collect()).unwrap_or_default(),
         events,
         map: text("map"),
         mode: text("mode"),
         thumb: thumb.exists().then(|| thumb.to_string_lossy().into_owned()),
         edit: Some(info["edit"].clone()).filter(Value::is_object),
+        camera: info["camera"].as_bool().unwrap_or(false),
+        short: Some(info["short"].clone()).filter(Value::is_object),
+        backed_up: false,
     })
 }
 

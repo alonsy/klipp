@@ -127,6 +127,30 @@ pub fn audio_levels(seconds: u32, mut on_report: impl FnMut(serde_json::Value)) 
     Ok(())
 }
 
+/// Teaching "Klipp that": runs `klipp-recorder --voice-teach` beside the
+/// running recorder and hands each step to `on_step`.
+pub fn voice_teach(mut on_step: impl FnMut(serde_json::Value)) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+    let exe = std::env::current_exe()?.with_file_name("klipp-recorder.exe");
+    let mut child = Command::new(&exe)
+        .arg("--voice-teach")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .spawn()
+        .with_context(|| format!("starting {}", exe.display()))?;
+    let out = child.stdout.take().context("the recorder gave no output")?;
+    for line in BufReader::new(out).lines() {
+        let line = line?;
+        if let Ok(step) = serde_json::from_str(line.trim_start()) {
+            on_step(step);
+        }
+    }
+    child.wait()?;
+    Ok(())
+}
+
 /// Shows an on-screen indicator once through the recorder (`on`, `saved` or
 /// `failed`), on the screen Klipp records.
 pub fn preview_indicator(kind: &str) -> Result<()> {

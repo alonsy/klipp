@@ -11,6 +11,7 @@
   import Toggle from "../ui/Toggle.svelte";
   import Reveal from "./Reveal.svelte";
   import { deviceOptions, devicesOf, matchDevice, set, store } from "./store.svelte";
+  import VoiceClip from "./VoiceClip.svelte";
 
   const s = $derived(store.s!);
   const cue = $derived(store.s!.cue);
@@ -70,6 +71,7 @@
       <span class="value">{fmt(length)}</span>
     </Field>
   </Reveal>
+  <VoiceClip />
   <Field title="Game auto-clips" tip="Klipp saves the best moments of supported games by itself. Pick the games in Auto-clips.">
     <Toggle checked={s.auto_clip.enabled} label="Game auto-clips" onchange={(v) => set(["auto_clip", "enabled"], v)} />
   </Field>

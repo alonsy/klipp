@@ -300,6 +300,14 @@ pub struct Source {
     pub kind: Kind,
 }
 
+impl Source {
+    /// It carries voices, whatever the track is called: a microphone, Discord
+    /// or a device for chat.
+    pub fn voice(&self) -> bool {
+        self.kind != Kind::Loopback || self.device.to_lowercase().contains("chat")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Audio {
@@ -500,6 +508,7 @@ impl Settings {
             death: a.cs2.death,
             mvp: a.cs2.mvp,
             victory: false,
+            knock: false,
             first_blood: false,
             steal: false,
             objective: false,
@@ -512,6 +521,7 @@ impl Settings {
             pre_roll: ticks(a.pre_roll_secs),
             post_roll: ticks(a.post_roll_secs),
             merge_gap: ticks(a.merge_gap_secs),
+            max_chain: 0,
             lateness: 0,
             timing: a.timing.iter().map(|(k, t)| (k.clone(), (t.pre_roll_secs.map(ticks), t.post_roll_secs.map(ticks)))).collect(),
         }

@@ -158,6 +158,8 @@
           </span>
         {/if}
         {#if stat}<span class="stat mono">{stat}</span>{/if}
+        {#if clip.camera}<span class="camera" title="Has your camera"><Icon name="camera" size={14} /></span>{/if}
+        {#if clip.backedUp}<span class="camera" title="Backed up to your Klipp account"><Icon name="cloud" size={14} /></span>{/if}
       </div>
       <div class="more">
         <span class="summary">{summary}</span>
@@ -480,6 +482,14 @@
   .card:has(:focus-visible) .extras {
     opacity: 1;
     transition-duration: var(--dur);
+  }
+
+  /* Part of the card at rest: it says which clips can have you in their short. */
+  .camera {
+    display: inline-flex;
+    flex-shrink: 0;
+    pointer-events: auto;
+    filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--stage) 60%, transparent));
   }
 
   .summary {

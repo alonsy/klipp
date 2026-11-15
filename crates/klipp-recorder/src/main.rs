@@ -9,6 +9,8 @@ mod audio;
 mod autoclip;
 mod autoinstall;
 mod autostart;
+mod backup;
+mod camera;
 mod cancel;
 mod capture;
 mod channel;
@@ -19,11 +21,15 @@ mod cue;
 mod discord;
 mod duplication;
 mod events;
+mod fortnite;
 mod games;
+mod guard;
 mod gpu;
 mod hotkey;
 mod installlog;
+mod keywatch;
 mod gpuload;
+mod hudtest;
 mod league;
 mod log;
 mod logsend;
@@ -49,6 +55,7 @@ mod tray;
 mod tuning;
 mod update;
 mod video;
+mod voice;
 mod watchdog;
 mod wasapi;
 
@@ -84,13 +91,16 @@ struct Args {
 }
 
 const USAGE: &str = "usage: klipp-recorder [--settings FILE]\n       \
-klipp-recorder --list-audio | --list-monitors | --cleanup | --check-update\n       \
+klipp-recorder --list-audio | --list-monitors | --list-cameras | --cleanup | --check-update\n       \
+klipp-recorder [--settings FILE] --backup-now\n       \
+klipp-recorder --probe-camera SECONDS [NAME]\n       \
 klipp-recorder --probe [--monitor ID] [--gpu NAME]\n       \
 klipp-recorder --test-recording SECONDS FILE [--settings FILE]\n       \
 klipp-recorder --show-indicator on|saved|failed\n       \
 klipp-recorder --test-hotkey KEY SECONDS\n       \
 klipp-recorder --test-chat SECONDS FILE.wav [--device NAME]\n       \
 klipp-recorder [--settings FILE] --levels SECONDS\n       \
+klipp-recorder [--settings FILE] --voice-teach\n       \
 klipp-recorder --play-sound [error] [--device NAME] [--volume 0-1]\n\n\
 Settings live in %APPDATA%\\Klipp\\settings.toml (created on first run).";
 
@@ -169,6 +179,11 @@ fn parse_args() -> Result<Args> {
                 selftest::run_levels(seconds.clamp(1, 60), &Settings::load_or_create(&path).unwrap_or_default())?;
                 std::process::exit(0);
             }
+            "--voice-teach" => {
+                let path = a.settings.clone().map_or_else(Settings::default_path, Ok)?;
+                voice::teach(&Settings::load_or_create(&path).unwrap_or_default())?;
+                std::process::exit(0);
+            }
             "--test-hotkey" => {
                 let key = it.next().context("--test-hotkey needs KEY SECONDS")?;
                 let seconds: u32 = it.next().context("--test-hotkey needs KEY SECONDS")?.parse()?;
@@ -179,12 +194,28 @@ fn parse_args() -> Result<Args> {
                 println!("{}", serde_json::to_string(&monitors::list())?);
                 std::process::exit(0);
             }
+            "--list-cameras" => {
+                println!("{}", camera::list_json()?);
+                std::process::exit(0);
+            }
+            "--probe-camera" => {
+                let seconds: u32 = it.next().context("--probe-camera needs SECONDS")?.parse()?;
+                camera::probe(seconds.clamp(1, 60), &it.next().unwrap_or_default())?;
+                std::process::exit(0);
+            }
             "--cleanup" => {
                 cleanup();
                 std::process::exit(0);
             }
             "--play-sound" => {
                 play_sound(it.by_ref())?;
+                std::process::exit(0);
+            }
+            // One auto-backup pass right away (it normally waits for a quiet moment between games).
+            "--backup-now" => {
+                let path = a.settings.clone().map_or_else(Settings::default_path, Ok)?;
+                // A settings file with a mistake stops here: the defaults would name another clips folder.
+                backup::run_now(&Settings::load_or_create(&path)?.storage.clips_dir());
                 std::process::exit(0);
             }
             "--check-update" => {
@@ -337,6 +368,17 @@ fn schedule_save(pending: &mut Option<(usize, i64)>) {
     }
 }
 
+/// A manual save (save key or tray menu): the sound and the pill right away,
+/// the clip once the audio has caught up.
+fn manual_press(recorder: &mut Recorder, indicators: &mut overlay::Indicators, pending: &mut Option<(usize, i64)>) {
+    let ok = recorder.press();
+    indicate(indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
+    schedule_save(pending);
+    if let Some(hud) = recorder.hud.as_mut() {
+        hud.marker("save key");
+    }
+}
+
 /// Opens a folder or file with its default app (Notepad for files without one).
 fn open_path(path: &Path) {
     let target = HSTRING::from(path.as_os_str());
@@ -424,6 +466,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let mut recorder = Recorder::start(settings)?;
     let mut tray = Tray::create(&tooltip(recorder.settings()))?;
+    tray::show_hud_folder(recorder.hud.as_ref().is_some_and(|h| h.pictures()));
     tray.set_performance(recorder.settings().video.performance);
     update::start();
     logsend::start(log_path.clone());
@@ -456,8 +499,15 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut prev = (Instant::now(), stats::sample());
     let mut gpu_load = gpuload::GpuLoad::start();
     let mut pending_save = None;
+    // Shown under the usual tooltip.
+    let mut hud_status = String::new();
     let mut auto_install = autoinstall::AutoInstall::default();
     let mut cleanup = cleanup::Cleanup::new();
+    let mut backup = backup::Backup::new();
+    let mut voice_watcher = voice::VoiceWatcher::new(MAIN_THREAD.load(Ordering::Relaxed));
+    // For games that keep the save key from Windows (League of Legends in a match).
+    let mut save_key = keywatch::SaveKey::new();
+    save_key.watch(recorder.held_hotkey());
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if !msg.hwnd.is_invalid() {
@@ -466,6 +516,20 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
         }
         match msg.message {
             WM_HOTKEY if msg.wParam.0 == HOTKEY_SAVE as usize => {
+                if save_key.hotkey(msg.time) {
+                    info!("hotkey: pressed ({} in front)", games::in_front(&recorder.settings().games));
+                    manual_press(&mut recorder, &mut indicators, &mut pending_save);
+                }
+            }
+            keywatch::WM_SAVE_KEY_SEEN => save_key.seen(msg.lParam.0 as u32),
+            WM_TIMER if save_key.owns(msg.wParam.0) => {
+                if save_key.expired() {
+                    let key = &recorder.settings().replay.hotkey;
+                    info!("hotkey: {key} was pressed but Windows didn't pass it on ({} in front); saving anyway", games::in_front(&recorder.settings().games));
+                    manual_press(&mut recorder, &mut indicators, &mut pending_save);
+                }
+            }
+            voice::WM_VOICE_SAVE => {
                 let ok = recorder.press();
                 indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
                 schedule_save(&mut pending_save);
@@ -477,15 +541,17 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
             }
             WM_TIMER if indicators.owns(msg.wParam.0) => indicators.tick(),
             WM_TRAY_COMMAND => match Command::from_wparam(msg.wParam.0) {
-                Some(Command::SaveClip) => {
-                    let ok = recorder.press();
-                    indicate(&mut indicators, recorder.settings(), if ok { overlay::Indicator::Saved } else { overlay::Indicator::Failed });
-                    schedule_save(&mut pending_save);
-                }
+                Some(Command::SaveClip) => manual_press(&mut recorder, &mut indicators, &mut pending_save),
                 Some(Command::OpenClips) => {
                     let dir = recorder.settings().storage.clips_dir();
                     let _ = fs::create_dir_all(&dir);
                     open_path(&dir);
+                }
+                Some(Command::OpenHudTest) => {
+                    if let Some(hud) = recorder.hud.as_ref() {
+                        let _ = fs::create_dir_all(hud.root());
+                        open_path(hud.root());
+                    }
                 }
                 Some(Command::OpenStudio) => {
                     if !open_studio(&[]) {
@@ -558,6 +624,17 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 if lend_event.is_some_and(|e| unsafe { WaitForSingleObject(e, 0) } == WAIT_OBJECT_0) {
                     recorder.lend_hotkey(LEND_TIME);
                 }
+                let auto_clips = recorder.settings().auto_clip.enabled;
+                if let Some(hud) = recorder.hud.as_mut() {
+                    hud.poll(auto_clips);
+                    let status = hud.status();
+                    if status != hud_status {
+                        let base = tooltip(recorder.settings());
+                        tray.set_tooltip(&if status.is_empty() { base } else { format!("{base}\n{status}") });
+                        hud_status = status;
+                    }
+                }
+                voice_watcher.poll(&recorder.shared);
                 if watcher.poll() {
                     match Settings::load_or_create(&settings_path) {
                         Ok(s) if s != *recorder.settings() => {
@@ -577,10 +654,13 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                         }
                     }
                 }
+                // After a new key, a lend to the window or getting a taken key back.
+                save_key.watch(recorder.held_hotkey());
             }
             WM_TIMER if msg.wParam.0 == games_timer => {
                 recorder.games.poll(&recorder.settings().games.clone());
                 recorder.tick_standby();
+                recorder.tick_camera();
                 recorder.check_health();
                 recorder.tick_performance();
                 recorder.retry_hotkey();
@@ -596,6 +676,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 }
                 // Deleting old clips, when that's on: between games, on its own thread.
                 cleanup.tick(&recorder.settings().storage, &game, recorder.saving());
+                // Backing clips up to the person's Klipp account, when they chose that: between games too.
+                backup.tick(&recorder.settings().storage, &game, recorder.saving());
             }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {
@@ -610,6 +692,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let shared = recorder.shared.clone();
     drop(tray);
+    backup.stop();
     // Stops capture and waits for queued clips to finish writing.
     drop(recorder);
     log_stats(&shared, prev);

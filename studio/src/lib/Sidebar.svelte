@@ -148,6 +148,9 @@
       </button>
     {/if}
 
+    <button class="item" class:current={ui.page === "creator"} onclick={() => openPage("creator")}>
+      <Icon name="sparkle" size={16} /><span class="name">Content Creation</span>
+    </button>
     <div class="tools">
       <button class="item" class:current={ui.page === "settings"} onclick={() => openPage("settings")}>
         <Icon name="sliders" size={16} /><span class="name">Settings</span>

@@ -1,0 +1,10 @@
+[package]
+name = "klipp-voice"
+description = "Hears \"Klipp that\" in the microphone audio the recorder hands it."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+sherpa-onnx = "2.0.1"

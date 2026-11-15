@@ -26,6 +26,13 @@
     set(["audio", "sources"], $state.snapshot(sources));
   }
 
+  /** An empty name keeps the one it had. */
+  function rename(src: Source, input: HTMLInputElement) {
+    src.name = input.value.trim() || src.name;
+    input.value = src.name;
+    save();
+  }
+
   const playback = $derived(devicesOf("loopback"));
   const recording = $derived(devicesOf("capture"));
   const sonarFound = $derived(playback.some((n) => n.includes("Sonar - Gaming")) && playback.some((n) => n.includes("Sonar - Chat")));
@@ -151,9 +158,16 @@
   <Reveal open={mode === "sonar"}>
     <div class="tracks">
       {#each sources as src, i (i)}
-        <div class="row">
-          <span class="name">{src.name}</span>
-          <span class="dev">{src.device}</span>
+        <div class="track sonar">
+          <input class="name" value={src.name} aria-label="Track name" onchange={(e) => rename(src, e.currentTarget)} />
+          {#if src.kind === DISCORD}
+            <span class="fixed">Only the Discord app <span class="exp">Experimental</span></span>
+          {:else}
+            <select value={matchDevice(src.kind, src.device)} onchange={(e) => ((src.device = e.currentTarget.value), save())} aria-label="Device">
+              <option value="">Windows default</option>
+              {#each deviceOptions(src.kind, src.device) as name (name)}<option value={name}>{name}</option>{/each}
+            </select>
+          {/if}
         </div>
       {/each}
     </div>
@@ -172,7 +186,7 @@
     <div class="tracks">
       {#each sources as src, i (i)}
         <div class="track">
-          <input class="name" value={src.name} aria-label="Track name" onchange={(e) => ((src.name = e.currentTarget.value.trim() || src.name), save())} />
+          <input class="name" value={src.name} aria-label="Track name" onchange={(e) => rename(src, e.currentTarget)} />
           {#if src.kind === DISCORD}
             <span class="fixed">Only the Discord app <span class="exp">Experimental</span></span>
           {:else}
@@ -234,29 +248,20 @@
     flex-direction: column;
   }
 
-  .row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-5);
-    min-height: 40px;
-  }
-
-  .row .name {
-    font-weight: 550;
-  }
-
-  .dev {
-    color: var(--muted);
-    font-size: var(--fs-control);
-  }
-
   .track {
     display: grid;
     grid-template-columns: 112px auto minmax(0, 1fr) 34px;
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-1) 0;
+  }
+
+  .track.sonar {
+    grid-template-columns: 112px minmax(0, 1fr);
+  }
+
+  .sonar .fixed {
+    grid-column: auto;
   }
 
   .track select {

@@ -5,6 +5,8 @@
   import ArrivingPill from "./lib/ArrivingPill.svelte";
   import { installByItself } from "./lib/autoupdate";
   import CloseNotice from "./lib/CloseNotice.svelte";
+  import CreatorCenter from "./lib/creator/CreatorCenter.svelte";
+  import ShortEditor from "./lib/creator/ShortEditor.svelte";
   import Editor from "./lib/Editor.svelte";
   import Library from "./lib/Library.svelte";
   import { viewTransition } from "./lib/motion";
@@ -22,11 +24,16 @@
 
   // What state asks for, and what's on screen. They differ for a moment on every
   // change: the old view has to still be there for the transition to picture it.
-  const wanted = $derived(ui.page === "setup" || ui.page === "pctest" ? ui.page : ui.clip ? `editor:${ui.clip.path}` : ui.page);
+  const wanted = $derived(
+    ui.page === "setup" || ui.page === "pctest" ? ui.page : ui.short ? `short:${ui.short.path}` : ui.clip ? `editor:${ui.clip.path}` : ui.page,
+  );
   let view = $state(untrack(() => wanted));
   /** The clip stays in the editor until the view has changed, even with ui.clip gone. */
   let editing = $state.raw(untrack(() => ui.clip));
   const shownClip = $derived(ui.clip ?? editing);
+  /** The same for the short editor. */
+  let shorting = $state.raw(untrack(() => ui.short));
+  const shownShort = $derived(ui.short ?? shorting);
   /** What to show first is known (a fresh install starts in setup, not the library). */
   let ready = $state(false);
 
@@ -45,14 +52,18 @@
     if (next === untrack(() => view)) return;
     const change = () => {
       editing = ui.clip;
+      shorting = ui.short;
       view = untrack(() => wanted);
     };
     if (!ready) {
       change();
       return;
     }
-    const closing = untrack(() => view).startsWith("editor:");
-    const hero = closing || next.startsWith("editor:");
+    const from = untrack(() => view);
+    // A clip's picture only travels between the library and the editor. Shorts
+    // cover the window too, so the sidebar slides away for them as well.
+    const closing = from.startsWith("editor:") && !next.startsWith("short:");
+    const hero = /^(editor|short):/.test(from) || /^(editor|short):/.test(next);
     viewTransition(async () => {
       change();
       if (!closing) return;
@@ -127,6 +138,10 @@
   <Setup rerun={ui.setupRerun} ondone={tested} />
 {:else if view === "pctest"}
   <Setup pcOnly ondone={tested} />
+{:else if view.startsWith("short:") && shownShort}
+  {#key view}
+    <ShortEditor clip={shownShort} from={ui.shortFrom} />
+  {/key}
 {:else if view.startsWith("editor:") && shownClip}
   {#key view}
     <Editor clip={shownClip} />
@@ -140,6 +155,8 @@
       <div class="page shell-page">
         {#if view === "settings"}
           <SettingsPage />
+        {:else if view === "creator"}
+          <CreatorCenter />
         {:else}
           <Library />
         {/if}

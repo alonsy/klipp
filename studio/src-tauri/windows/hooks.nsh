@@ -113,6 +113,8 @@ FunctionEnd
 !macro StopRecorder
   nsExec::Exec 'taskkill /IM klipp-recorder.exe /F'
   Pop $0
+  nsExec::Exec 'taskkill /IM klipp-voice.exe /F'
+  Pop $0
   ; Windows releases the file a moment after the process is gone.
   Sleep 800
 !macroend

@@ -62,7 +62,11 @@ export class TrackMixer {
   private buffers: AudioBuffer[] = [];
   private gains: GainNode[] = [];
   private sources: AudioBufferSourceNode[] = [];
-  private startedAt = 0;
+  /** Context time and clip time when the tracks last started. */
+  private startedCtx = 0;
+  private startedClip = 0;
+  /** Playback speed; the pitch follows it, like tape. */
+  private rate = 1;
   private playing = false;
   /** True when it plays the separate tracks; false when only the Mix track exists. */
   separate = false;
@@ -111,11 +115,13 @@ export class TrackMixer {
     for (const [i, buffer] of this.buffers.entries()) {
       const src = this.ctx.createBufferSource();
       src.buffer = buffer;
+      src.playbackRate.value = this.rate;
       src.connect(this.gains[i]);
       src.start(0, Math.max(0, time));
       this.sources.push(src);
     }
-    this.startedAt = this.ctx.currentTime - time;
+    this.startedCtx = this.ctx.currentTime;
+    this.startedClip = time;
     this.playing = true;
   }
 
@@ -124,9 +130,26 @@ export class TrackMixer {
     this.playing = false;
   }
 
+  /** Plays faster or slower from where it is now. */
+  setRate(rate: number) {
+    if (rate === this.rate) return;
+    if (this.playing) {
+      this.startedClip = this.position();
+      this.startedCtx = this.ctx.currentTime;
+      for (const s of this.sources) s.playbackRate.value = rate;
+    }
+    this.rate = rate;
+  }
+
   /** Call regularly while the video plays to correct any drift. */
   follow(videoTime: number) {
-    if (this.playing && Math.abs(this.ctx.currentTime - this.startedAt - videoTime) > MAX_DRIFT) this.play(videoTime);
+    // The allowed drift is in heard time: at half speed, half as much of the clip.
+    if (this.playing && Math.abs(this.position() - videoTime) > MAX_DRIFT * this.rate) this.play(videoTime);
+  }
+
+  /** Where in the clip the tracks are now. */
+  private position() {
+    return this.startedClip + (this.ctx.currentTime - this.startedCtx) * this.rate;
   }
 
   close() {

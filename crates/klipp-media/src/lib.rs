@@ -4,6 +4,7 @@
 //! only sees owned types that free their FFmpeg objects when dropped.
 
 mod audio;
+mod camera;
 mod encoder;
 mod error;
 mod hw;
@@ -11,6 +12,7 @@ mod mux;
 mod stream;
 
 pub use audio::{AudioEncoder, SAMPLE_RATE};
+pub use camera::{CAMERA_CLOCK, CameraEncoder};
 pub use encoder::{FramePool, Packet, Vendor, VideoCodec, VideoEncoder, VideoEncoderConfig};
 pub use hw::{HwDevice, HwFrame};
 pub use mux::{Chapter, Mp4Writer};

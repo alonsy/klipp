@@ -140,7 +140,7 @@ fn texture_size(cfg: &VideoEncoderConfig) -> (u32, u32) {
 
 /// AMD's QVBR quality level (1–51, higher is better) for an NVENC-scale
 /// constant-quality value (lower is better): both are QP-like, mirrored.
-fn amf_quality_level(nvenc_cq: u8) -> u8 {
+pub(crate) fn amf_quality_level(nvenc_cq: u8) -> u8 {
     52u8.saturating_sub(nvenc_cq).clamp(1, 51)
 }
 
@@ -401,7 +401,7 @@ fn set_rates(c: &mut ff::AVCodecContext, vendor: Vendor, max_bitrate: u32) {
     };
 }
 
-fn set_opt(obj: *mut std::ffi::c_void, name: &str, value: &str) -> Result<()> {
+pub(crate) fn set_opt(obj: *mut std::ffi::c_void, name: &str, value: &str) -> Result<()> {
     let (n, v) = (CString::new(name)?, CString::new(value)?);
     check(unsafe { ff::av_opt_set(obj, n.as_ptr(), v.as_ptr(), 0) }, &format!("setting encoder option {name}={value}"))?;
     Ok(())

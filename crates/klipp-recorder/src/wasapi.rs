@@ -1,12 +1,16 @@
 //! WASAPI capture: what a playback device is playing (loopback) or what a
 //! microphone hears, converted by Windows to 48 kHz stereo float.
 
+use std::cell::Cell;
 use std::slice;
 
 use anyhow::Result;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ};
+
+use crate::clock;
+use crate::log::warning;
 
 /// Where a track's audio comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +31,49 @@ const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 const CHANNELS: usize = 2;
 /// WASAPI's own buffer. We read every 10 ms, so this leaves plenty of slack.
 const BUFFER_100NS: i64 = 2_000_000;
+/// No packet can be older than that buffer, or from the future: a device whose
+/// times are further off than this keeps a clock of its own.
+const CLOCK_TOLERANCE: i64 = clock::SECOND;
+/// A device whose clock keeps moving is logged at most this often.
+const CLOCK_LOG_EVERY: i64 = 600 * clock::SECOND;
+
+/// Puts a device's packet times on the shared clock. Some drivers stamp their
+/// packets with a clock of their own (SteelSeries Sonar's microphone was 102
+/// hours off), and that sound landed outside the timeline as silence. Such a
+/// device is timed by when its packets arrive, keeping the device's spacing.
+#[derive(Clone, Copy, Default)]
+struct DeviceClock {
+    /// Added to the device's times; 0 while its clock is right.
+    offset: i64,
+    /// How often the offset was set, and until when that isn't logged again.
+    moves: u32,
+    quiet_until: i64,
+}
+
+impl DeviceClock {
+    /// When a packet of `frames` stamped `stamp` began, read at `now`; and, to
+    /// log, how far off the device's clock was and how often it moved so far.
+    fn place(&mut self, stamp: i64, frames: usize, now: i64) -> (i64, Option<(i64, u32)>) {
+        let time = stamp + self.offset;
+        if (now - time).abs() <= CLOCK_TOLERANCE {
+            return (time, None);
+        }
+        let arrived = now - frames as i64 * clock::SECOND / klipp_media::SAMPLE_RATE as i64;
+        self.offset = arrived - stamp;
+        self.moves += 1;
+        if now < self.quiet_until {
+            return (arrived, None);
+        }
+        self.quiet_until = now + CLOCK_LOG_EVERY;
+        (arrived, Some((now - stamp, self.moves)))
+    }
+}
+
+/// "102.5 hours" or "3.2 s".
+fn span(t: i64) -> String {
+    let s = t as f64 / clock::SECOND as f64;
+    if s.abs() >= 3600.0 { format!("{:.1} hours", s / 3600.0) } else { format!("{s:.1} s") }
+}
 
 fn enumerator() -> Result<IMMDeviceEnumerator> {
     Ok(unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? })
@@ -90,6 +137,7 @@ pub fn find_device(name: &str, kind: SourceKind) -> Result<Option<IMMDevice>> {
 pub struct Capturer {
     client: IAudioClient,
     capture: IAudioCaptureClient,
+    times: Cell<DeviceClock>,
     pub device_name: String,
 }
 
@@ -119,7 +167,7 @@ impl Capturer {
             client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &format, None)?;
             let capture: IAudioCaptureClient = client.GetService()?;
             client.Start()?;
-            Ok(Some(Self { client, capture, device_name }))
+            Ok(Some(Self { client, capture, times: Cell::default(), device_name }))
         }
     }
 
@@ -146,7 +194,7 @@ impl Capturer {
             client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &format, None)?;
             let capture: IAudioCaptureClient = client.GetService()?;
             client.Start()?;
-            Ok(Self { client, capture, device_name: name.into() })
+            Ok(Self { client, capture, times: Cell::default(), device_name: name.into() })
         }
     }
 
@@ -160,7 +208,15 @@ impl Capturer {
                 self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc))?;
                 let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null();
                 let samples = (!silent).then(|| slice::from_raw_parts(data as *const f32, frames as usize * CHANNELS));
-                on_packet(qpc as i64, samples, frames as usize);
+                let mut times = self.times.get();
+                let (time, moved) = times.place(qpc as i64, frames as usize, clock::now());
+                self.times.set(times);
+                match moved {
+                    Some((off, 1)) => warning!("audio: {}: its clock is {} off; timing its sound by when it arrives", self.device_name, span(off)),
+                    Some((off, n)) => warning!("audio: {}: its clock moved again ({n} times so far, now {} off)", self.device_name, span(off)),
+                    None => {}
+                }
+                on_packet(time, samples, frames as usize);
                 self.capture.ReleaseBuffer(frames)?;
             }
         }

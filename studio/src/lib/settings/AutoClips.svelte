@@ -1,4 +1,5 @@
 <script lang="ts">
+  import * as api from "../api";
   import Icon from "../Icon.svelte";
   import { enter } from "../motion";
   import Field from "../ui/Field.svelte";
@@ -26,7 +27,17 @@
     { id: "cs2", name: "Counter-Strike 2", icon: "headshot", how: EVENTS, short: EVENTS_SHORT, sees: "Headshots, multi-kills, clutches" },
     { id: "league", name: "League of Legends", icon: "objective", how: EVENTS, short: EVENTS_SHORT, sees: "Multi-kills, first bloods, steals, aces" },
     { id: "rocket_league", name: "Rocket League", icon: "goal", how: EVENTS, short: EVENTS_SHORT, sees: "Goals, epic saves, demolitions" },
+    { id: "fortnite", name: "Fortnite", icon: "kill", how: "Recorded by reading the screen · Anti-cheat safe", short: "Reads the screen · Anti-cheat safe", sees: "Eliminations, knocks, Victory Royales" },
   ] as const;
+  // Fortnite's switch lives in fortnite.json, not in the settings.
+  let fortnite = $state(true);
+  api.fortniteEnabled().then((v) => (fortnite = v));
+  const enabled = (id: string) => (id === "fortnite" ? fortnite : !!s.auto_clip[id]?.enabled);
+  function setGame(id: string, on: boolean) {
+    if (id !== "fortnite") return set(["auto_clip", id, "enabled"], on);
+    fortnite = on;
+    api.setFortniteEnabled(on);
+  }
   const current = $derived(games.find((g) => g.id === open));
 
   /** One game's moments: settings key, icon, name, and a tooltip when the name doesn't say it all. */
@@ -56,6 +67,13 @@
     ["save", "save", "Every save"],
     ["assist", "assist", "Assists"],
   ];
+
+  /** Fortnite clips all of these; there's nothing to choose. */
+  const fortniteMoments: readonly (readonly [icon: string, title: string, tip?: string])[] = [
+    ["kill", "Eliminations", "Every one is a clip; close ones become one."],
+    ["knock", "Knocks"],
+    ["victory", "Victory Royales"],
+  ];
 </script>
 
 {#snippet moments(game: string, list: readonly Moment[])}
@@ -73,7 +91,7 @@
 {#key open}
   <div class="view" in:enter={{ x: open ? 16 : -16, y: 0 }}>
     {#if current}
-      {@const on = s.auto_clip[current.id].enabled}
+      {@const on = enabled(current.id)}
       <button class="ghost back" onclick={() => (open = null)}><Icon name="back" size={15} />Auto-clips</button>
       <div class="game-head">
         <Icon event={current.icon} size={26} />
@@ -81,7 +99,7 @@
           <span class="game">{current.name}</span>
           <span class="how"><Icon name="shield" size={13} />{current.how}</span>
         </div>
-        <Toggle checked={on} label="{current.name} auto-clips" onchange={(v) => set(["auto_clip", current.id, "enabled"], v)} />
+        <Toggle checked={on} label="{current.name} auto-clips" onchange={(v) => setGame(current.id, v)} />
       </div>
 
       {#if current.id === "cs2"}
@@ -124,6 +142,19 @@
           {@render moments("league", leagueEvents)}
         </div>
         <p class="note">Assists, objectives and the result are marked on the timeline of every clip.</p>
+      {:else if current.id === "fortnite"}
+        <p class="note">Needs a 16:9 screen, fullscreen, and the default HUD.</p>
+        <div class="group" class:disabled={!a.enabled || !on}>
+          <div class="moments">
+            {#each fortniteMoments as [icon, title, tip] (icon)}
+              <div class="moment still" data-tip={tip}>
+                <Icon event={icon} size={18} />
+                <span class="m-name">{title}{#if tip}<button type="button" class="ghost tip" title={tip} aria-label={tip}><Icon name="info" size={14} /></button>{/if}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+        <p class="note">If clips start looking wrong, Klipp pauses them.</p>
       {:else if current.id === "rocket_league"}
         <p class="note">Restart Rocket League once after turning it on.</p>
         <div class="group" class:disabled={!a.enabled || !on}>
@@ -142,14 +173,14 @@
 
       <div class="tiles" class:disabled={!a.enabled}>
         {#each games as g (g.id)}
-          {@const on = s.auto_clip[g.id].enabled}
+          {@const on = enabled(g.id)}
           <div class="tile" class:on>
             <button class="open" title={g.short} onclick={() => (open = g.id)} aria-label="{g.name} settings">
               <span class="mark"><Icon event={g.icon} size={24} /></span>
               <span class="name">{g.name}</span>
               <span class="sees">{g.sees}</span>
             </button>
-            <span class="switch"><Toggle checked={on} label="{g.name} auto-clips" onchange={(v) => set(["auto_clip", g.id, "enabled"], v)} /></span>
+            <span class="switch"><Toggle checked={on} label="{g.name} auto-clips" onchange={(v) => setGame(g.id, v)} /></span>
           </div>
         {/each}
       </div>
@@ -196,7 +227,7 @@
 
   .tiles {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--sp-3);
     margin-bottom: var(--sp-2);
   }
@@ -316,9 +347,34 @@
     cursor: pointer;
   }
 
+  .moment.still {
+    cursor: default;
+  }
+
   .m-name {
     flex: 1;
     min-width: 0;
     font-weight: 500;
+  }
+
+  /* These rows have no switch, so this is what the keyboard reaches. It does nothing when pressed. */
+  button.tip {
+    width: 16px;
+    height: 16px;
+    margin-left: var(--sp-2);
+    padding: 0;
+    border-radius: 50%;
+    color: var(--faint);
+    vertical-align: -3px;
+    cursor: help;
+    transition: color var(--dur-fast);
+  }
+
+  button.tip:hover,
+  button.tip:active,
+  button.tip:focus-visible {
+    background: transparent;
+    color: var(--text);
+    transform: none;
   }
 </style>

@@ -31,11 +31,19 @@ export interface Clip {
   sizeBytes: number;
   favorite: boolean;
   tracks: string[];
+  /** Which tracks after Mix carry voices. Empty on older clips. */
+  voices: boolean[];
   events: ClipEvent[];
   map: string;
   mode: string;
   thumb: string | null;
   edit: Edit | null;
+  /** Content Creator Mode: it has a camera track. */
+  camera: boolean;
+  /** The short made from it (Content Creation Center). */
+  short: unknown | null;
+  /** Auto-backup put it on the person's Klipp account. */
+  backedUp: boolean;
 }
 
 export interface Paths {
@@ -114,6 +122,29 @@ export interface TrackLevel {
 export const audioLevels = () => invoke<void>("audio_levels");
 export function onAudioLevels(handler: (tracks: TrackLevel[]) => void): Promise<UnlistenFn> {
   return listen<{ tracks: TrackLevel[] }>("audio-levels", (e) => handler(e.payload.tracks));
+}
+
+/** Fortnite's auto-clips: what the recorder reads from fortnite.json. */
+export const fortniteEnabled = () => invoke<boolean>("fortnite_enabled");
+export const setFortniteEnabled = (enabled: boolean) => invoke<void>("set_fortnite_enabled", { enabled });
+
+/** "Klipp that": what the recorder reads from voice.json. */
+export interface VoiceSettings {
+  enabled: boolean;
+  personal: string[];
+}
+export interface VoiceTeachStep {
+  step: "listen" | "heard" | "retry" | "failed" | "done";
+  take?: number;
+  of?: number;
+  why?: string;
+}
+export const voiceSettings = () => invoke<VoiceSettings>("voice_settings");
+export const setVoiceEnabled = (enabled: boolean) => invoke<void>("set_voice_enabled", { enabled });
+/** Three takes from the microphone; steps arrive through `onVoiceTeach`. */
+export const voiceTeach = () => invoke<void>("voice_teach");
+export function onVoiceTeach(handler: (step: VoiceTeachStep) => void): Promise<UnlistenFn> {
+  return listen<VoiceTeachStep>("voice-teach", (e) => handler(e.payload));
 }
 
 /** Setup's key test: a running recorder lends its key first, then up to 10 s for a press. */
@@ -296,6 +327,10 @@ export interface ExportRequest {
   /** Per separate track, 1 = unchanged, 0 = muted. */
   volumes: number[];
   mixVolume: number;
+  /** 0.5 = half speed. A trimmed copy stays at 1. */
+  speed: number;
+  /** A share export starts with the Klipp tab, burned into the picture: for a link from a Free account. */
+  mark?: boolean;
 }
 
 export const startExport = (request: ExportRequest) => invoke<number>("start_export", { request });
@@ -315,6 +350,169 @@ export async function onExport(handlers: ExportEvents): Promise<() => void> {
       handlers.done(e.payload.id, e.payload.path, e.payload.sizeBytes),
     ),
     listen<{ id: number; error: string }>("export-failed", (e) => handlers.failed(e.payload.id, e.payload.error)),
+  ]);
+  return () => offs.forEach((off) => off());
+}
+
+/** What the account's plan on klipp.dev allows. Sizes are bytes. */
+export interface CloudPlan {
+  id: "free" | "plus" | "pro";
+  storage: number;
+  used: number;
+  maxFile: number;
+  /** Highest resolution as the shorter side (1080 = 1080p). */
+  maxHeight: number;
+  maxFps: number;
+  maxSeconds: number;
+  autoBackup: boolean;
+  /** Clips shared from this account start with the Klipp tab, burned into the video (Free). */
+  mark: boolean;
+}
+
+export interface CloudAccount {
+  handle: string;
+  name: string;
+  avatar: string | null;
+  /** The profile page's address. */
+  profile: string;
+  status: string;
+  plan: CloudPlan;
+  backup: string;
+  /** Seconds since 1970 when auto-backup was turned on; clips saved after it go up. */
+  backupSince: number | null;
+}
+
+/** Who is signed in to klipp.dev on this PC; nobody is fine, Klipp works without an account. */
+export interface CloudStatus {
+  signedIn: boolean;
+  /** Missing while signed in when klipp.dev couldn't be reached (`error` says why). */
+  account: CloudAccount | null;
+  error: string | null;
+  /** Clips from this PC that auto-backup put on the account. */
+  backedUp: number;
+}
+
+/** The code shown while the browser is open on klipp.dev's approval page. */
+export interface CloudLink {
+  code: string;
+  url: string;
+  expiresIn: number;
+}
+
+export interface CloudLinkEnd {
+  state: "linked" | "denied" | "expired" | "cancelled" | "failed";
+  handle: string | null;
+  error: string | null;
+}
+
+export const cloudStatus = () => invoke<CloudStatus>("cloud_status");
+/** Starts signing in: opens the browser and resolves with the code; how it ends arrives through `onCloudLink`. */
+export const cloudLink = () => invoke<CloudLink>("cloud_link");
+export const cloudLinkCancel = () => invoke<void>("cloud_link_cancel");
+/** Signs this PC out. False when klipp.dev couldn't be told (it's signed out here either way). */
+export const cloudSignOut = () => invoke<boolean>("cloud_sign_out");
+
+export function onCloudLink(handler: (end: CloudLinkEnd) => void): Promise<UnlistenFn> {
+  return listen<CloudLinkEnd>("cloud-link", (e) => handler(e.payload));
+}
+
+export type CloudVisibility = "unlisted" | "public" | "private";
+
+export interface CloudUpload {
+  /** A clip in the clips folder (an export, usually). */
+  path: string;
+  title: string;
+  game: string | null;
+  /** Moments in the clip: "ace", "headshot"… */
+  tags: string[];
+  map: string | null;
+  visibility: CloudVisibility;
+  durationSecs: number | null;
+  /** The export burned the Klipp tab into this file, so the site doesn't show it again. */
+  marked: boolean;
+}
+
+export const cloudUpload = (request: CloudUpload) => invoke<number>("cloud_upload", { request });
+export const cloudCancelUpload = (id: number) => invoke<void>("cloud_cancel_upload", { id });
+
+export interface CloudUploadEvents {
+  progress: (id: number, fraction: number) => void;
+  done: (id: number, url: string, visibility: CloudVisibility) => void;
+  failed: (id: number, error: string, why: { cancelled: boolean; signedOut: boolean }) => void;
+}
+
+/** Subscribes to upload events; returns a function that unsubscribes. */
+export async function onCloudUpload(handlers: CloudUploadEvents): Promise<() => void> {
+  const offs: UnlistenFn[] = await Promise.all([
+    listen<{ id: number; fraction: number }>("upload-progress", (e) => handlers.progress(e.payload.id, e.payload.fraction)),
+    listen<{ id: number; url: string; visibility: CloudVisibility }>("upload-done", (e) => handlers.done(e.payload.id, e.payload.url, e.payload.visibility)),
+    listen<{ id: number; error: string; cancelled: boolean; signedOut: boolean }>("upload-failed", (e) =>
+      handlers.failed(e.payload.id, e.payload.error, { cancelled: e.payload.cancelled, signedOut: e.payload.signedOut }),
+    ),
+  ]);
+  return () => offs.forEach((off) => off());
+}
+
+/** Content Creator Mode: what the recorder reads from creator.json. */
+export interface CreatorSettings {
+  enabled: boolean;
+  /** "" = the first camera. */
+  camera: string;
+  height: number;
+  fps: number;
+}
+
+/** What the recorder's camera is doing. */
+export interface CameraStatus {
+  state: "starting" | "recording" | "error" | "off";
+  camera?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  /** Another app had the camera, so Klipp shares it. */
+  shared?: boolean;
+  error?: string;
+}
+
+/** A clip's camera track, copied out for the preview. */
+export interface CameraTrack {
+  path: string;
+  /** Where in the clip its first picture is, in seconds. */
+  offset: number;
+  width: number;
+  height: number;
+}
+
+export const creatorSettings = () => invoke<CreatorSettings>("creator_settings");
+export const setCreatorSettings = (settings: CreatorSettings) => invoke<void>("set_creator_settings", { settings });
+export const cameras = () => invoke<string[]>("cameras");
+export const cameraStatus = () => invoke<CameraStatus>("camera_status");
+export const cameraTrack = (path: string) => invoke<CameraTrack | null>("camera_track", { path });
+export const saveShort = (path: string, project: unknown) => invoke<void>("save_short", { path, project });
+
+/** What the renderer needs (see short.rs). */
+export interface ShortRequest {
+  path: string;
+  start: number;
+  end: number;
+  background: "blur" | "black";
+  camShift: number;
+  game: unknown;
+  camera: unknown | null;
+  badge: { x: number; y: number; width: number; height: number; rgba: number[] } | null;
+  volumes: number[];
+  mixVolume: number;
+  fps: number;
+}
+export const startShort = (request: ShortRequest) => invoke<number>("start_short", { request });
+export const cancelShort = (id: number) => invoke<void>("cancel_short", { id });
+
+/** Subscribes to short render events; returns a function that unsubscribes. */
+export async function onShort(handlers: ExportEvents): Promise<() => void> {
+  const offs: UnlistenFn[] = await Promise.all([
+    listen<{ id: number; fraction: number }>("short-progress", (e) => handlers.progress(e.payload.id, e.payload.fraction)),
+    listen<{ id: number; path: string; sizeBytes: number }>("short-done", (e) => handlers.done(e.payload.id, e.payload.path, e.payload.sizeBytes)),
+    listen<{ id: number; error: string }>("short-failed", (e) => handlers.failed(e.payload.id, e.payload.error)),
   ]);
   return () => offs.forEach((off) => off());
 }

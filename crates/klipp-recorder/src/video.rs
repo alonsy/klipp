@@ -191,6 +191,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             Err(e) => return Err(e),
         };
         *shared.video_stream.lock().unwrap() = Some(encoder.stream_info()?);
+        *shared.vendor.lock().unwrap() = Some(vendor);
         shared.bitrate_adjustable.store(vendor != klipp_media::Vendor::Amd, Ordering::Relaxed);
 
         // Windows sends a first frame right after capture starts.
@@ -402,6 +403,7 @@ fn run(s: &VideoSettings, shared: Arc<Shared>, stop: Arc<AtomicBool>, ready: Syn
             }
             Err(TrySendError::Disconnected(_)) => bail!("the encoder stopped"),
         }
+        shared.hud.tick(&gpu, capture.latest());
         shared.capture_resizes.store(resizes_before + capture.latest().resizes(), Ordering::Relaxed);
         i += 1;
     }

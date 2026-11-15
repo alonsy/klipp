@@ -10,7 +10,7 @@
   import { isHot, mergeMarkers } from "./markers";
   import { DUR, enter, leave, unfold } from "./motion";
   import { EDITOR_KEYS } from "./shortcuts";
-  import { deleteClips, prefs, setClipEdit, setFavorite, setPref, shownThumbs, toast, ui } from "./state.svelte";
+  import { deleteClips, openShort, prefs, setClipEdit, setFavorite, setPref, shownThumbs, toast, ui } from "./state.svelte";
   import Timeline, { type Lane } from "./Timeline.svelte";
   import { swallowPress } from "./ui/clicks";
   import Slider from "./ui/Slider.svelte";
@@ -26,6 +26,9 @@
   const FRAME = 1 / 60;
   /** "Set end" plays this much before the new end, to hear and see the cut. */
   const END_PREVIEW = 2;
+  /** The speeds the speed slider snaps to. */
+  const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+  const NORMAL = SPEEDS.indexOf(1);
 
   let video: HTMLVideoElement;
   let stage: HTMLDivElement;
@@ -55,6 +58,9 @@
   let previewMuted = $state(false);
   let previewLevel = $derived(previewMuted ? 0 : previewVolume);
   let volumeIcon = $derived(previewLevel === 0 ? "mute" : previewLevel < 0.5 ? "volumeLow" : "volume");
+  /** How fast it plays here, as a step of SPEEDS, and exports with it. Each clip opens at 1×. */
+  let speedStep = $state(NORMAL);
+  let speed = $derived(SPEEDS[speedStep]);
   // Fullscreen shows its own small controls, hidden while the mouse rests.
   let isFullscreen = $state(false);
   let fsIdle = $state(false);
@@ -178,6 +184,13 @@
 
   $effect(() => {
     if (video && noAudio) video.volume = Math.min(1, masterLevel * previewLevel);
+  });
+
+  $effect(() => {
+    // Picture and sound both follow the speed; the pitch does too, as it does in the mixer.
+    video.preservesPitch = false;
+    video.playbackRate = video.defaultPlaybackRate = speed;
+    if (audioReady) mixer?.setRate(speed);
   });
 
   function loaded() {
@@ -412,10 +425,13 @@
       case "]":
         jumpMarker(1);
         break;
+      // Kept from a focused slider, which would jump to its own end too (2× speed, no volume).
       case "Home":
+        e.preventDefault();
         seek(inPoint);
         break;
       case "End":
+        e.preventDefault();
         seek(outPoint);
         break;
       case "f":
@@ -469,6 +485,9 @@
       <span class="sub">{subtitle}</span>
     </div>
     <span class="saved" class:show={savedNote}><Icon name="check" size={13} /> Saved</span>
+    <button class="ghost short" onclick={() => openShort(clip, "editor")} title="Make a vertical short">
+      <Icon name="phone" size={16} />Short{#if clip.camera}<Icon name="camera" size={14} />{/if}
+    </button>
     <button class="ghost icon" class:fav={clip.favorite} onclick={() => setFavorite([clip.path], !clip.favorite)} title={clip.favorite ? "Remove from favorites" : "Add to favorites"} aria-label={clip.favorite ? "Remove from favorites" : "Add to favorites"}>
       <Icon name="star" size={17} />
     </button>
@@ -496,7 +515,7 @@
         </div>
       {/if}
     </div>
-    <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} volumes={exportVolumes} mixVolume={masterLevel} />
+    <ExportMenu path={clip.path} {clip} {inPoint} {outPoint} tracks={separate} voices={clip.voices ?? []} volumes={exportVolumes} mixVolume={masterLevel} {speed} />
     <WindowControls />
   </header>
 
@@ -576,6 +595,10 @@
               <button class="fs-btn" onclick={() => (previewMuted = !previewMuted)} aria-label="Mute preview"><Icon name={volumeIcon} size={21} /></button>
               <Slider min={0} max={1} step={0.02} value={previewLevel} label="Preview volume" oninput={setPreview} onchange={(v) => setPref("previewVolume", v)} />
             </div>
+            <div class="fs-speed">
+              <button class="fs-rate mono" onclick={() => (speedStep = NORMAL)} title="Back to 1×">{speed}×</button>
+              <Slider min={0} max={SPEEDS.length - 1} value={speedStep} label="Playback speed" oninput={(i) => (speedStep = i)} />
+            </div>
             <span class="fs-spacer"></span>
             <span class="fs-title">{clipTitle(clip)}</span>
             <button class="fs-btn" onclick={fullscreen} aria-label="Exit fullscreen" title="Exit fullscreen (F)"><Icon name="exitFullscreen" size={21} /></button>
@@ -638,6 +661,19 @@
       <button class="ghost icon" onclick={() => step(1)} title="Next frame (.)" aria-label="Next frame"><Icon name="nextFrame" size={17} /></button>
     </div>
     <div class="t-right">
+      <div class="speed">
+        <button
+          class="ghost rate mono"
+          class:on={speedStep !== NORMAL}
+          aria-label="Playback speed {speed}×"
+          data-tip={speedStep !== NORMAL ? "Back to 1×" : undefined}
+          onclick={() => (speedStep = NORMAL)}>{speed}×</button
+        >
+        <div class="speed-pop">
+          <Slider min={0} max={SPEEDS.length - 1} value={speedStep} label="Playback speed" oninput={(i) => (speedStep = i)} />
+          <span>Only here, not the export</span>
+        </div>
+      </div>
       <div class="preview" title="Preview volume, not the clip's levels (M)">
         <button class="ghost icon" onclick={() => (previewMuted = !previewMuted)} aria-label="Mute preview"><Icon name={volumeIcon} size={18} /></button>
         <Slider min={0} max={1} step={0.02} value={previewLevel} label="Preview volume" oninput={setPreview} onchange={(v) => setPref("previewVolume", v)} />
@@ -750,6 +786,20 @@
 
   .fav {
     color: var(--accent);
+  }
+
+  .short {
+    flex-shrink: 0;
+    gap: 6px;
+    height: 34px;
+    margin-right: var(--sp-1);
+    padding: 0 var(--sp-3) 0 var(--sp-2);
+    color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  .short:hover {
+    color: var(--text);
   }
 
   .fav :global(path) {
@@ -1059,6 +1109,74 @@
     width: 84px;
   }
 
+  .speed {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Wide enough for "0.25×", so nothing moves as the speed changes. */
+  .rate {
+    width: 52px;
+    height: 34px;
+    padding: 0;
+    color: var(--muted);
+    font-size: var(--fs-control);
+  }
+
+  /* Quiet until it's looked for: the slider rises out of the number. */
+  .speed-pop {
+    position: absolute;
+    bottom: calc(100% + var(--sp-2));
+    left: 50%;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    width: 172px;
+    margin-left: -86px;
+    padding: var(--sp-3);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-2);
+    color: var(--faint);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+    transform-origin: bottom center;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(4px) scale(0.98);
+    transition:
+      opacity var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      visibility 0s linear var(--dur-fast);
+  }
+
+  /* Bridges the gap, so moving up from the number keeps it open. */
+  .speed-pop::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    height: var(--sp-2);
+  }
+
+  .speed:hover .speed-pop,
+  .speed:focus-within .speed-pop {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    transition:
+      opacity var(--dur) var(--ease-out),
+      transform var(--dur-spring) var(--spring),
+      visibility 0s;
+  }
+
+  .speed :global(.slider) {
+    width: 100%;
+  }
+
   @media (max-height: 700px) {
     .transport {
       height: 46px;
@@ -1236,6 +1354,30 @@
 
   .fs-volume :global(.slider) {
     width: 120px;
+  }
+
+  .fs-speed {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .fs-rate {
+    width: 64px;
+    height: 46px;
+    padding: 0;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text);
+    font-size: var(--fs-md);
+  }
+
+  .fs-rate:hover {
+    background: var(--press);
+  }
+
+  .fs-speed :global(.slider) {
+    width: 96px;
   }
 
   .fs-spacer {

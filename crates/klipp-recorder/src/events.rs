@@ -22,8 +22,10 @@ pub enum EventKind {
     BombDefused,
     /// You pressed the save hotkey here (marks each press in a merged clip).
     Capture,
-    /// Fortnite: you won the match (FORTNITE TEST BUILD).
+    /// Fortnite: you won the match.
     VictoryRoyale,
+    /// Fortnite: you knocked someone down.
+    Knock,
     /// League: the game's first kill was yours. Comes with the `Kill`.
     FirstBlood,
     /// League: you took a Baron, Dragon or Herald from the other team.
@@ -64,6 +66,7 @@ impl EventKind {
             EventKind::BombDefused => "defuse".into(),
             EventKind::Capture => "capture".into(),
             EventKind::VictoryRoyale => "victory".into(),
+            EventKind::Knock => "knock".into(),
             EventKind::FirstBlood => "firstblood".into(),
             EventKind::Steal => "steal".into(),
             EventKind::Objective => "objective".into(),
@@ -94,6 +97,7 @@ impl EventKind {
             EventKind::BombDefused => "Bomb defused".into(),
             EventKind::Capture => "Saved here".into(),
             EventKind::VictoryRoyale => "Victory Royale".into(),
+            EventKind::Knock => "Knock".into(),
             EventKind::FirstBlood => "First blood".into(),
             EventKind::Steal => "Steal".into(),
             EventKind::Objective => "Objective".into(),
@@ -143,6 +147,7 @@ impl EventKind {
             EventKind::Save => 35,
             EventKind::Mvp => 30,
             EventKind::Kill => 20,
+            EventKind::Knock => 15,
             EventKind::Assist => 15,
             EventKind::Death => 10,
             EventKind::Objective => 8,
