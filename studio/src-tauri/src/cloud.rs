@@ -101,7 +101,8 @@ impl Cloud {
         if !start.verification_uri_complete.starts_with(&format!("{origin}/link?code=")) || start.verification_uri_complete.chars().any(|c| c.is_control() || c == ' ' || c == '"') {
             bail!("klipp.dev sent an address Klipp doesn't recognise");
         }
-        let _ = std::process::Command::new("explorer.exe").arg(&start.verification_uri_complete).spawn();
+        // If the browser can't be opened, the code and "Open the page again" are still on the Account page.
+        let _ = crate::lifecycle::open_url(&start.verification_uri_complete);
 
         let stop = Arc::new(AtomicBool::new(false));
         *self.linking.lock().unwrap() = Some(stop.clone());

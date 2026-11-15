@@ -610,9 +610,12 @@ fn reveal(path: String) -> CmdResult<()> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Opens a file with its default app (e.g. the settings file in a text editor).
+/// Opens a file with its default app (e.g. the settings file in a text editor), or a web address in the browser.
 #[tauri::command]
 fn open_file(path: String) -> CmdResult<()> {
+    if lifecycle::is_web_address(&path) {
+        return lifecycle::open_url(&path).map_err(err);
+    }
     std::process::Command::new("explorer.exe").arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
