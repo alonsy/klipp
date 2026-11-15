@@ -9,6 +9,7 @@ mod audio;
 mod autoclip;
 mod autoinstall;
 mod autostart;
+mod backup;
 mod camera;
 mod cancel;
 mod capture;
@@ -91,6 +92,7 @@ struct Args {
 
 const USAGE: &str = "usage: klipp-recorder [--settings FILE]\n       \
 klipp-recorder --list-audio | --list-monitors | --list-cameras | --cleanup | --check-update\n       \
+klipp-recorder [--settings FILE] --backup-now\n       \
 klipp-recorder --probe-camera SECONDS [NAME]\n       \
 klipp-recorder --probe [--monitor ID] [--gpu NAME]\n       \
 klipp-recorder --test-recording SECONDS FILE [--settings FILE]\n       \
@@ -207,6 +209,13 @@ fn parse_args() -> Result<Args> {
             }
             "--play-sound" => {
                 play_sound(it.by_ref())?;
+                std::process::exit(0);
+            }
+            // One auto-backup pass right away (it normally waits for a quiet moment between games).
+            "--backup-now" => {
+                let path = a.settings.clone().map_or_else(Settings::default_path, Ok)?;
+                // A settings file with a mistake stops here: the defaults would name another clips folder.
+                backup::run_now(&Settings::load_or_create(&path)?.storage.clips_dir());
                 std::process::exit(0);
             }
             "--check-update" => {
@@ -494,6 +503,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
     let mut hud_status = String::new();
     let mut auto_install = autoinstall::AutoInstall::default();
     let mut cleanup = cleanup::Cleanup::new();
+    let mut backup = backup::Backup::new();
     let mut voice_watcher = voice::VoiceWatcher::new(MAIN_THREAD.load(Ordering::Relaxed));
     // For games that keep the save key from Windows (League of Legends in a match).
     let mut save_key = keywatch::SaveKey::new();
@@ -666,6 +676,8 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
                 }
                 // Deleting old clips, when that's on: between games, on its own thread.
                 cleanup.tick(&recorder.settings().storage, &game, recorder.saving());
+                // Backing clips up to the person's Klipp account, when they chose that: between games too.
+                backup.tick(&recorder.settings().storage, &game, recorder.saving());
             }
             WM_TIMER if msg.wParam.0 == autoclip_timer => recorder.tick_autoclip(),
             WM_TIMER if pending_save.is_some_and(|(timer, _)| timer == msg.wParam.0) => {
@@ -680,6 +692,7 @@ fn run(log_path: Option<PathBuf>) -> Result<()> {
 
     let shared = recorder.shared.clone();
     drop(tray);
+    backup.stop();
     // Stops capture and waits for queued clips to finish writing.
     drop(recorder);
     log_stats(&shared, prev);

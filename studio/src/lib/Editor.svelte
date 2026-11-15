@@ -515,7 +515,7 @@
         </div>
       {/if}
     </div>
-    <ExportMenu path={clip.path} {inPoint} {outPoint} tracks={separate} voices={clip.voices ?? []} volumes={exportVolumes} mixVolume={masterLevel} {speed} />
+    <ExportMenu path={clip.path} {clip} {inPoint} {outPoint} tracks={separate} voices={clip.voices ?? []} volumes={exportVolumes} mixVolume={masterLevel} {speed} />
     <WindowControls />
   </header>
 

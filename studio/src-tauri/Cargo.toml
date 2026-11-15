@@ -16,6 +16,8 @@ tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 anyhow.workspace = true
+# The account on klipp.dev: sign-in for this PC, and clip uploads.
+klipp-cloud = { path = "../../crates/klipp-cloud" }
 semver = "1.0.28"
 serde.workspace = true
 serde_json.workspace = true

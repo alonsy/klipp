@@ -5,10 +5,11 @@
   import { onMount } from "svelte";
   import * as api from "./api";
   import type { ExportMode } from "./api";
-  import { size } from "./format";
+  import { cloud, refreshCloud } from "./cloud.svelte";
+  import { eventName, mapName, size } from "./format";
   import Icon from "./Icon.svelte";
   import { DUR, leave, unfold } from "./motion";
-  import { prefs, reload, setPref, toast } from "./state.svelte";
+  import { openPage, prefs, reload, setPref, toast } from "./state.svelte";
   import { swallowPress } from "./ui/clicks";
   import Segmented from "./ui/Segmented.svelte";
   import Toggle from "./ui/Toggle.svelte";
@@ -25,8 +26,10 @@
     mixVolume: number;
     /** The speed it plays at in the editor. */
     speed: number;
+    /** The clip itself: what a link on klipp.dev says about it (game, moment, map). */
+    clip?: api.Clip;
   }
-  let { path, inPoint, outPoint, tracks, voices, volumes, mixVolume, speed }: Props = $props();
+  let { path, inPoint, outPoint, tracks, voices, volumes, mixVolume, speed, clip }: Props = $props();
 
   /** Off exports at 1×, for a clip only slowed down to look at. */
   let keepSpeed = $state(true);
@@ -56,10 +59,104 @@
   /** The button says Done for a moment, for when the panel is closed. */
   let justDone = $state(false);
   let doneTimer = 0;
-  let percent = $derived(busy ? Math.round(busy.fraction * 100) : 0);
+
+  // "Share as a link": the share export, then that file goes to the person's account on klipp.dev.
+  /** The export running now goes on to klipp.dev when it's done. */
+  let linkAfter = $state(false);
+  let upload = $state<{ id: number; fraction: number } | null>(null);
+  let shared = $state<{ url: string; copied: boolean } | null>(null);
+  /** How long the exported file plays (the plan limits it), from the last export's range and speed. */
+  let exportedSecs = 0;
+  /** The export for this link starts with the Klipp tab (Free accounts). */
+  let marked = false;
+  /** Free accounts' links start with the Klipp tab; said before they press. */
+  let linkHint = $derived(
+    `Puts it on your Klipp account, under the size limit above, and copies a link that plays right in Discord${cloud.status?.account?.plan.mark ? ". On the Free plan the video starts with the Klipp tab for a moment" : ""}`,
+  );
+  /** Whatever is in progress: the export, then the upload. */
+  let working = $derived(busy ?? upload);
+  let percent = $derived(working ? Math.round(working.fraction * 100) : 0);
+
+  // Opening the panel looks up who is signed in (nobody: no request), so the link's hint can say what the plan adds.
+  $effect(() => {
+    if (open && !cloud.status && !cloud.loading) refreshCloud();
+  });
+
+  /** "Ace on Mirage": the moment and the map, when the clip has them. */
+  function linkTitle(c: api.Clip): string {
+    const what = c.label ? eventName(c.label, c.game) : "";
+    const where = c.map ? mapName(c.map) : "";
+    return what && where ? `${what} on ${where}` : what;
+  }
+
+  /** The moments inside the exported range, the clip's own first. */
+  function linkTags(c: api.Clip): string[] {
+    const inside = c.events.filter((e) => e.atSecs >= inPoint - 0.5 && e.atSecs <= outPoint + 0.5).map((e) => e.kind);
+    return [...new Set([...(c.label ? [c.label] : []), ...inside])].slice(0, 8);
+  }
+
+  async function shareLink() {
+    if (busy || upload) return;
+    // Asked again each time: the plan decides whether the video starts with the Klipp tab.
+    const status = await refreshCloud();
+    if (!status?.signedIn) {
+      open = false;
+      toast("Sign in to Klipp to share a clip as a link.", { label: "Sign in", run: () => openPage("settings", "account") }, 9000);
+      return;
+    }
+    shared = null;
+    marked = !!status.account?.plan.mark;
+    await start("share", true);
+  }
+
+  async function sendToKlipp(file: string) {
+    try {
+      const id = await api.cloudUpload({
+        path: file,
+        title: clip ? linkTitle(clip) : "",
+        game: clip?.game || null,
+        tags: clip ? linkTags(clip) : [],
+        map: clip?.map || null,
+        visibility: "unlisted",
+        durationSecs: exportedSecs > 0 ? exportedSecs : null,
+        marked,
+      });
+      upload = { id, fraction: 0 };
+    } catch (e) {
+      toast(`Couldn't upload: ${e}`);
+    }
+  }
 
   onMount(() => {
     let off = () => {};
+    let offUpload = () => {};
+    api
+      .onCloudUpload({
+        progress: (id, fraction) => {
+          if (upload?.id === id) upload.fraction = fraction;
+        },
+        done: async (id, url) => {
+          if (upload?.id !== id) return;
+          upload = null;
+          const copied = await api.copyText(url);
+          shared = { url, copied };
+          justDone = true;
+          clearTimeout(doneTimer);
+          doneTimer = window.setTimeout(() => (justDone = false), 2600);
+          toast(copied ? "Link copied. Paste it anywhere with Ctrl+V." : "Your link is ready.", { label: "Open", run: () => api.openFile(url) }, 8000);
+          refreshCloud();
+        },
+        failed: (id, error, why) => {
+          if (upload?.id !== id) return;
+          upload = null;
+          if (why.cancelled) return;
+          if (why.signedOut) {
+            refreshCloud();
+            toast(`Couldn't upload: ${error}`, { label: "Sign in", run: () => openPage("settings", "account") }, 9000);
+          } else toast(`Couldn't upload: ${error}`, undefined, 9000);
+        },
+      })
+      .then((unlisten) => (offUpload = unlisten));
     api
       .onExport({
         progress: (id, fraction) => {
@@ -70,6 +167,12 @@
           const mode = busy.mode;
           busy = null;
           result = { path: out, sizeBytes, mode, copied: false };
+          if (linkAfter) {
+            // The file was only a step: it goes on to klipp.dev, and the clipboard waits for the link.
+            linkAfter = false;
+            await sendToKlipp(out);
+            return;
+          }
           justDone = true;
           clearTimeout(doneTimer);
           doneTimer = window.setTimeout(() => (justDone = false), 2600);
@@ -92,26 +195,32 @@
         failed: (id, error) => {
           if (busy?.id !== id) return;
           busy = null;
+          linkAfter = false;
           if (!/cancel/i.test(error)) toast(`Export failed: ${error}`);
         },
       })
       .then((unlisten) => (off = unlisten));
     return () => {
       off();
+      offUpload();
       clearTimeout(doneTimer);
     };
   });
 
-  async function start(mode: ExportMode) {
-    if (busy) return;
+  async function start(mode: ExportMode, thenLink = false) {
+    if (busy || upload) return;
     result = null;
+    shared = null;
     try {
       localStorage.setItem(TARGET_KEY, String(targetMb));
     } catch {
       // Not important.
     }
     const outSpeed = keepSpeed && mode !== "trim" ? speed : 1;
-    const id = await api.startExport({ path, start: inPoint, end: outPoint, mode, targetMb, volumes: outVolumes, mixVolume, speed: outSpeed });
+    exportedSecs = (outPoint - inPoint) / outSpeed;
+    linkAfter = thenLink;
+    if (!thenLink) marked = false;
+    const id = await api.startExport({ path, start: inPoint, end: outPoint, mode, targetMb, volumes: outVolumes, mixVolume, speed: outSpeed, mark: marked });
     busy = { id, mode, fraction: 0 };
   }
 
@@ -147,14 +256,14 @@
 <div class="export" bind:this={root}>
   <button
     class="primary trigger"
-    class:busy={!!busy}
-    class:quiet={open && !busy}
+    class:busy={!!working}
+    class:quiet={open && !working}
     aria-expanded={open}
     title="Export or share this clip (E)"
     onclick={() => (open = !open)}
   >
-    {#if busy}
-      <span class="veil" style="transform: scaleX({1 - (busy?.fraction ?? 0)})"></span>
+    {#if working}
+      <span class="veil" style="transform: scaleX({1 - (working?.fraction ?? 0)})"></span>
       <span class="face mono">{percent}%</span>
     {:else if justDone}
       <span class="face done-face"><Icon name="check" size={15} />Done</span>
@@ -165,17 +274,20 @@
 
   {#if open}
     <div class="panel" role="dialog" aria-label="Export" in:unfold out:leave={{ y: -4 }}>
-      <div class="options" class:covered={busy || result} inert={!!(busy || result)}>
+      <div class="options" class:covered={working || result || shared} inert={!!(working || result || shared)}>
         <div class="share">
           <Segmented value={targetMb} options={targets} label="Size limit" onchange={(v) => (targetMb = v)} />
-          <button class="primary big" disabled={!!busy} title="Fits under the size limit, so chat apps take it as is" onclick={() => start("share")}><Icon name="send" size={16} />Share</button>
+          <button class="primary big" disabled={!!working} title="Fits under the size limit, so chat apps take it as is" onclick={() => start("share")}><Icon name="send" size={16} />Share</button>
         </div>
 
         <div class="others">
-          <button class="ghost" disabled={!!busy} onclick={() => start("trim")} title="Same quality, every audio track kept, saved next to the original">
+          <button class="ghost" disabled={!!working} onclick={shareLink} title={linkHint}>
+            <Icon name="link" size={16} />Share as a link
+          </button>
+          <button class="ghost" disabled={!!working} onclick={() => start("trim")} title="Same quality, every audio track kept, saved next to the original">
             <Icon name="scissors" size={16} />Save trimmed copy
           </button>
-          <button class="ghost" disabled={!!busy} onclick={() => start("quality")} title="High quality H.264 with your track levels, plays everywhere">
+          <button class="ghost" disabled={!!working} onclick={() => start("quality")} title="High quality H.264 with your track levels, plays everywhere">
             <Icon name="export" size={16} />Export high quality
           </button>
         </div>
@@ -223,8 +335,37 @@
             <svg class="ring comet" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" pathLength="100" /></svg>
             <span class="ring-num mono">{percent}%</span>
           </div>
-          <span class="s-title">{names[busy.mode]}…</span>
+          <span class="s-title">{linkAfter ? "Getting it ready" : names[busy.mode]}…</span>
           <button class="ghost cancel" onclick={() => busy && api.cancelExport(busy.id)}>Cancel</button>
+        </div>
+      {:else if upload}
+        <div class="status" in:unfold={{ duration: DUR.slow }} out:leave>
+          <div class="ring-box">
+            <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+              <circle class="ring-track" cx="50" cy="50" r="44" pathLength="100" />
+              <circle class="ring-fill" cx="50" cy="50" r="44" pathLength="100" style="stroke-dashoffset: {100 - upload.fraction * 100}" />
+            </svg>
+            <!-- Keeps turning while klipp.dev checks the file at the end. -->
+            <svg class="ring comet" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" pathLength="100" /></svg>
+            <span class="ring-num mono">{percent}%</span>
+          </div>
+          <span class="s-title">{upload.fraction >= 1 ? "Almost there" : "Uploading to klipp.dev"}…</span>
+          <button class="ghost cancel" onclick={() => upload && api.cloudCancelUpload(upload.id)}>Cancel</button>
+        </div>
+      {:else if shared}
+        <div class="status" in:unfold={{ duration: DUR.slow }} out:leave>
+          <button class="ghost icon again" onclick={() => (shared = null)} aria-label="Back to the exported file" title="Back"><Icon name="back" size={16} /></button>
+          <div class="mark">
+            <span class="burst"></span>
+            <span class="tick"><Icon name="check" size={30} /></span>
+          </div>
+          <span class="s-title">{shared.copied ? "Link copied" : "Your link is ready"}</span>
+          <span class="file mono" title={shared.url}>{shared.url.replace(/^https?:\/\//, "")}</span>
+          <span class="pasted">Only people with the link can watch it.</span>
+          <div class="after">
+            <button onclick={() => shared && api.copyText(shared.url).then((ok) => toast(ok ? "Link copied. Paste it anywhere with Ctrl+V." : "Couldn't copy the link."))}><Icon name="copy" size={15} />Copy link</button>
+            <button onclick={() => shared && api.openFile(shared.url)}><Icon name="link" size={15} />Open</button>
+          </div>
         </div>
       {:else if result}
         <div class="status" in:unfold={{ duration: DUR.slow }} out:leave>

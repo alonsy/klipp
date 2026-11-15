@@ -1,6 +1,8 @@
 //! Exports: a lossless trimmed copy, a high-quality re-encode, and a
 //! size-limited one for sharing, all with the editor's track levels mixed down.
 //! Each runs ffmpeg.exe on its own thread and reports progress as events.
+//! A share export that goes to klipp.dev from a Free account starts with the
+//! Klipp tab, burned into the picture (see `TAB`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -47,6 +49,9 @@ pub struct ExportRequest {
     pub mix_volume: f32,
     /// Share and Quality come out this much faster (0.5 = half speed). Trim stays at 1.
     pub speed: f64,
+    /// A share export starts with the Klipp tab, burned in: for a link from a Free account.
+    #[serde(default)]
+    pub mark: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -80,7 +85,7 @@ pub struct Exports {
 }
 
 impl Exports {
-    pub fn start(&self, app: AppHandle, clips_dir: PathBuf, req: ExportRequest) -> u64 {
+    pub fn start(&self, app: AppHandle, clips_dir: PathBuf, cache_dir: PathBuf, req: ExportRequest) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let slot = Arc::new(Mutex::new(None));
         self.running.lock().unwrap().insert(id, slot.clone());
@@ -89,7 +94,9 @@ impl Exports {
             let progress = |fraction: f64| {
                 let _ = app.emit("export-progress", Progress { id, fraction });
             };
-            let result = run(&clips_dir, &req, ffmpeg::h264_encoder(), &slot, &progress);
+            // Without the tab's file a marked export can't be made as asked, so it fails rather than go out unmarked.
+            let tab = if req.mark && req.mode == Mode::Share { tab_file(&cache_dir).map(Some) } else { Ok(None) };
+            let result = tab.and_then(|tab| run(&clips_dir, &req, ffmpeg::h264_encoder(), tab.as_deref(), &slot, &progress));
             running.lock().unwrap().remove(&id);
             let _ = match result {
                 Ok(path) => {
@@ -193,6 +200,39 @@ fn frames_at_speed(fps: f64, speed: f64) -> f64 {
     (fps * speed.min(1.0)).max(30.0).min(fps)
 }
 
+/// The Klipp tab: the short animation (2.85 s) that clips shared from a Free
+/// account start with, in the top right corner. A 250x76 picture sequence
+/// with transparency, drawn for a 1080p frame with its top edge 96 px down,
+/// from the website's own CSS (tools/klipp-tab/render.mjs). The export scales
+/// it to the output's height.
+const TAB: &[u8] = include_bytes!("../assets/klipp-tab.apng");
+const TAB_SIZE: (f64, f64) = (250.0, 76.0);
+const TAB_TOP: f64 = 96.0;
+/// It starts this long into the clip, once a player has settled on the first picture.
+const TAB_DELAY: f64 = 0.3;
+
+/// The tab as a file ffmpeg can read, written to the cache when it isn't there yet.
+fn tab_file(cache_dir: &Path) -> Result<PathBuf> {
+    let path = cache_dir.join("klipp-tab.apng");
+    if fs::metadata(&path).map(|m| m.len()).ok() != Some(TAB.len() as u64) {
+        fs::create_dir_all(cache_dir)?;
+        let part = path.with_extension("apng.part");
+        fs::write(&part, TAB).context("couldn't write the Klipp tab's file")?;
+        fs::rename(&part, &path)?;
+    }
+    Ok(path)
+}
+
+/// The part of the filter graph that lays the tab (ffmpeg's input 1) over
+/// `[base]`, a picture `height` pixels high, giving `[vout]`. Once the tab
+/// has played, the picture passes through untouched.
+fn tab_overlay(height: u32) -> String {
+    let k = f64::from(height) / 1080.0;
+    let even = |v: f64| ((v / 2.0).round() as u32 * 2).max(2);
+    let (w, h, top) = (even(TAB_SIZE.0 * k), even(TAB_SIZE.1 * k), (TAB_TOP * k).round() as u32);
+    format!("[1:v]setpts=PTS+{TAB_DELAY}/TB,scale={w}:{h}:flags=lanczos[tab];[base][tab]overlay=x=W-w:y={top}:eof_action=pass:format=auto[vout]")
+}
+
 /// The share export never needs more than this (kbps).
 const MAX_SHARE_KBPS: f64 = 12_000.0;
 /// A high quality copy of a 1080p clip on encoders that work to a bitrate (kbps).
@@ -251,21 +291,27 @@ fn video_args(encoder: &str, kbps: f64, aim: Aim) -> Vec<String> {
 }
 
 /// Runs one export, reporting overall progress from 0 to 1. Returns the output file.
-fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option<Child>>, on_progress: &dyn Fn(f64)) -> Result<PathBuf> {
+/// `tab`: the Klipp tab's file, for a share export that starts with it.
+fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, tab: Option<&Path>, slot: &Mutex<Option<Child>>, on_progress: &dyn Fn(f64)) -> Result<PathBuf> {
     let src = PathBuf::from(&req.path);
     let duration = (req.end - req.start).max(0.1);
     let stem = src.file_stem().context("no file name")?.to_string_lossy().into_owned();
     // Progress of one ffmpeg run, mapped into a slice of the overall bar.
     let progress = |base: f64, span: f64| move |f: f64| on_progress((base + f * span).min(1.0));
-    let seek = |args: &mut Vec<String>, length: f64| {
+    // The clip is ffmpeg's input 0; `more` (the Klipp tab) follows as input 1. The length comes after
+    // every input: before one, it would limit that input instead of the export.
+    let seek = |args: &mut Vec<String>, length: f64, more: Option<&Path>| {
         args.extend(["-ss".into(), format!("{:.3}", req.start), "-i".into(), src.to_string_lossy().into_owned()]);
+        if let Some(input) = more {
+            args.extend(["-i".into(), input.to_string_lossy().into_owned()]);
+        }
         args.extend(["-t".into(), format!("{length:.3}")]);
     };
 
     if req.mode == Mode::Trim {
         let out = unique(&src.with_file_name(format!("{stem}_trim.mp4")));
         let mut args = Vec::new();
-        seek(&mut args, duration);
+        seek(&mut args, duration, None);
         // Video and audio only: the chapter track can't be copied, but ffmpeg
         // rewrites the chapters themselves for the trimmed range.
         args.extend(["-map", "0:v", "-map", "0:a", "-c", "copy", "-movflags", "+faststart"].map(String::from));
@@ -282,11 +328,12 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
     let audio = audio_filter(probe.audio_streams, &req.volumes, req.mix_volume).map(|a| audio_at_speed(a, speed));
     let dir = clips_dir.join(EXPORTS_DIR);
     fs::create_dir_all(&dir)?;
-    let base_args = |height: u32, fps: f64, video: &[String], audio_kbps: u32| {
+    let base_args = |height: u32, fps: f64, video: &[String], audio_kbps: u32, tab: Option<&Path>| {
         let mut args = Vec::new();
-        seek(&mut args, length);
+        seek(&mut args, length, tab);
         let slow = if speed == 1.0 { String::new() } else { format!("setpts=PTS/{speed},") };
-        let mut graph = format!("[0:v:0]{slow}scale=-2:{height}:flags=lanczos,fps={fps}[vout]");
+        let picture = format!("[0:v:0]{slow}scale=-2:{height}:flags=lanczos,fps={fps}");
+        let mut graph = if tab.is_some() { format!("{picture}[base];{}", tab_overlay(height)) } else { format!("{picture}[vout]") };
         if let Some(a) = &audio {
             graph = format!("{graph};{a}");
         }
@@ -303,7 +350,7 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
     if req.mode == Mode::Quality {
         let out = unique(&dir.join(format!("{stem}_export.mp4")));
         let video = video_args(encoder, QUALITY_KBPS_1080P * probe.height as f64 / 1080.0, Aim::Quality);
-        run_ffmpeg(base_args(probe.height, frames, &video, 192), &out, length, slot, progress(0.0, 1.0))?;
+        run_ffmpeg(base_args(probe.height, frames, &video, 192, None), &out, length, slot, progress(0.0, 1.0))?;
         return Ok(out);
     }
 
@@ -320,7 +367,7 @@ fn run(clips_dir: &Path, req: &ExportRequest, encoder: &str, slot: &Mutex<Option
         let (height, fps) = size_ladder(video_kbps, &probe);
         let video = video_args(encoder, video_kbps, if attempt == 0 { Aim::Size } else { Aim::SmallerSize });
         let span = 1.0 / (attempt + 1) as f64;
-        run_ffmpeg(base_args(height, fps.min(frames), &video, audio_kbps), &out, length, slot, progress(1.0 - span, span))?;
+        run_ffmpeg(base_args(height, fps.min(frames), &video, audio_kbps, tab), &out, length, slot, progress(1.0 - span, span))?;
         if fs::metadata(&out)?.len() as f64 <= target_bytes {
             return Ok(out);
         }

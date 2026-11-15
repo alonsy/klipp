@@ -10,6 +10,8 @@ embed-resource = "3.0.11"
 
 [dependencies]
 anyhow.workspace = true
+# Auto-backup to the person's account on klipp.dev (backup.rs).
+klipp-cloud = { path = "../klipp-cloud" }
 klipp-media = { path = "../klipp-media" }
 serde.workspace = true
 serde_json.workspace = true

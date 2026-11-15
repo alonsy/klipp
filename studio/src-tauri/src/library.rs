@@ -43,6 +43,8 @@ pub struct Clip {
     pub camera: bool,
     /// The short made from it in the Content Creation Center.
     pub short: Option<Value>,
+    /// Auto-backup put it on the person's Klipp account.
+    pub backed_up: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -56,6 +58,8 @@ pub struct Event {
 pub fn list(clips_dir: &Path) -> Vec<Clip> {
     let mut clips = Vec::new();
     let Ok(entries) = fs::read_dir(clips_dir) else { return clips };
+    // What the recorder's auto-backup wrote down; nothing when it never ran.
+    let backup = klipp_cloud::backup::Ledger::load(clips_dir).unwrap_or_default();
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -67,7 +71,10 @@ pub fn list(clips_dir: &Path) -> Vec<Clip> {
             meta::adopt_sidecars(clips_dir, &path);
             for file in fs::read_dir(&path).into_iter().flatten().flatten() {
                 if is_mp4(&file.path()) {
-                    clips.extend(read_clip(clips_dir, &file.path(), &name));
+                    clips.extend(read_clip(clips_dir, &file.path(), &name).map(|mut clip| {
+                        clip.backed_up = klipp_cloud::backup::key_of(&file.path()).is_some_and(|key| backup.backed_up(&key));
+                        clip
+                    }));
                 }
             }
         } else if is_mp4(&path) {
@@ -120,6 +127,7 @@ fn read_clip(clips_dir: &Path, path: &Path, game: &str) -> Option<Clip> {
         edit: Some(info["edit"].clone()).filter(Value::is_object),
         camera: info["camera"].as_bool().unwrap_or(false),
         short: Some(info["short"].clone()).filter(Value::is_object),
+        backed_up: false,
     })
 }
 
