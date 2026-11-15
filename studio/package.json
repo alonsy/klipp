@@ -1,7 +1,7 @@
 {
   "name": "klipp",
   "private": true,
-  "version": "0.4.1-test.0",
+  "version": "0.4.2-test.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

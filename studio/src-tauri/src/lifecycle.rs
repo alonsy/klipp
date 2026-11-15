@@ -15,7 +15,29 @@ use windows::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CreateEventW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
     SetEvent, WaitForSingleObject,
 };
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{PCWSTR, w};
+
+/// True for an address the browser should get: http or https, with nothing
+/// in it that could end the address early.
+pub fn is_web_address(s: &str) -> bool {
+    (s.starts_with("https://") || s.starts_with("http://")) && s.len() <= 2000 && !s.chars().any(|c| c.is_control() || c == ' ' || c == '"')
+}
+
+/// Opens a web address in the default browser. Never through explorer.exe:
+/// Explorer reads "=" and "," in its arguments as its own syntax, so an
+/// address with a query ("…/link?code=AB12-CD34") opened the Documents folder
+/// instead of the page. Only web addresses are passed on; anything else is
+/// refused, because "open" would also start a program.
+pub fn open_url(url: &str) -> Result<()> {
+    anyhow::ensure!(is_web_address(url), "not a web address");
+    let wide: Vec<u16> = url.encode_utf16().chain([0]).collect();
+    let result = unsafe { ShellExecuteW(None, w!("open"), PCWSTR(wide.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+    // ShellExecute answers with a number above 32 when it worked.
+    anyhow::ensure!(result.0 as usize > 32, "Windows couldn't open your browser");
+    Ok(())
+}
 
 /// Held by the running recorder.
 const RECORDER_MUTEX: PCWSTR = w!("Local\\KlippRecorder");
