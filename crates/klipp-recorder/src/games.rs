@@ -5,11 +5,11 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
-use windows::core::PWSTR;
+use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
+use windows::core::{BOOL, PWSTR};
 
 /// Clips taken while no game was in the foreground go here.
 pub const DESKTOP: &str = "Desktop";
@@ -29,6 +29,10 @@ const KNOWN: &[(&str, &str)] = &[
     ("rainbowsix_vulkan.exe", "Rainbow Six Siege"),
     ("gta5.exe", "Grand Theft Auto V"),
 ];
+
+/// Minecraft Java runs in Java's own program, which other Java apps share,
+/// so its window title tells it apart (Bedrock has an exe of its own).
+const JAVA: &[&str] = &["javaw.exe", "java.exe"];
 
 /// Launcher library folders: the folder after these components is the game's name.
 const LIBRARIES: &[&[&str]] = &[
@@ -51,7 +55,7 @@ pub struct GameTracker {
 
 impl GameTracker {
     pub fn poll(&mut self, custom: &BTreeMap<String, String>) {
-        if let Some(name) = foreground_exe().and_then(|exe| game_name(&exe, custom)) {
+        if let Some(name) = foreground().and_then(|(exe, title)| game_in(&exe, &title, custom)) {
             self.last = Some((name, Instant::now()));
         }
     }
@@ -68,14 +72,55 @@ impl GameTracker {
 /// The game in front right now and its program, for the log ("League of
 /// Legends (League of Legends.exe)"), or "no game". Other programs aren't named.
 pub fn in_front(custom: &BTreeMap<String, String>) -> String {
-    let exe = foreground_exe();
-    match exe.as_deref().and_then(|e| Some((game_name(e, custom)?, e.file_name()?.to_string_lossy()))) {
+    let front = foreground();
+    match front.as_ref().and_then(|(e, title)| Some((game_in(e, title, custom)?, e.file_name()?.to_string_lossy()))) {
         Some((name, file)) => format!("{name} ({file})"),
         None => "no game".into(),
     }
 }
 
-fn foreground_exe() -> Option<PathBuf> {
+/// The game a window belongs to: by its program, or Minecraft's by its title.
+fn game_in(exe: &Path, title: &str, custom: &BTreeMap<String, String>) -> Option<String> {
+    let file = exe.file_name()?.to_str()?;
+    game_name(exe, custom).or_else(|| is_minecraft(file, title).then(|| crate::minecraft::GAME_NAME.to_string()))
+}
+
+/// A window of Java's program with "Minecraft" in its title: "Minecraft* 1.21.1 - Singleplayer".
+fn is_minecraft(exe_file: &str, title: &str) -> bool {
+    JAVA.iter().any(|j| exe_file.eq_ignore_ascii_case(j)) && has_minecraft_title(title)
+}
+
+fn has_minecraft_title(title: &str) -> bool {
+    title.to_lowercase().contains("minecraft")
+}
+
+/// A Minecraft Java window is open, in front or not. Only window titles are
+/// read, and only matching windows' programs are looked up.
+pub fn minecraft_open() -> bool {
+    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
+        let pids = unsafe { &mut *(data.0 as *mut Vec<u32>) };
+        if unsafe { IsWindowVisible(hwnd) }.as_bool() && has_minecraft_title(&window_title(hwnd)) {
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            pids.push(pid);
+        }
+        true.into()
+    }
+    let mut pids: Vec<u32> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut pids as *mut _ as isize));
+    }
+    !pids.is_empty() && processes().iter().any(|(pid, _, name)| pids.contains(pid) && JAVA.contains(&name.as_str()))
+}
+
+fn window_title(hwnd: HWND) -> String {
+    let mut title = [0u16; 256];
+    let n = unsafe { GetWindowTextW(hwnd, &mut title) }.max(0) as usize;
+    String::from_utf16_lossy(&title[..n])
+}
+
+/// The foreground window's program and title.
+fn foreground() -> Option<(PathBuf, String)> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_invalid() {
@@ -88,7 +133,7 @@ fn foreground_exe() -> Option<PathBuf> {
         let mut len = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
         let _ = CloseHandle(process);
-        ok.then(|| PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+        ok.then(|| (PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])), window_title(hwnd)))
     }
 }
 
@@ -136,4 +181,25 @@ pub fn game_name(exe: &Path, custom: &BTreeMap<String, String>) -> Option<String
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minecraft_is_java_with_its_title() {
+        assert!(is_minecraft("javaw.exe", "Minecraft* 1.21.1 - Singleplayer"));
+        assert!(is_minecraft("JAVA.EXE", "Minecraft 26.2"));
+        // Another Java program, and Minecraft's name on something else.
+        assert!(!is_minecraft("javaw.exe", "IntelliJ IDEA"));
+        assert!(!is_minecraft("minecraftlauncher.exe", "Minecraft Launcher"));
+    }
+
+    #[test]
+    fn hotkey_clips_in_minecraft_get_its_folder() {
+        let exe = Path::new(r"C:\Users\me\AppData\Roaming\.minecraft\runtime\java-runtime-delta\windows-x64\bin\javaw.exe");
+        assert_eq!(game_in(exe, "Minecraft* 26.2 - Multiplayer", &BTreeMap::new()), Some("Minecraft".into()));
+        assert_eq!(game_in(exe, "Some tool", &BTreeMap::new()), None);
+    }
 }

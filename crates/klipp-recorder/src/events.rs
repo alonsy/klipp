@@ -46,6 +46,10 @@ pub enum EventKind {
     EpicSave,
     /// Rocket League: you demolished a car.
     Demolition,
+    /// Minecraft: an advancement you made (`detail` is its name, "Diamonds!").
+    Advancement,
+    /// Minecraft: a goal or challenge advancement, the rare ones ("Free the End").
+    Milestone,
 }
 
 impl EventKind {
@@ -78,6 +82,8 @@ impl EventKind {
             EventKind::Save => "save".into(),
             EventKind::EpicSave => "epicsave".into(),
             EventKind::Demolition => "demolition".into(),
+            EventKind::Advancement => "advancement".into(),
+            EventKind::Milestone => "milestone".into(),
         }
     }
 
@@ -109,6 +115,8 @@ impl EventKind {
             EventKind::Save => "Save".into(),
             EventKind::EpicSave => "Epic save".into(),
             EventKind::Demolition => "Demolition".into(),
+            EventKind::Advancement => "Advancement".into(),
+            EventKind::Milestone => "Goal or challenge".into(),
         }
     }
 
@@ -137,6 +145,7 @@ impl EventKind {
             EventKind::MultiKill(n) => 100 + n,
             EventKind::Goal => 90,
             EventKind::EpicSave => 80,
+            EventKind::Milestone => 75,
             EventKind::TeamAce => 70,
             EventKind::Steal => 60,
             EventKind::Demolition => 55,
@@ -146,6 +155,7 @@ impl EventKind {
             EventKind::Headshot => 40,
             EventKind::Save => 35,
             EventKind::Mvp => 30,
+            EventKind::Advancement => 25,
             EventKind::Kill => 20,
             EventKind::Knock => 15,
             EventKind::Assist => 15,
