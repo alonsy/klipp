@@ -12,6 +12,7 @@
 //! Bedrock Edition (Minecraft for Windows) keeps no such log, so it isn't
 //! covered. Servers that rewrite chat (plugins, other languages) may not match.
 
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ use crate::log::{info, warning};
 use crate::settings::{self, MultiKillMode};
 
 pub const GAME_NAME: &str = "Minecraft";
-/// How often the log is looked at. One metadata read when nothing changed.
+/// How often the log is looked at once it exists. One metadata read when nothing changed.
 const POLL: Duration = Duration::from_millis(250);
 /// Reading more than this at once means something else is filling the log
 /// (a mod's debug output): the rest is skipped rather than held in memory.
@@ -38,6 +39,11 @@ const MAX_READ: u64 = 4 << 20;
 /// Singleplayer logs each death twice (the built-in server, then the chat):
 /// the same message this close together is one moment.
 const SAME_MOMENT: i64 = 3 * SECOND;
+/// Messages remembered for that: one explosion can kill several players at
+/// once, and their lines come in as A, B, A, B.
+const RECENT_MAX: usize = 32;
+/// Until the log exists (Minecraft never ran here), it's looked for this often.
+const LOOK_FOR_LOG: Duration = Duration::from_secs(3);
 /// How much of a log Klipp finds already there it reads for who's playing.
 const HEAD: u64 = 1 << 20;
 
@@ -116,16 +122,36 @@ struct Follow {
     /// The file's creation time: a new one means the game started again.
     created: Option<SystemTime>,
     player: Option<String>,
-    /// The last moment sent, to leave singleplayer's second copy out.
-    last: Option<(String, i64)>,
+    /// Moments sent lately, to leave singleplayer's second copies out.
+    recent: Recent,
     /// Said once per session that nobody is known to be playing.
     warned: bool,
+}
+
+/// Messages sent within `SAME_MOMENT`, oldest first.
+#[derive(Default)]
+struct Recent(VecDeque<(String, i64)>);
+
+impl Recent {
+    /// True the first time `message` comes within `SAME_MOMENT`; remembers it.
+    fn first(&mut self, message: &str, now: i64) -> bool {
+        self.0.retain(|(_, t)| now - t < SAME_MOMENT);
+        if self.0.iter().any(|(m, _)| m == message) {
+            return false;
+        }
+        if self.0.len() >= RECENT_MAX {
+            self.0.pop_front();
+        }
+        self.0.push_back((message.to_string(), now));
+        true
+    }
 }
 
 fn watch(stop: &AtomicBool, path: &Path, events: &Sender<(String, GameEvent)>) {
     let mut follow: Option<Follow> = None;
     while !stop.load(Ordering::Relaxed) {
         let started = Instant::now();
+        let mut wait = POLL;
         match fs::metadata(path) {
             Ok(meta) => {
                 let created = meta.created().ok();
@@ -135,15 +161,30 @@ fn watch(stop: &AtomicBool, path: &Path, events: &Sender<(String, GameEvent)>) {
                 if f.created != created || meta.len() < f.offset {
                     // The game rotated its log: a new session from the start.
                     info!("minecraft: a new game log started");
-                    *f = Follow { offset: 0, created, player: None, last: None, warned: false };
+                    *f = Follow { offset: 0, created, player: None, recent: Recent::default(), warned: false };
                 }
                 if meta.len() > f.offset {
                     read_new(path, meta.len(), f, events);
                 }
             }
-            Err(_) => follow = None,
+            Err(_) => {
+                follow = None;
+                wait = LOOK_FOR_LOG;
+            }
         }
-        thread::sleep(POLL.saturating_sub(started.elapsed()));
+        nap(stop, wait.saturating_sub(started.elapsed()));
+    }
+}
+
+/// Sleeps in short steps, so quitting never waits long.
+fn nap(stop: &AtomicBool, time: Duration) {
+    let until = Instant::now() + time;
+    while !stop.load(Ordering::Relaxed) {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        thread::sleep(left.min(Duration::from_millis(250)));
     }
 }
 
@@ -157,7 +198,7 @@ fn attach(path: &Path, len: u64, created: Option<SystemTime>) -> Follow {
     if let Some(p) = &player {
         info!("minecraft: {p} is playing");
     }
-    Follow { offset: len, created, player, last: None, warned: false }
+    Follow { offset: len, created, player, recent: Recent::default(), warned: false }
 }
 
 fn read_new(path: &Path, len: u64, f: &mut Follow, events: &Sender<(String, GameEvent)>) {
@@ -190,10 +231,9 @@ fn read_new(path: &Path, len: u64, f: &mut Follow, events: &Sender<(String, Game
         };
         let Some((kind, detail)) = moment(message, me) else { continue };
         let now = clock::now();
-        if f.last.as_ref().is_some_and(|(m, t)| m == message && now - t < SAME_MOMENT) {
+        if !f.recent.first(message, now) {
             continue;
         }
-        f.last = Some((message.to_string(), now));
         info!("minecraft: {}{}", kind.label(), if detail.is_empty() { String::new() } else { format!(" ({detail})") });
         let _ = events.send((GAME_NAME.to_string(), GameEvent::new(kind, now, detail)));
     }
@@ -208,13 +248,15 @@ fn player_line(line: &str) -> Option<String> {
 }
 
 /// What a log line says, after its time and thread: "[21:14:03] [Render thread/INFO]: …".
+/// Forge puts the logger after the level: "[Render thread/INFO] [net.minecraft…ChatComponent/]: …".
 fn body(line: &str) -> Option<&str> {
     let line = line.trim_end();
     if !line.starts_with('[') {
         return None;
     }
     let (head, rest) = line.split_once("]: ")?;
-    head.ends_with("/INFO").then_some(rest)
+    let info = head.ends_with("/INFO") || head.rsplit_once("] [").is_some_and(|(level, _logger)| level.ends_with("/INFO"));
+    info.then_some(rest)
 }
 
 /// A line's chat message, without the tags newer versions put in front.
@@ -330,6 +372,34 @@ mod tests {
         assert_eq!(read("[21:14:03] [Server thread/INFO]: Alex was slain by Steve"), kill);
         assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex hit the ground too hard whilst trying to escape Steve"), kill);
         assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was slain by Steve using [Excalibur]"), Some((EventKind::Kill, "Excalibur".into())));
+    }
+
+    #[test]
+    fn one_explosion_two_kills_counts_two() {
+        let mut recent = Recent::default();
+        // Singleplayer's server and chat copies of two deaths, interleaved.
+        let seen: Vec<bool> = ["Alex was blown up by Steve", "Bob was blown up by Steve", "Alex was blown up by Steve", "Bob was blown up by Steve"]
+            .iter()
+            .map(|m| recent.first(m, SECOND))
+            .collect();
+        assert_eq!(seen, [true, true, false, false]);
+        // The same message later is a new moment.
+        assert!(recent.first("Alex was blown up by Steve", SECOND + SAME_MOMENT));
+    }
+
+    #[test]
+    fn reads_forge_lines() {
+        assert_eq!(
+            read("[21:14:03] [Render thread/INFO] [net.minecraft.client.gui.components.ChatComponent/]: [CHAT] Alex was slain by Steve"),
+            Some((EventKind::Kill, String::new()))
+        );
+        assert_eq!(
+            read("[21:16:40] [Render thread/INFO] [minecraft/ChatComponent]: [System] [CHAT] Steve has made the advancement [Diamonds!]"),
+            Some((EventKind::Advancement, "Diamonds!".into()))
+        );
+        assert_eq!(player_line("[12:00:01] [main/INFO] [minecraft/Minecraft]: Setting user: Steve"), Some("Steve".into()));
+        // Forge's warnings stay out like vanilla's.
+        assert_eq!(read("[21:14:03] [Render thread/WARN] [net.minecraft.client.gui.components.ChatComponent/]: [CHAT] Alex was slain by Steve"), None);
     }
 
     #[test]

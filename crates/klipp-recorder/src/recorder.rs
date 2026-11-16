@@ -144,14 +144,12 @@ fn creator_changed() -> Option<SystemTime> {
 /// The programs of the games Klipp auto-clips, with auto-clips on for them.
 fn autoclipped_exes(s: &Settings) -> Vec<&'static str> {
     let a = &s.auto_clip;
-    // Minecraft Java runs as javaw.exe, which other Java programs share: with
-    // manual clipping off, any of them running turns recording on.
+    // Minecraft isn't here: its program is Java's, shared with other apps (see `wanted`).
     let games = [
         (a.cs2.enabled, "cs2.exe"),
         (a.league.enabled, "league of legends.exe"),
         (a.rocket_league.enabled, "rocketleague.exe"),
         (crate::fortnite::enabled(), "fortniteclient-win64-shipping.exe"),
-        (a.minecraft.enabled, "javaw.exe"),
     ];
     if !a.enabled {
         return Vec::new();
@@ -166,7 +164,10 @@ fn wanted(s: &Settings, running: impl FnOnce() -> Vec<String>) -> bool {
         return true;
     }
     let exes = autoclipped_exes(s);
-    !exes.is_empty() && running().iter().any(|name| exes.contains(&name.as_str()))
+    let a = &s.auto_clip;
+    (!exes.is_empty() && running().iter().any(|name| exes.contains(&name.as_str())))
+        // A Java window titled "Minecraft…", not just any Java program.
+        || (a.enabled && a.minecraft.enabled && crate::games::minecraft_open())
 }
 
 fn running_programs() -> Vec<String> {
