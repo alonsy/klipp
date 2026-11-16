@@ -8,6 +8,7 @@
 mod arrivals;
 mod channel;
 mod clipboard;
+mod cloud;
 mod config;
 mod creator;
 mod export;
@@ -34,6 +35,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
+use crate::cloud::Cloud;
 use crate::config::Config;
 use crate::export::{ExportRequest, Exports};
 use crate::library::Clip;
@@ -47,6 +49,7 @@ struct App {
     exports: Exports,
     squeeze: Squeezer,
     shorts: Shorts,
+    cloud: Cloud,
 }
 
 #[derive(Serialize)]
@@ -200,12 +203,52 @@ fn read_cached(app: State<App>, path: String) -> CmdResult<tauri::ipc::Response>
 /// Starts an export; progress and the result arrive as events.
 #[tauri::command]
 fn start_export(handle: AppHandle, app: State<App>, request: ExportRequest) -> u64 {
-    app.exports.start(handle, config::load().clips_dir, request)
+    app.exports.start(handle, config::load().clips_dir, app.config.cache_dir.clone(), request)
 }
 
 #[tauri::command]
 fn cancel_export(app: State<App>, id: u64) {
     app.exports.cancel(id);
+}
+
+/// Who is signed in to klipp.dev on this PC (see `cloud`); nobody is fine.
+#[tauri::command]
+async fn cloud_status() -> CmdResult<cloud::Status> {
+    blocking(|| cloud::status(&config::load().clips_dir)).await
+}
+
+/// Starts signing in: the browser opens on klipp.dev with a code to approve.
+/// How it ends arrives as a `cloud-link` event.
+#[tauri::command]
+async fn cloud_link(handle: AppHandle) -> CmdResult<cloud::LinkInfo> {
+    blocking(move || {
+        let app = handle.clone();
+        handle.state::<App>().cloud.link(app)
+    })
+    .await
+}
+
+#[tauri::command]
+fn cloud_link_cancel(app: State<App>) {
+    app.cloud.cancel_link();
+}
+
+/// Signs this PC out. False when klipp.dev couldn't be told (it's still signed out here).
+#[tauri::command]
+async fn cloud_sign_out() -> CmdResult<bool> {
+    blocking(cloud::sign_out).await
+}
+
+/// Uploads a clip to the signed-in account; progress and the link arrive as events.
+#[tauri::command]
+fn cloud_upload(handle: AppHandle, app: State<App>, request: cloud::UploadRequest) -> u64 {
+    let config = config::load();
+    app.cloud.upload(handle, config.clips_dir, config.cache_dir, request)
+}
+
+#[tauri::command]
+fn cloud_cancel_upload(app: State<App>, id: u64) {
+    app.cloud.cancel_upload(id);
 }
 
 /// Squeeze Space: what each level would do to the clips (see `squeeze`).
@@ -514,10 +557,10 @@ fn install_log(app: State<App>, line: String) -> CmdResult<()> {
     installlog::append(&app.config.log_dir, &line).map_err(err)
 }
 
-/// An export is writing a file, or clips are being squeezed (an update would cut it off).
+/// An export is writing a file, clips are being squeezed, or a clip is uploading (an update would cut it off).
 #[tauri::command]
 fn exporting(app: State<App>) -> bool {
-    app.exports.busy() || app.squeeze.busy() || app.shorts.busy()
+    app.exports.busy() || app.squeeze.busy() || app.shorts.busy() || app.cloud.busy()
 }
 
 /// Started hidden to install an update and there's none: nothing more to do.
@@ -567,9 +610,12 @@ fn reveal(path: String) -> CmdResult<()> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Opens a file with its default app (e.g. the settings file in a text editor).
+/// Opens a file with its default app (e.g. the settings file in a text editor), or a web address in the browser.
 #[tauri::command]
 fn open_file(path: String) -> CmdResult<()> {
+    if lifecycle::is_web_address(&path) {
+        return lifecycle::open_url(&path).map_err(err);
+    }
     std::process::Command::new("explorer.exe").arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -595,6 +641,18 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Opening Klipp again (Start menu, tray) focuses the window that is already
+/// there, and passes on what it was opened for.
+fn single_instance() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_single_instance::init(|app, args, _cwd| {
+        // Installing an update between games doesn't bring the window to the front.
+        if !args.iter().any(|a| a == INSTALL_UPDATE) {
+            show_main(app);
+        }
+        let _ = app.emit("open-request", OpenRequest::from_args(args.into_iter().skip(1)));
+    })
+}
+
 fn main() {
     let config = config::load();
     // On a fresh install, recording starts when setup finishes, with its choices.
@@ -609,20 +667,12 @@ fn main() {
     let (clips_dir, cache_dir) = (config.clips_dir.clone(), config.cache_dir.clone());
 
     let app = tauri::Builder::default()
-        // Opening Klipp again (Start menu, tray) focuses this window instead
-        // and passes on what it was opened for.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // Installing an update between games doesn't bring the window to the front.
-            if !args.iter().any(|a| a == INSTALL_UPDATE) {
-                show_main(app);
-            }
-            let _ = app.emit("open-request", OpenRequest::from_args(args.into_iter().skip(1)));
-        }))
+        .plugin(single_instance())
         // New versions from GitHub releases, signed with Klipp's key (see tauri.conf.json).
         .plugin(tauri_plugin_updater::Builder::new().build())
         // The Windows folder picker (Settings → Storage).
         .plugin(tauri_plugin_dialog::init())
-        .manage(App { config, trash, exports: Exports::default(), squeeze: Squeezer::default(), shorts: Shorts::default() })
+        .manage(App { config, trash, exports: Exports::default(), squeeze: Squeezer::default(), shorts: Shorts::default(), cloud: Cloud::default() })
         .setup(move |app| {
             // Let the page load videos and thumbnails from these folders only.
             let scope = app.asset_protocol_scope();
@@ -675,6 +725,12 @@ fn main() {
             read_cached,
             start_export,
             cancel_export,
+            cloud_status,
+            cloud_link,
+            cloud_link_cancel,
+            cloud_sign_out,
+            cloud_upload,
+            cloud_cancel_upload,
             squeeze_plan,
             start_squeeze,
             cancel_squeeze,
@@ -728,6 +784,9 @@ fn main() {
             app.state::<App>().trash.finalize_all();
             // No ffmpeg left squeezing on its own; the clip in progress stays as it was.
             app.state::<App>().squeeze.cancel();
+            // An upload stops with the window, and a sign-in nobody can see finish is dropped.
+            app.state::<App>().cloud.cancel_all();
+            app.state::<App>().cloud.cancel_link();
         }
     });
 }

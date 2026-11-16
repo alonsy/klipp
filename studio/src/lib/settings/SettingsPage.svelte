@@ -4,6 +4,7 @@
   import { DUR, enter, pageOut } from "../motion";
   import { ui } from "../state.svelte";
   import About from "./About.svelte";
+  import Account from "./Account.svelte";
   import Advanced from "./Advanced.svelte";
   import Audio from "./Audio.svelte";
   import AutoClips from "./AutoClips.svelte";
@@ -20,6 +21,7 @@
     { id: "audio", name: "Audio" },
     { id: "autoclips", name: "Auto-clips" },
     { id: "storage", name: "Storage" },
+    { id: "account", name: "Account" },
     { id: "advanced", name: "Advanced" },
     { id: "about", name: "About" },
   ];
@@ -93,6 +95,7 @@
             {:else if current.id === "audio"}<Audio />
             {:else if current.id === "autoclips"}<AutoClips />
             {:else if current.id === "storage"}<Storage />
+            {:else if current.id === "account"}<Account />
             {:else if current.id === "advanced"}<Advanced />
             {:else}<About />{/if}
           </div>

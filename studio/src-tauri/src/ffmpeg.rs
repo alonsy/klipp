@@ -146,3 +146,16 @@ fn make_thumbnail(clip: &Path, out: &Path, at: f64) -> Result<()> {
     }
     bail!("ffmpeg couldn't read a frame from {}", clip.display())
 }
+
+/// A picture of `clip` at `at` seconds, as JPEG bytes (640 wide), for a clip
+/// that goes to klipp.dev. Made in the cache folder and removed again.
+pub fn poster(clip: &Path, cache_dir: &Path, at: f64) -> Result<Vec<u8>> {
+    fs::create_dir_all(cache_dir)?;
+    let mut hasher = DefaultHasher::new();
+    (clip, std::process::id(), UNIX_EPOCH.elapsed().map(|d| d.as_nanos()).unwrap_or_default()).hash(&mut hasher);
+    let out = cache_dir.join(format!("poster-{:016x}.jpg", hasher.finish()));
+    let made = make_thumbnail(clip, &out, at.max(0.0)).and_then(|()| Ok(fs::read(&out)?));
+    let _ = fs::remove_file(&out);
+    let _ = fs::remove_file(out.with_extension("part.jpg"));
+    made
+}

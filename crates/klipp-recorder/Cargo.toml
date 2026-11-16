@@ -10,6 +10,8 @@ embed-resource = "3.0.11"
 
 [dependencies]
 anyhow.workspace = true
+# Auto-backup to the person's account on klipp.dev (backup.rs).
+klipp-cloud = { path = "../klipp-cloud" }
 klipp-media = { path = "../klipp-media" }
 serde.workspace = true
 serde_json.workspace = true
@@ -66,6 +68,8 @@ features = [
     "Win32_System_WinRT",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
+    # The save key through raw input too (keywatch.rs).
+    "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ]

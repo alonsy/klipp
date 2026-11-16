@@ -159,6 +159,7 @@
         {/if}
         {#if stat}<span class="stat mono">{stat}</span>{/if}
         {#if clip.camera}<span class="camera" title="Has your camera"><Icon name="camera" size={14} /></span>{/if}
+        {#if clip.backedUp}<span class="camera" title="Backed up to your Klipp account"><Icon name="cloud" size={14} /></span>{/if}
       </div>
       <div class="more">
         <span class="summary">{summary}</span>
