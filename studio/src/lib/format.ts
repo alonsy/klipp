@@ -29,6 +29,9 @@ const EVENT_NAMES: Record<string, string> = {
   demolition: "Demolition",
   // Fortnite.
   knock: "Knock",
+  // Minecraft.
+  advancement: "Advancement",
+  milestone: "Goal or challenge",
 };
 
 /** "2k" → "2K", "headshot" → "Headshot". A win is a round in CS2, the match in Fortnite. */
@@ -46,6 +49,7 @@ export function eventRank(kind: string): number {
     {
       goal: 90,
       epicsave: 80,
+      milestone: 75,
       teamace: 70,
       steal: 60,
       demolition: 55,
@@ -55,6 +59,7 @@ export function eventRank(kind: string): number {
       headshot: 40,
       save: 35,
       mvp: 30,
+      advancement: 25,
       kill: 20,
       knock: 15,
       assist: 15,

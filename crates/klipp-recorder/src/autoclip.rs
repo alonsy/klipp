@@ -49,6 +49,9 @@ pub struct Rules {
     pub save: bool,
     pub epic_save: bool,
     pub demolition: bool,
+    /// Minecraft's (false elsewhere): every advancement, and goals and challenges.
+    pub advancement: bool,
+    pub milestone: bool,
     pub pre_roll: i64,
     pub post_roll: i64,
     /// Events closer together than this join the same chain (and clip).
@@ -83,6 +86,8 @@ impl Rules {
             EventKind::Save => self.save,
             EventKind::EpicSave => self.epic_save,
             EventKind::Demolition => self.demolition,
+            EventKind::Advancement => self.advancement,
+            EventKind::Milestone => self.milestone,
             EventKind::RoundWin
             | EventKind::RoundLoss
             | EventKind::MatchWin
@@ -155,6 +160,8 @@ impl Rules {
             (self.save, EventKind::Save),
             (self.epic_save, EventKind::EpicSave),
             (self.demolition, EventKind::Demolition),
+            (self.advancement, EventKind::Advancement),
+            (self.milestone, EventKind::Milestone),
         ];
         reasons.extend(switches.into_iter().filter(|&(on, kind)| on && has(kind)).map(|(_, kind)| kind));
         reasons.into_iter().max_by_key(|k| k.rank())
@@ -177,6 +184,8 @@ fn about_itself(kind: EventKind) -> bool {
             | EventKind::Save
             | EventKind::EpicSave
             | EventKind::Demolition
+            | EventKind::Advancement
+            | EventKind::Milestone
     )
 }
 
