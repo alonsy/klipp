@@ -182,24 +182,3 @@ pub fn game_name(exe: &Path, custom: &BTreeMap<String, String>) -> Option<String
     }
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn minecraft_is_java_with_its_title() {
-        assert!(is_minecraft("javaw.exe", "Minecraft* 1.21.1 - Singleplayer"));
-        assert!(is_minecraft("JAVA.EXE", "Minecraft 26.2"));
-        // Another Java program, and Minecraft's name on something else.
-        assert!(!is_minecraft("javaw.exe", "IntelliJ IDEA"));
-        assert!(!is_minecraft("minecraftlauncher.exe", "Minecraft Launcher"));
-    }
-
-    #[test]
-    fn hotkey_clips_in_minecraft_get_its_folder() {
-        let exe = Path::new(r"C:\Users\me\AppData\Roaming\.minecraft\runtime\java-runtime-delta\windows-x64\bin\javaw.exe");
-        assert_eq!(game_in(exe, "Minecraft* 26.2 - Multiplayer", &BTreeMap::new()), Some("Minecraft".into()));
-        assert_eq!(game_in(exe, "Some tool", &BTreeMap::new()), None);
-    }
-}

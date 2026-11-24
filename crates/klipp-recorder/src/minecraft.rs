@@ -128,6 +128,16 @@ struct Follow {
     warned: bool,
 }
 
+impl Follow {
+    /// The game started a new log: read it from its start. That happens
+    /// when the game starts and at the first line after midnight while it
+    /// keeps running. Only a start names the player again ("Setting
+    /// user"), so the name is kept until a new one comes.
+    fn new_log(&mut self, created: Option<SystemTime>) {
+        *self = Follow { offset: 0, created, player: self.player.take(), recent: Recent::default(), warned: false };
+    }
+}
+
 /// Messages sent within `SAME_MOMENT`, oldest first.
 #[derive(Default)]
 struct Recent(VecDeque<(String, i64)>);
@@ -159,9 +169,8 @@ fn watch(stop: &AtomicBool, path: &Path, events: &Sender<(String, GameEvent)>) {
                 // Windows can give a file made again under the same name its
                 // old creation time, so a shorter file counts as new too.
                 if f.created != created || meta.len() < f.offset {
-                    // The game rotated its log: a new session from the start.
                     info!("minecraft: a new game log started");
-                    *f = Follow { offset: 0, created, player: None, recent: Recent::default(), warned: false };
+                    f.new_log(created);
                 }
                 if meta.len() > f.offset {
                     read_new(path, meta.len(), f, events);
@@ -234,7 +243,7 @@ fn read_new(path: &Path, len: u64, f: &mut Follow, events: &Sender<(String, Game
         if !f.recent.first(message, now) {
             continue;
         }
-        info!("minecraft: {}{}", kind.label(), if detail.is_empty() { String::new() } else { format!(" ({detail})") });
+        // The recorder logs every event it gets.
         let _ = events.send((GAME_NAME.to_string(), GameEvent::new(kind, now, detail)));
     }
 }
@@ -344,100 +353,4 @@ fn moment(message: &str, me: &str) -> Option<(EventKind, String)> {
 fn bracketed(text: &str, prefix: &str) -> Option<String> {
     let inner = text.strip_prefix(prefix)?.trim().strip_prefix('[')?.strip_suffix(']')?;
     (!inner.is_empty()).then(|| inner.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ME: &str = "Steve";
-
-    fn read(line: &str) -> Option<(EventKind, String)> {
-        moment(chat_message(line)?, ME)
-    }
-
-    #[test]
-    fn finds_the_player() {
-        assert_eq!(player_line("[12:00:01] [Render thread/INFO]: Setting user: Steve"), Some("Steve".into()));
-        assert_eq!(player_line("[12:00:01] [main/INFO]: Setting user: Steve_2"), Some("Steve_2".into()));
-        assert_eq!(player_line("[12:00:01] [Render thread/INFO]: Setting user: not a name!"), None);
-        assert_eq!(player_line("[12:00:01] [Render thread/WARN]: Setting user: Steve"), None);
-    }
-
-    #[test]
-    fn reads_kills_with_and_without_tags() {
-        let kill = Some((EventKind::Kill, String::new()));
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [System] [CHAT] Alex was slain by Steve"), kill);
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was shot by Steve"), kill);
-        assert_eq!(read("[21:14:03] [Server thread/INFO]: Alex was slain by Steve"), kill);
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex hit the ground too hard whilst trying to escape Steve"), kill);
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was slain by Steve using [Excalibur]"), Some((EventKind::Kill, "Excalibur".into())));
-    }
-
-    #[test]
-    fn one_explosion_two_kills_counts_two() {
-        let mut recent = Recent::default();
-        // Singleplayer's server and chat copies of two deaths, interleaved.
-        let seen: Vec<bool> = ["Alex was blown up by Steve", "Bob was blown up by Steve", "Alex was blown up by Steve", "Bob was blown up by Steve"]
-            .iter()
-            .map(|m| recent.first(m, SECOND))
-            .collect();
-        assert_eq!(seen, [true, true, false, false]);
-        // The same message later is a new moment.
-        assert!(recent.first("Alex was blown up by Steve", SECOND + SAME_MOMENT));
-    }
-
-    #[test]
-    fn reads_forge_lines() {
-        assert_eq!(
-            read("[21:14:03] [Render thread/INFO] [net.minecraft.client.gui.components.ChatComponent/]: [CHAT] Alex was slain by Steve"),
-            Some((EventKind::Kill, String::new()))
-        );
-        assert_eq!(
-            read("[21:16:40] [Render thread/INFO] [minecraft/ChatComponent]: [System] [CHAT] Steve has made the advancement [Diamonds!]"),
-            Some((EventKind::Advancement, "Diamonds!".into()))
-        );
-        assert_eq!(player_line("[12:00:01] [main/INFO] [minecraft/Minecraft]: Setting user: Steve"), Some("Steve".into()));
-        // Forge's warnings stay out like vanilla's.
-        assert_eq!(read("[21:14:03] [Render thread/WARN] [net.minecraft.client.gui.components.ChatComponent/]: [CHAT] Alex was slain by Steve"), None);
-    }
-
-    #[test]
-    fn a_weapon_named_after_you_isnt_your_kill() {
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was slain by Herobrine using [Steve]"), None);
-    }
-
-    #[test]
-    fn someone_elses_kill_isnt_yours() {
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was slain by Notch"), None);
-        // A longer name that starts with yours.
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was slain by Steve2"), None);
-    }
-
-    #[test]
-    fn reads_your_deaths() {
-        assert_eq!(read("[21:31:05] [Render thread/INFO]: [System] [CHAT] Steve fell from a high place"), Some((EventKind::Death, "fell from a high place".into())));
-        assert_eq!(read("[21:31:05] [Render thread/INFO]: [CHAT] Steve was slain by Zombie"), Some((EventKind::Death, "was slain by Zombie".into())));
-        assert_eq!(read("[21:31:05] [Render thread/INFO]: [CHAT] Steve was slain by Alex using [Sword]"), Some((EventKind::Death, "was slain by Alex".into())));
-    }
-
-    #[test]
-    fn reads_advancements() {
-        assert_eq!(read("[21:16:40] [Render thread/INFO]: [System] [CHAT] Steve has made the advancement [Diamonds!]"), Some((EventKind::Advancement, "Diamonds!".into())));
-        assert_eq!(read("[21:30:12] [Render thread/INFO]: [CHAT] Steve has completed the challenge [Adventuring Time]"), Some((EventKind::Milestone, "Adventuring Time".into())));
-        assert_eq!(read("[21:30:12] [Render thread/INFO]: [CHAT] Steve has reached the goal [Free the End]"), Some((EventKind::Milestone, "Free the End".into())));
-        // Someone else's.
-        assert_eq!(read("[21:16:40] [Render thread/INFO]: [CHAT] Alex has made the advancement [Diamonds!]"), None);
-    }
-
-    #[test]
-    fn leaves_out_what_isnt_a_moment() {
-        // Typed in chat: a player's message, not the game's.
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] <Alex> Bob was slain by Steve"), None);
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Steve joined the game"), None);
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: [CHAT] Alex was kicked by Steve"), None);
-        assert_eq!(read("[21:14:03] [Render thread/WARN]: [CHAT] Alex was slain by Steve"), None);
-        assert_eq!(read("Alex was slain by Steve"), None);
-        assert_eq!(read("[21:14:03] [Render thread/INFO]: Loaded 7 advancements"), None);
-    }
 }

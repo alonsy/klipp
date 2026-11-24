@@ -158,16 +158,15 @@ fn autoclipped_exes(s: &Settings) -> Vec<&'static str> {
 }
 
 /// Klipp records: always with manual clipping on, otherwise only while a
-/// game it auto-clips is running (`running`: lowercase program names).
-fn wanted(s: &Settings, running: impl FnOnce() -> Vec<String>) -> bool {
+/// game it auto-clips is running (`running`: lowercase program names;
+/// `minecraft_open`: a Java window titled "Minecraft…", not just any Java program).
+fn wanted(s: &Settings, running: impl FnOnce() -> Vec<String>, minecraft_open: impl FnOnce() -> bool) -> bool {
     if s.replay.manual {
         return true;
     }
     let exes = autoclipped_exes(s);
     let a = &s.auto_clip;
-    (!exes.is_empty() && running().iter().any(|name| exes.contains(&name.as_str())))
-        // A Java window titled "Minecraft…", not just any Java program.
-        || (a.enabled && a.minecraft.enabled && crate::games::minecraft_open())
+    (!exes.is_empty() && running().iter().any(|name| exes.contains(&name.as_str()))) || (a.enabled && a.minecraft.enabled && minecraft_open())
 }
 
 fn running_programs() -> Vec<String> {
@@ -231,7 +230,7 @@ impl Recorder {
             r.fps_cap = Some(cap);
             r.watchdog.set_reduced(Some((cap, fps)), true);
         }
-        if wanted(&r.settings, running_programs) {
+        if wanted(&r.settings, running_programs, crate::games::minecraft_open) {
             r.video = Some(VideoPipeline::start(r.video_settings(), r.shared.clone())?);
             r.start_audio();
         } else {
@@ -273,7 +272,7 @@ impl Recorder {
     /// With manual clipping off, starts recording when a game Klipp
     /// auto-clips starts and stops when it's closed (every couple of seconds).
     pub fn tick_standby(&mut self) {
-        let wanted = wanted(&self.settings, running_programs);
+        let wanted = wanted(&self.settings, running_programs, crate::games::minecraft_open);
         if wanted != self.standby {
             return;
         }

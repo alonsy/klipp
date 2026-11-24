@@ -183,6 +183,7 @@
           {@render moments("minecraft", minecraftEvents)}
         </div>
         <p class="note">Advancements and deaths are marked on the timeline of every clip.</p>
+        <p class="note">Minecraft auto-clips were made by Alp (AlpK47 on GitHub). Thanks, Alp!</p>
       {/if}
     {:else}
       {#if !a.enabled}
